@@ -53,6 +53,21 @@ function normalizeCombatState(state) {
     return { ...defaultCombatState };
   }
 
+  const defaultEconomy = {
+    action: true,
+    bonusAction: true,
+    movement: 30,
+    reaction: true
+  };
+
+  const normalizeKey = (value, fallback) => {
+    const str = (value ?? '').toString().trim();
+    if (str) {
+      return str.toLowerCase();
+    }
+    return fallback;
+  };
+
   const actionEconomy = state.actionEconomy && typeof state.actionEconomy === 'object'
     ? state.actionEconomy
     : {};
@@ -62,23 +77,48 @@ function normalizeCombatState(state) {
     : {};
 
   const rawOrder = Array.isArray(state.initiativeOrder) ? state.initiativeOrder : [];
-  const initiativeOrder = rawOrder.map(combatant => {
+  const initiativeOrder = rawOrder.map((combatant, index) => {
     const name = combatant?.name || '';
-    const economy = actionEconomy[name];
+    const key = normalizeKey(combatant?.uid || combatant?.id || name, `combatant-${index + 1}`);
+    const economySource = actionEconomy[key] || actionEconomy[name];
     const combatantConditions = Array.isArray(combatant?.conditions)
       ? combatant.conditions
-      : (Array.isArray(conditions[name]) ? conditions[name] : []);
+      : (Array.isArray(conditions[key]) ? conditions[key] : (Array.isArray(conditions[name]) ? conditions[name] : []));
 
     return {
       ...combatant,
-      actionEconomy: economy ? { ...economy } : (combatant.actionEconomy || null),
-      conditions: combatantConditions
+      uid: key,
+      actionEconomy: { ...defaultEconomy, ...(economySource || combatant?.actionEconomy || {}) },
+      conditions: [...combatantConditions]
     };
   });
 
+  const lookup = new Map(initiativeOrder.map(combatant => [combatant.uid, combatant]));
+
+  const mapParticipants = (list = []) => {
+    if (!Array.isArray(list)) {
+      return [];
+    }
+    return list
+      .map(entry => {
+        const key = normalizeKey(entry?.uid || entry?.id || entry?.name, null);
+        if (key && lookup.has(key)) {
+          return lookup.get(key);
+        }
+        if (entry && entry.name) {
+          const normalizedName = normalizeKey(entry.name, null);
+          if (normalizedName && lookup.has(normalizedName)) {
+            return lookup.get(normalizedName);
+          }
+        }
+        return null;
+      })
+      .filter(Boolean);
+  };
+
   const participants = {
-    players: Array.isArray(state.participants?.players) ? state.participants.players : [],
-    enemies: Array.isArray(state.participants?.enemies) ? state.participants.enemies : []
+    players: mapParticipants(state.participants?.players),
+    enemies: mapParticipants(state.participants?.enemies)
   };
 
   if (participants.players.length === 0 && participants.enemies.length === 0 && initiativeOrder.length > 0) {
@@ -86,13 +126,23 @@ function normalizeCombatState(state) {
     participants.enemies = initiativeOrder.filter(c => c && c.isPlayer === false);
   }
 
+  const nextActionEconomy = initiativeOrder.reduce((acc, combatant) => {
+    acc[combatant.uid] = combatant.actionEconomy;
+    return acc;
+  }, {});
+
+  const nextConditions = initiativeOrder.reduce((acc, combatant) => {
+    acc[combatant.uid] = combatant.conditions;
+    return acc;
+  }, {});
+
   return {
     active: !!state.active,
     round: Number.isFinite(state.round) ? state.round : 0,
     currentTurn: Number.isFinite(state.currentTurn) ? state.currentTurn : 0,
     initiativeOrder,
-    actionEconomy,
-    conditions,
+    actionEconomy: nextActionEconomy,
+    conditions: nextConditions,
     conversationHistory: Array.isArray(state.conversationHistory) ? state.conversationHistory : [],
     context: state.context || {},
     participants

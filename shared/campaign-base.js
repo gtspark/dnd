@@ -1182,10 +1182,10 @@ class CampaignBase {
                         reaction: true
                     };
 
-                    const ensureCombatant = (entry) => {
+                    const ensureCombatant = (entry, index) => {
                         if (!entry) return null;
                         const initiative = Number(entry.initiative);
-                        return {
+                        const combatant = {
                             name: entry.name,
                             id: entry.id,
                             isPlayer: entry.isPlayer === true,
@@ -1198,18 +1198,28 @@ class CampaignBase {
                             actionEconomy: entry.actionEconomy ? { ...entry.actionEconomy } : { ...defaultEconomy },
                             conditions: Array.isArray(entry.conditions) ? [...entry.conditions] : []
                         };
+                        combatant.uid = (entry.uid || entry.id || entry.name || `combatant-${index + 1}`)
+                            ?.toString()
+                            .trim()
+                            .toLowerCase();
+                        if (!combatant.uid) {
+                            combatant.uid = `combatant-${index + 1}`;
+                        }
+                        return combatant;
                     };
 
                     const localOrder = initiativeOrder
-                        .map(ensureCombatant)
+                        .map((entry, index) => ensureCombatant(entry, index))
                         .filter(Boolean);
 
                     const actionEconomy = {};
                     const conditions = {};
 
                     localOrder.forEach(combatant => {
-                        actionEconomy[combatant.name] = { ...defaultEconomy, ...(combatant.actionEconomy || {}) };
-                        conditions[combatant.name] = Array.isArray(combatant.conditions) ? [...combatant.conditions] : [];
+                        actionEconomy[combatant.uid] = { ...defaultEconomy, ...(combatant.actionEconomy || {}) };
+                        combatant.actionEconomy = actionEconomy[combatant.uid];
+                        conditions[combatant.uid] = Array.isArray(combatant.conditions) ? [...combatant.conditions] : [];
+                        combatant.conditions = conditions[combatant.uid];
                     });
 
                     const participants = {
@@ -1223,8 +1233,8 @@ class CampaignBase {
                         currentTurn: state?.currentTurn ?? 0,
                         initiativeOrder: localOrder,
                         participants,
-                        actionEconomy: Object.keys(state?.actionEconomy || {}).length ? state.actionEconomy : actionEconomy,
-                        conditions: Object.keys(state?.conditions || {}).length ? state.conditions : conditions,
+                        actionEconomy,
+                        conditions,
                         context: metadata?.context ? { ...metadata.context, ...(state?.context || {}) } : (state?.context || {}),
                         conversationHistory: Array.isArray(state?.conversationHistory) ? state.conversationHistory : []
                     };
@@ -1279,87 +1289,122 @@ class CampaignBase {
         }
 
         const normalized = { ...state };
+        const defaultEconomy = {
+            action: true,
+            bonusAction: true,
+            movement: 30,
+            reaction: true
+        };
 
         if (!normalized.context && this.pendingCombatHandoff?.context) {
             normalized.context = this.pendingCombatHandoff.context;
         }
 
+        const normalizeKey = (value, fallback) => {
+            const str = (value ?? '').toString().trim();
+            if (str) {
+                return str;
+            }
+            return fallback;
+        };
+
+        const sourceActionEconomy = normalized.actionEconomy || {};
+        const sourceConditions = normalized.conditions || {};
+
+        const initiativeOrder = Array.isArray(normalized.initiativeOrder)
+            ? normalized.initiativeOrder.map((entry = {}, index) => {
+                const combatant = { ...entry };
+                combatant.uid = normalizeKey(combatant.uid || combatant.id || combatant.name, `combatant-${index + 1}`);
+                combatant.id = combatant.id || combatant.uid;
+                combatant.name = combatant.name || combatant.id || `Combatant ${index + 1}`;
+                const numericInit = Number(combatant.initiative);
+                combatant.initiative = Number.isFinite(numericInit) ? numericInit : null;
+                combatant.isPlayer = combatant.isPlayer === true;
+                combatant.type = combatant.isPlayer ? 'player' : 'enemy';
+
+                const economySource = sourceActionEconomy[combatant.uid]
+                    || sourceActionEconomy[combatant.name]
+                    || combatant.actionEconomy;
+                combatant.actionEconomy = {
+                    ...defaultEconomy,
+                    ...(economySource || {})
+                };
+
+                const conditionsSource = sourceConditions[combatant.uid]
+                    || sourceConditions[combatant.name]
+                    || combatant.conditions;
+                combatant.conditions = Array.isArray(conditionsSource) ? [...conditionsSource] : [];
+
+                combatant.hp = combatant.hp && typeof combatant.hp === 'object'
+                    ? {
+                        current: combatant.hp.current ?? combatant.hp.value ?? null,
+                        max: combatant.hp.max ?? combatant.hp.maximum ?? combatant.hp.total ?? combatant.hp.maxHp ?? null
+                    }
+                    : { current: null, max: null };
+
+                return combatant;
+            })
+            : [];
+
+        normalized.initiativeOrder = initiativeOrder;
+        normalized.actionEconomy = initiativeOrder.reduce((acc, combatant) => {
+            acc[combatant.uid] = combatant.actionEconomy;
+            return acc;
+        }, {});
+        normalized.conditions = initiativeOrder.reduce((acc, combatant) => {
+            acc[combatant.uid] = combatant.conditions;
+            return acc;
+        }, {});
+
+        const lookup = new Map(initiativeOrder.map(combatant => [combatant.uid, combatant]));
+        const rebuildGroup = (group, predicate) => {
+            if (!Array.isArray(group) || group.length === 0) {
+                return initiativeOrder.filter(predicate);
+            }
+            return group
+                .map(entry => {
+                    const key = normalizeKey(entry?.uid || entry?.id || entry?.name, null);
+                    if (!key) {
+                        return null;
+                    }
+                    if (lookup.has(key)) {
+                        const combatant = lookup.get(key);
+                        return predicate(combatant) ? combatant : null;
+                    }
+                    const normalizedEntry = normalizeKey(entry?.name, null);
+                    if (!normalizedEntry) {
+                        return null;
+                    }
+                    for (const combatant of initiativeOrder) {
+                        if (normalizeKey(combatant.name, '').toLowerCase() === normalizedEntry.toLowerCase() && predicate(combatant)) {
+                            return combatant;
+                        }
+                    }
+                    return null;
+                })
+                .filter(Boolean)
+                .filter(predicate);
+        };
+
         if (!normalized.participants) {
             normalized.participants = this.pendingCombatHandoff?.participants
                 ? { ...this.pendingCombatHandoff.participants }
                 : { players: [], enemies: [] };
-        } else {
-            const players = Array.isArray(normalized.participants.players) ? normalized.participants.players : [];
-            const enemies = Array.isArray(normalized.participants.enemies) ? normalized.participants.enemies : [];
-            normalized.participants = { players, enemies };
         }
 
-        const order = Array.isArray(normalized.initiativeOrder) ? normalized.initiativeOrder : [];
-        const seen = new Map();
-        const cleanOrder = [];
+        normalized.participants.players = rebuildGroup(normalized.participants.players, combatant => combatant.isPlayer);
+        normalized.participants.enemies = rebuildGroup(normalized.participants.enemies, combatant => !combatant.isPlayer);
 
-        order.forEach(entry => {
-            if (!entry || !entry.name) {
-                return;
-            }
-
-            const key = entry.name.toLowerCase();
-            const existing = seen.get(key) || {
-                name: entry.name,
-                id: entry.id,
-                isPlayer: entry.isPlayer === true,
-                initiative: null,
-                ac: entry.ac ?? null,
-                hp: {
-                    current: null,
-                    max: null
-                },
-                actionEconomy: entry.actionEconomy ? { ...entry.actionEconomy } : undefined
-            };
-
-            const numericInit = Number(entry.initiative);
-            if (Number.isFinite(numericInit)) {
-                existing.initiative = numericInit;
-            }
-
-            if (entry.ac !== undefined && entry.ac !== null) {
-                existing.ac = entry.ac;
-            }
-
-            const hpCurrent = entry.hp?.current;
-            const hpMax = entry.hp?.max;
-            if (hpCurrent !== undefined && hpCurrent !== null && hpCurrent !== '') {
-                const value = Number(hpCurrent);
-                existing.hp.current = Number.isFinite(value) ? value : hpCurrent;
-            }
-            if (hpMax !== undefined && hpMax !== null && hpMax !== '') {
-                const value = Number(hpMax);
-                existing.hp.max = Number.isFinite(value) ? value : hpMax;
-            }
-
-            existing.isPlayer = existing.isPlayer || entry.isPlayer === true;
-
-            if (!seen.has(key)) {
-                seen.set(key, existing);
-                cleanOrder.push(existing);
-            } else {
-                seen.set(key, existing);
-            }
-        });
-
-        cleanOrder.sort((a, b) => (b.initiative ?? -Infinity) - (a.initiative ?? -Infinity));
-
-        normalized.initiativeOrder = cleanOrder;
-        normalized.enemies = cleanOrder
-            .filter(entry => entry && entry.isPlayer === false)
-            .map(entry => ({
-                name: entry.name,
+        normalized.enemies = initiativeOrder
+            .filter(combatant => !combatant.isPlayer)
+            .map(combatant => ({
+                name: combatant.name,
                 isPlayer: false,
-                initiative: entry.initiative,
-                ac: entry.ac ?? null,
+                initiative: combatant.initiative,
+                ac: combatant.ac ?? null,
                 hp: {
-                    current: entry.hp?.current ?? null,
-                    max: entry.hp?.max ?? null
+                    current: combatant.hp?.current ?? null,
+                    max: combatant.hp?.max ?? null
                 }
             }));
 

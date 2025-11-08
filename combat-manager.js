@@ -12,6 +12,137 @@ class CombatManager {
         this.activeCombats = new Map(); // campaignId -> combat state
     }
 
+    normalizeIdentifier(value) {
+        return (value ?? '')
+            .toString()
+            .trim()
+            .toLowerCase()
+            .replace(/[^a-z0-9]/g, '');
+    }
+
+    getCombatantKey(combatant) {
+        if (!combatant) {
+            return null;
+        }
+        if (combatant.uid) {
+            return combatant.uid;
+        }
+        const baseId = combatant.id ?? combatant.name ?? '';
+        const normalized = this.normalizeIdentifier(baseId);
+        return normalized || null;
+    }
+
+    prepareCombatState(combatState = {}) {
+        if (!Array.isArray(combatState.initiativeOrder)) {
+            combatState.initiativeOrder = [];
+        }
+
+        const seenKeys = new Map();
+        const defaultEconomy = {
+            action: true,
+            bonusAction: true,
+            movement: 30,
+            reaction: true
+        };
+
+        const existingEconomy = combatState.actionEconomy || {};
+        const existingConditions = combatState.conditions || {};
+
+        combatState.initiativeOrder = combatState.initiativeOrder.map((entry = {}, index) => {
+            const combatant = { ...entry };
+
+            combatant.name = combatant.name || combatant.id || `Combatant ${index + 1}`;
+            combatant.isPlayer = combatant.isPlayer === true;
+            combatant.type = combatant.isPlayer ? 'player' : 'enemy';
+
+            const numericInitiative = Number(combatant.initiative);
+            combatant.initiative = Number.isFinite(numericInitiative) ? numericInitiative : null;
+
+            const baseKey = combatant.uid || combatant.id || combatant.name || `combatant-${index + 1}`;
+            const normalizedBase = this.normalizeIdentifier(baseKey) || `combatant-${index + 1}`;
+            const occurrence = seenKeys.get(normalizedBase) || 0;
+            seenKeys.set(normalizedBase, occurrence + 1);
+            const finalKey = occurrence === 0 ? normalizedBase : `${normalizedBase}#${occurrence + 1}`;
+            combatant.uid = finalKey;
+
+            const economySource = existingEconomy[finalKey]
+                || existingEconomy[combatant.name]
+                || combatant.actionEconomy;
+            const mergedEconomy = {
+                ...defaultEconomy,
+                ...(economySource || {})
+            };
+
+            const conditionsSource = existingConditions[finalKey]
+                || existingConditions[combatant.name]
+                || combatant.conditions;
+            const mergedConditions = Array.isArray(conditionsSource) ? [...conditionsSource] : [];
+
+            combatant.actionEconomy = mergedEconomy;
+            combatant.conditions = mergedConditions;
+
+            if (!combatant.hp || typeof combatant.hp !== 'object') {
+                combatant.hp = { current: null, max: null };
+            } else {
+                combatant.hp = {
+                    current: combatant.hp.current ?? combatant.hp.value ?? null,
+                    max: combatant.hp.max ?? combatant.hp.maximum ?? combatant.hp.total ?? combatant.hp.maxHp ?? null
+                };
+            }
+
+            return combatant;
+        });
+
+        const normalizedEconomy = {};
+        const normalizedConditions = {};
+        combatState.initiativeOrder.forEach(combatant => {
+            const key = combatant.uid;
+            normalizedEconomy[key] = combatant.actionEconomy || { ...defaultEconomy };
+            normalizedConditions[key] = Array.isArray(combatant.conditions) ? combatant.conditions : [];
+        });
+
+        combatState.actionEconomy = normalizedEconomy;
+        combatState.conditions = normalizedConditions;
+
+        const lookup = new Map(combatState.initiativeOrder.map(combatant => [combatant.uid, combatant]));
+
+        const rebuildGroup = (group, predicate) => {
+            if (!Array.isArray(group) || group.length === 0) {
+                return combatState.initiativeOrder.filter(predicate);
+            }
+            return group
+                .map(entry => {
+                    if (entry?.uid && lookup.has(entry.uid)) {
+                        return lookup.get(entry.uid);
+                    }
+                    if (entry?.id && lookup.has(entry.id)) {
+                        return lookup.get(entry.id);
+                    }
+                    const normalized = this.normalizeIdentifier(entry?.name);
+                    if (!normalized) {
+                        return null;
+                    }
+                    for (const combatant of combatState.initiativeOrder) {
+                        if (this.normalizeIdentifier(combatant.name) === normalized && predicate(combatant)) {
+                            return combatant;
+                        }
+                    }
+                    return null;
+                })
+                .filter(entry => entry && predicate(entry));
+        };
+
+        combatState.participants = combatState.participants || {};
+        combatState.participants.players = rebuildGroup(combatState.participants.players, combatant => combatant.isPlayer);
+        combatState.participants.enemies = rebuildGroup(combatState.participants.enemies, combatant => !combatant.isPlayer);
+
+        if (!Array.isArray(combatState.rollQueue)) {
+            combatState.rollQueue = [];
+        }
+
+        return combatState;
+    }
+
     /**
      * Initialize combat from narrative handoff
      */
@@ -47,32 +178,29 @@ class CombatManager {
             context: contextPreview ? `${contextPreview}...` : undefined
         });
 
-        // Merge players and enemies into initiative order
-        const allCombatants = [
-            ...participants.players.map(p => ({ ...p, isPlayer: true, type: 'player' })),
-            ...participants.enemies.map(e => ({ ...e, isPlayer: false, type: 'enemy' }))
-        ];
+        const sanitizeCombatant = (entry, isPlayerDefault) => {
+            const combatant = { ...(entry || {}) };
+            combatant.isPlayer = isPlayerDefault || combatant.isPlayer === true;
+            combatant.type = combatant.isPlayer ? 'player' : 'enemy';
+            const numericInitiative = Number(combatant.initiative);
+            combatant.initiative = Number.isFinite(numericInitiative) ? numericInitiative : null;
+            combatant.conditions = Array.isArray(combatant.conditions) ? [...combatant.conditions] : [];
+            return combatant;
+        };
 
-        // Sort by initiative (descending)
-        allCombatants.sort((a, b) => b.initiative - a.initiative);
+        const playerCombatants = (participants.players || []).map(player => sanitizeCombatant(player, true));
+        const enemyCombatants = (participants.enemies || []).map(enemy => sanitizeCombatant(enemy, false));
+        const allCombatants = [...playerCombatants, ...enemyCombatants];
+
+        allCombatants.sort((a, b) => {
+            const aInit = Number.isFinite(a.initiative) ? a.initiative : -Infinity;
+            const bInit = Number.isFinite(b.initiative) ? b.initiative : -Infinity;
+            return bInit - aInit;
+        });
 
         console.log('📊 [COMBAT] Initiative order:', allCombatants.map(c =>
-            `${c.name}(${c.initiative})${c.isPlayer ? '👤' : '💀'}`
+            `${c.name}(${Number.isFinite(c.initiative) ? c.initiative : '—'})${c.isPlayer ? '👤' : '💀'}`
         ).join(', '));
-
-        // Initialize action economy for all combatants
-        const actionEconomy = {};
-        const conditions = {};
-
-        allCombatants.forEach(combatant => {
-            actionEconomy[combatant.name] = {
-                action: true,
-                bonusAction: true,
-                movement: 30, // Default movement speed
-                reaction: true
-            };
-            conditions[combatant.name] = [];
-        });
 
         const combatState = {
             active: true,
@@ -80,16 +208,18 @@ class CombatManager {
             currentTurn: 0,
             initiativeOrder: allCombatants,
             participants: {
-                players: participants.players,
-                enemies: participants.enemies
+                players: playerCombatants,
+                enemies: enemyCombatants
             },
-            actionEconomy,
-            conditions,
+            actionEconomy: {},
+            conditions: {},
             context,
             conversationHistory: [], // Separate combat conversation
             startTime: new Date().toISOString(),
             rollQueue: []
         };
+
+        this.prepareCombatState(combatState);
 
         this.activeCombats.set(campaignId, combatState);
         await this.saveCombatState(campaignId, combatState);
@@ -183,12 +313,17 @@ class CombatManager {
 
         // Reset action economy for current combatant
         const currentCombatant = combat.initiativeOrder[combat.currentTurn];
-        combat.actionEconomy[currentCombatant.name] = {
+        const currentKey = this.getCombatantKey(currentCombatant);
+        if (!currentKey) {
+            throw new Error('Unable to resolve combatant key for action economy reset');
+        }
+        combat.actionEconomy[currentKey] = {
             action: true,
             bonusAction: true,
             movement: 30,
             reaction: true
         };
+        currentCombatant.actionEconomy = combat.actionEconomy[currentKey];
 
         // Advance turn, skipping defeated combatants
         let attempts = 0;
@@ -244,12 +379,13 @@ class CombatManager {
             throw new Error(`Combatant ${combatantName} not found`);
         }
 
-        // Use actual combatant name from initiative order
-        const actualName = combatant.name;
-        const economy = combat.actionEconomy[actualName];
-        if (!economy) {
-            // Create economy if it doesn't exist
-            combat.actionEconomy[actualName] = {
+        const key = this.getCombatantKey(combatant);
+        if (!key) {
+            throw new Error(`Unable to resolve combatant key for ${combatantName}`);
+        }
+
+        if (!combat.actionEconomy[key]) {
+            combat.actionEconomy[key] = {
                 action: true,
                 bonusAction: true,
                 movement: 30,
@@ -257,8 +393,8 @@ class CombatManager {
             };
         }
 
-        // Apply updates
-        Object.assign(combat.actionEconomy[actualName], updates);
+        Object.assign(combat.actionEconomy[key], updates);
+        combatant.actionEconomy = combat.actionEconomy[key];
 
         await this.saveCombatState(campaignId, combat);
         return combat;
@@ -318,12 +454,14 @@ class CombatManager {
             throw new Error(`Combatant ${combatantName} not found`);
         }
 
-        // Use actual name
-        const actualName = combatant.name;
-        if (!combat.conditions[actualName]) {
-            combat.conditions[actualName] = [];
+        const key = this.getCombatantKey(combatant);
+        if (!key) {
+            throw new Error(`Unable to resolve combatant key for ${combatantName}`);
         }
-        const conditions = combat.conditions[actualName];
+        if (!combat.conditions[key]) {
+            combat.conditions[key] = [];
+        }
+        const conditions = combat.conditions[key];
 
         if (add) {
             if (!conditions.includes(condition)) {
@@ -335,6 +473,8 @@ class CombatManager {
                 conditions.splice(index, 1);
             }
         }
+
+        combatant.conditions = combat.conditions[key];
 
         await this.saveCombatState(campaignId, combat);
         return combat;
@@ -420,6 +560,7 @@ class CombatManager {
      * Save combat state to disk
      */
     async saveCombatState(campaignId, combatState) {
+        this.prepareCombatState(combatState);
         if (!Array.isArray(combatState.rollQueue)) {
             combatState.rollQueue = [];
         }
@@ -432,6 +573,7 @@ class CombatManager {
      * Replace current combat state (optionally persisting it)
      */
     async setCombatState(campaignId, combatState, persist = false) {
+        this.prepareCombatState(combatState);
         if (!Array.isArray(combatState.rollQueue)) {
             combatState.rollQueue = [];
         }
@@ -455,6 +597,7 @@ class CombatManager {
             }
 
             if (combatState.active) {
+                this.prepareCombatState(combatState);
                 this.activeCombats.set(campaignId, combatState);
             } else {
                 this.activeCombats.delete(campaignId);

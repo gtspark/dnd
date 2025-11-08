@@ -956,6 +956,9 @@ class IntelligentContextManager {
         // RAG memory service (Silverpeak only)
         this.memoryClient = null;
 
+        // Lightweight caches
+        this.monsterCache = new Map();
+
         // Campaign-specific file paths
         const campaignDir = `./campaigns/${campaignId}`;
         this.paths = {
@@ -1900,6 +1903,168 @@ class IntelligentContextManager {
     }
 
 
+    getPartyRoster() {
+        const rosterMap = new Map();
+
+        const addAlias = (set, value) => {
+            if (!value && value !== 0) {
+                return;
+            }
+            const normalized = normalizeCombatantName(value);
+            if (normalized) {
+                set.add(normalized);
+            }
+        };
+
+        const coerceHp = (hpData = {}) => {
+            if (!hpData || typeof hpData !== 'object') {
+                return null;
+            }
+            const current = hpData.current ?? hpData.value ?? hpData.hp ?? null;
+            const max = hpData.max ?? hpData.maximum ?? hpData.total ?? hpData.maxHp ?? current ?? null;
+            if (current === null && max === null) {
+                return null;
+            }
+            return {
+                current: current,
+                max: max
+            };
+        };
+
+        const upsertEntry = (rawId, record) => {
+            if (!rawId && !record) {
+                return;
+            }
+
+            const nameCandidate = (record && typeof record === 'object')
+                ? (record.name || record.fullName || record.displayName)
+                : (typeof record === 'string' ? record : null);
+
+            const displayName = nameCandidate || rawId;
+            if (!displayName) {
+                return;
+            }
+
+            const aliasSet = new Set();
+            addAlias(aliasSet, displayName);
+            if (rawId) {
+                addAlias(aliasSet, rawId);
+            }
+
+            if (typeof record === 'object' && record) {
+                if (Array.isArray(record.aliases)) {
+                    record.aliases.forEach(alias => addAlias(aliasSet, alias));
+                }
+                if (record.shortName) {
+                    addAlias(aliasSet, record.shortName);
+                }
+                if (record.firstName) {
+                    addAlias(aliasSet, record.firstName);
+                }
+            }
+
+            const nameParts = displayName.split(/\s+/).filter(Boolean);
+            if (nameParts.length) {
+                addAlias(aliasSet, nameParts[0]);
+                if (nameParts.length > 1) {
+                    addAlias(aliasSet, nameParts[nameParts.length - 1]);
+                }
+            }
+
+            const keySeed = (rawId && rawId.toString()) || displayName;
+            const normalizedKey = (keySeed || '').toString().trim().toLowerCase() || normalizeCombatantName(displayName);
+            if (!normalizedKey) {
+                return;
+            }
+
+            const hp = typeof record === 'object' ? (record.hp || record.health || null) : null;
+            const ac = typeof record === 'object'
+                ? (record.ac ?? record.armorClass ?? record.armourClass ?? null)
+                : null;
+
+            const existing = rosterMap.get(normalizedKey) || {
+                id: rawId || normalizeCombatantName(displayName) || normalizedKey,
+                name: displayName,
+                aliasSet: new Set(),
+                hp: null,
+                ac: null,
+                raw: record
+            };
+
+            aliasSet.forEach(alias => existing.aliasSet.add(alias));
+
+            const coercedHp = coerceHp(hp);
+            if (coercedHp) {
+                existing.hp = {
+                    current: coercedHp.current,
+                    max: coercedHp.max
+                };
+            }
+
+            if (ac !== null && ac !== undefined) {
+                existing.ac = ac;
+            }
+
+            if (!existing.name && displayName) {
+                existing.name = displayName;
+            }
+
+            rosterMap.set(normalizedKey, existing);
+        };
+
+        const characters = this.campaignState?.characters;
+        if (characters && typeof characters === 'object') {
+            Object.entries(characters).forEach(([id, record]) => upsertEntry(id, record));
+        }
+
+        const partyObject = this.campaignState?.party;
+        if (partyObject && typeof partyObject === 'object') {
+            Object.entries(partyObject).forEach(([id, record]) => upsertEntry(id, record));
+        }
+
+        const partyMembers = this.campaignState?.partyMembers;
+        if (Array.isArray(partyMembers)) {
+            partyMembers.forEach(name => upsertEntry(name, { name }));
+        }
+
+        if (this.characterSheets && typeof this.characterSheets === 'object') {
+            Object.entries(this.characterSheets).forEach(([id, record]) => upsertEntry(id, record));
+        }
+
+        if (this.character && this.character.name) {
+            upsertEntry(this.character.id || this.character.name, this.character);
+        }
+
+        if (rosterMap.size === 0) {
+            ['Kira Moonwhisper', 'Thorne Ironheart', 'Riven Shadowstep'].forEach(defaultName => {
+                upsertEntry(defaultName, { name: defaultName });
+            });
+        }
+
+        return Array.from(rosterMap.values()).map(entry => ({
+            id: entry.id,
+            name: entry.name,
+            hp: entry.hp,
+            ac: entry.ac,
+            aliasSet: entry.aliasSet,
+            raw: entry.raw || {}
+        }));
+    }
+
+    matchPartyMember(name) {
+        const normalizedName = normalizeCombatantName(name);
+        if (!normalizedName) {
+            return null;
+        }
+        const roster = this.getPartyRoster();
+        for (const member of roster) {
+            if (member.aliasSet.has(normalizedName)) {
+                return member;
+            }
+        }
+        return null;
+    }
+
     // Extract enemy data from DM response for combat mode
     async extractEnemyData(response) {
         try {
@@ -1949,23 +2114,28 @@ class IntelligentContextManager {
                 };
 
                 const initiativeOrder = combatants.map(combatant => {
-                    const id = combatant.isPlayer ? toCharacterId(combatant.name) : null;
+                    const partyMatch = this.matchPartyMember(combatant.name);
+                    const provisionalId = combatant.id || partyMatch?.id;
+                    const id = provisionalId || (combatant.isPlayer ? toCharacterId(combatant.name) : null);
                     const charData = id ? this.campaignState?.characters?.[id] : null;
-                    const hpSource = charData?.hp || combatant.hp || {};
-                    const acSource = combatant.ac ?? charData?.ac ?? charData?.armorClass ?? null;
+                    const hpSource = combatant.hp || partyMatch?.hp || charData?.hp || {};
+                    const acSource = combatant.ac ?? partyMatch?.ac ?? charData?.ac ?? charData?.armorClass ?? null;
+                    const resolvedInitiative = Number.isFinite(Number(combatant.initiative))
+                        ? Number(combatant.initiative)
+                        : null;
 
                     return {
                         name: combatant.name,
                         id,
-                        isPlayer: !!combatant.isPlayer,
-                        initiative: Number.isFinite(combatant.initiative) ? Number(combatant.initiative) : null,
+                        isPlayer: combatant.isPlayer || !!partyMatch,
+                        initiative: resolvedInitiative,
                         ac: acSource,
                         hp: {
-                            current: hpSource.current ?? null,
-                            max: hpSource.max ?? hpSource.maximum ?? hpSource.total ?? null
+                            current: hpSource.current ?? hpSource.value ?? null,
+                            max: hpSource.max ?? hpSource.maximum ?? hpSource.total ?? hpSource.maxHp ?? null
                         },
                         actionEconomy: ensureActionEconomy(),
-                        conditions: []
+                        conditions: Array.isArray(combatant.conditions) ? [...combatant.conditions] : []
                     };
                 });
 
@@ -2032,16 +2202,19 @@ class IntelligentContextManager {
                             const rawName = match[1].trim();
                             // Clean up name: remove emoji, arrows, and extra markers
                             const name = rawName.replace(/[⚔️←→↑↓✨🎯🛡️]/g, '').trim();
-                            const initiative = parseInt(match[2]);
-                            const isPartyMember = ['Kira', 'Thorne', 'Riven'].some(pm => name.includes(pm));
+                            const initiative = parseInt(match[2], 10);
+                            const partyMatch = this.matchPartyMember(name);
+                            const isPartyMember = !!partyMatch;
 
                             console.log(`🔍 DEBUG: Parsed combatant - Name: "${name}", Initiative: ${initiative}, IsPlayer: ${isPartyMember}`);
 
+                            const hpSource = partyMatch?.hp || null;
                             combatants.push({
-                                name: name,
-                                hp: null,
-                                maxHp: null,
-                                ac: null,
+                                name,
+                                id: partyMatch?.id || null,
+                                hp: hpSource ? { ...hpSource } : null,
+                                maxHp: hpSource?.max ?? null,
+                                ac: partyMatch?.ac ?? null,
                                 initiative: initiative,
                                 isPlayer: isPartyMember
                             });
@@ -2087,6 +2260,11 @@ class IntelligentContextManager {
                         continue;
                     }
 
+                    if (this.matchPartyMember(enemyName)) {
+                        // Skip party members that appear in narrative descriptions
+                        continue;
+                    }
+
                     if (!enemies.find(e => e.name === enemyName)) {
                         enemies.push({
                             name: enemyName,
@@ -2115,84 +2293,116 @@ class IntelligentContextManager {
     // Fetch enemy stats from D&D 5e API and expand count into multiple enemies
     async fetch5eEnemyStats(enemySpecs) {
         const expandedEnemies = [];
+        const cache = this.monsterCache || new Map();
+        this.monsterCache = cache;
+
+        const buildEnemyInstance = (baseStats, index, name, count) => ({
+            name: count > 1 ? `${name} ${index + 1}` : name,
+            hp: baseStats.hp,
+            maxHp: baseStats.maxHp,
+            ac: baseStats.ac,
+            initiative: null,
+            isPlayer: false,
+            cr: baseStats.cr,
+            size: baseStats.size,
+            type: baseStats.type,
+            actions: baseStats.actions ? [...baseStats.actions] : [],
+            source: baseStats.source
+        });
 
         for (const spec of enemySpecs) {
             const { name, count } = spec;
-
-            // Convert name to D&D 5e API format (lowercase, hyphenated)
+            const quantity = Number.isFinite(Number(count)) && Number(count) > 0 ? Number(count) : 1;
             const apiName = name.toLowerCase().replace(/\s+/g, '-');
+            const cacheKey = apiName;
+            let cached = cache.get(cacheKey);
 
-            try {
-                console.log(`🔍 Fetching stats for "${name}" from 5e API...`);
-                const response = await fetch(`https://www.dnd5eapi.co/api/monsters/${apiName}`);
+            if (!cached) {
+                try {
+                    console.log(`🔍 Fetching stats for "${name}" from 5e API...`);
+                    const response = await fetch(`https://www.dnd5eapi.co/api/monsters/${apiName}`);
 
-                if (!response.ok) {
-                    console.warn(`⚠️  Monster "${name}" not found in 5e API, using placeholder`);
-                    // Create placeholder enemies
-                    for (let i = 0; i < count; i++) {
-                        expandedEnemies.push({
-                            name: count > 1 ? `${name} ${i + 1}` : name,
+                    if (!response.ok) {
+                        console.warn(`⚠️  Monster "${name}" not found in 5e API, using placeholder`);
+                        cached = {
+                            status: 'missing',
+                            payload: {
+                                hp: 10,
+                                maxHp: 10,
+                                ac: 10,
+                                cr: null,
+                                size: null,
+                                type: null,
+                                actions: [],
+                                source: 'placeholder'
+                            }
+                        };
+                        cache.set(cacheKey, cached);
+                    } else {
+                        const monsterData = await response.json();
+                        const hp = monsterData.hit_points || 10;
+                        const ac = monsterData.armor_class
+                            ? (Array.isArray(monsterData.armor_class) ? monsterData.armor_class[0].value : monsterData.armor_class)
+                            : 10;
+
+                        console.log(`✅ Fetched "${name}": HP ${hp}, AC ${ac}`);
+
+                        const payload = {
+                            hp,
+                            maxHp: hp,
+                            ac,
+                            cr: monsterData.challenge_rating ?? null,
+                            size: monsterData.size ?? null,
+                            type: monsterData.type ?? null,
+                            actions: Array.isArray(monsterData.actions) ? monsterData.actions.map(a => a.name) : [],
+                            source: '5eapi'
+                        };
+
+                        cached = { status: 'ok', payload };
+                        cache.set(cacheKey, cached);
+
+                        // Store in RAG for future quick access (only once per monster)
+                        if (this.memoryClient && this.campaignId === 'test-silverpeak') {
+                            try {
+                                await this.memoryClient.storeMonsterStats(name, monsterData);
+                                console.log(`💾 Stored "${name}" stats in campaign RAG`);
+                            } catch (error) {
+                                console.warn(`⚠️  Failed to store monster stats in RAG:`, error.message);
+                            }
+                        }
+                    }
+                } catch (error) {
+                    console.error(`❌ Error fetching stats for "${name}":`, error.message);
+                    cached = {
+                        status: 'missing',
+                        payload: {
                             hp: 10,
                             maxHp: 10,
                             ac: 10,
-                            initiative: null,
-                            isPlayer: false,
-                            error: 'Stats not found in 5e API'
-                        });
-                    }
-                    continue;
+                            cr: null,
+                            size: null,
+                            type: null,
+                            actions: [],
+                            source: 'error'
+                        }
+                    };
+                    cache.set(cacheKey, cached);
                 }
+            }
 
-                const monsterData = await response.json();
+            const baseStats = cached?.payload || {
+                hp: 10,
+                maxHp: 10,
+                ac: 10,
+                cr: null,
+                size: null,
+                type: null,
+                actions: [],
+                source: 'fallback'
+            };
 
-                // Extract relevant stats
-                const hp = monsterData.hit_points || 10;
-                const ac = monsterData.armor_class ?
-                    (Array.isArray(monsterData.armor_class) ? monsterData.armor_class[0].value : monsterData.armor_class) : 10;
-
-                console.log(`✅ Fetched "${name}": HP ${hp}, AC ${ac}`);
-
-                // Store in RAG for future quick access
-                if (this.memoryClient && this.campaignId === 'test-silverpeak') {
-                    try {
-                        await this.memoryClient.storeMonsterStats(name, monsterData);
-                        console.log(`💾 Stored "${name}" stats in campaign RAG`);
-                    } catch (error) {
-                        console.warn(`⚠️  Failed to store monster stats in RAG:`, error.message);
-                    }
-                }
-
-                // Create multiple instances based on count
-                for (let i = 0; i < count; i++) {
-                    expandedEnemies.push({
-                        name: count > 1 ? `${name} ${i + 1}` : name,
-                        hp: hp,
-                        maxHp: hp,
-                        ac: ac,
-                        initiative: null,
-                        isPlayer: false,
-                        // Store additional data for DM reference
-                        cr: monsterData.challenge_rating,
-                        size: monsterData.size,
-                        type: monsterData.type,
-                        actions: monsterData.actions?.map(a => a.name) || []
-                    });
-                }
-
-            } catch (error) {
-                console.error(`❌ Error fetching stats for "${name}":`, error.message);
-                // Create fallback enemies
-                for (let i = 0; i < count; i++) {
-                    expandedEnemies.push({
-                        name: count > 1 ? `${name} ${i + 1}` : name,
-                        hp: 10,
-                        maxHp: 10,
-                        ac: 10,
-                        initiative: null,
-                        isPlayer: false,
-                        error: error.message
-                    });
-                }
+            for (let i = 0; i < quantity; i++) {
+                expandedEnemies.push(buildEnemyInstance(baseStats, i, name, quantity));
             }
         }
 

@@ -218,13 +218,13 @@ $: if (pendingTurn && combatState?.active) {
     pendingTurn = null;
   }
 
-function toggleDetails(combatantName) {
-  expandedCombatant = expandedCombatant === combatantName ? null : combatantName;
+function toggleDetails(combatantKey) {
+  expandedCombatant = expandedCombatant === combatantKey ? null : combatantKey;
 }
 
 function getParticipantStatus(combatant) {
   if (!combatant) return null;
-  const key = normalizeParticipantKey(combatant.id || combatant.name);
+  const key = normalizeParticipantKey(combatant.uid || combatant.id || combatant.name);
   return rollStatusMap[key];
 }
 
@@ -343,7 +343,7 @@ function handleSummaryClick(item) {
 
   {#if combatState.active && combatState.initiativeOrder.length > 0}
     <div class="initiative-list" role="list" aria-label="Initiative order" in:fly={{ y: 20, duration: 300, easing: quintOut }}>
-      {#each combatState.initiativeOrder as combatant, index (combatant.name)}
+      {#each combatState.initiativeOrder as combatant, index (combatant.uid || combatant.name)}
         {@const hpPercent = getHPPercent(combatant)}
         {@const hpStatus = getHpStatus(hpPercent)}
         {@const turnStatus = getTurnStatus(index)}
@@ -398,10 +398,10 @@ function handleSummaryClick(item) {
               {#if combatant.isPlayer}
                 <button
                   class="btn-details"
-                  on:click={() => toggleDetails(combatant.name)}
-                  class:active={expandedCombatant === combatant.name}
+                  on:click={() => toggleDetails(combatant.uid || combatant.name)}
+                  class:active={expandedCombatant === (combatant.uid || combatant.name)}
                   aria-label="Toggle character details for {combatant.name}"
-                  aria-expanded={expandedCombatant === combatant.name}
+                  aria-expanded={expandedCombatant === (combatant.uid || combatant.name)}
                 >
                   📋 Details
                 </button>
