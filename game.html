@@ -484,10 +484,20 @@
             if (window.claudeAPI) {
                 // Override sendMessage to debug
                 const originalSendMessage = window.claudeAPI.sendMessage;
-                window.claudeAPI.sendMessage = async function(playerMessage, isRollResult = false) {
+                window.claudeAPI.sendMessage = async function(playerMessage, modeOrIsRollResult, maybeIsRollResult) {
                     console.log('=== DEBUGGING sendMessage ===');
-                    console.log('Input:', playerMessage, isRollResult);
-                    const result = await originalSendMessage.call(this, playerMessage, isRollResult);
+                    let mode = 'ic';
+                    let isRollResult = false;
+
+                    if (typeof modeOrIsRollResult === 'string') {
+                        mode = modeOrIsRollResult;
+                        isRollResult = !!maybeIsRollResult;
+                    } else if (typeof modeOrIsRollResult === 'boolean') {
+                        isRollResult = modeOrIsRollResult;
+                    }
+
+                    console.log('Input:', playerMessage, mode, isRollResult);
+                    const result = await originalSendMessage.call(this, playerMessage, mode, isRollResult);
                     console.log('Backend response:', result);
                     return result;
                 };
@@ -545,10 +555,11 @@
                             this.addLogEntry('dm', narrative);
 
                             // Use the Claude API's parseRollRequest method for consistency
-                            const rollDetails = window.claudeAPI.parseRollRequest(rollRequest);
+                        const normalizedRollRequest = (rollRequest || '').replace(/\s+/g, ' ').replace(/\s*\*+$/g, '').trim();
+                        const rollDetails = window.claudeAPI.parseRollRequest(normalizedRollRequest);
 
                             console.log('OVERRIDDEN Parsed roll details:', rollDetails);
-                            this.showRollPrompt(rollDetails, rollRequest);
+                        this.showRollPrompt(rollDetails, normalizedRollRequest);
 
                             // Prevent the original method from being called by returning early
                             return;

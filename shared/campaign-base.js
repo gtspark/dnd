@@ -950,7 +950,8 @@ class CampaignBase {
             breakdownComponents.push(...modifierParts);
         }
         const breakdownText = breakdownComponents.join(' ');
-        const rollMessage = `${rollRequest}: ${total} (rolled ${breakdownText}${rollDetails})`;
+        const cleanRollRequest = (rollRequest || '').replace(/\s+/g, ' ').replace(/\s*\*+$/g, '').trim();
+        const rollMessage = `${cleanRollRequest}: ${total} (rolled ${breakdownText}${rollDetails})`;
 
         // Add to roll history
         this.addToRollHistory({
@@ -973,7 +974,7 @@ class CampaignBase {
         try {
             this.showLoadingState();
             console.log('🎲 Sending roll result to Claude:', rollMessage);
-            const response = await window.claudeAPI.sendMessage(rollMessage, true);
+            const response = await window.claudeAPI.sendMessage(rollMessage, 'ic', true);
             console.log('🎲 Claude response received:', response);
 
             if (response && response.narrative) {

@@ -2857,7 +2857,7 @@ ${this.combatState.initiativeOrder.map((c, i) =>
             .replace(/^🎲\s*/, '')
             .trim();
 
-        sanitized = sanitized.replace(/\s+/g, ' ');
+        sanitized = sanitized.replace(/\s+/g, ' ').replace(/\s*\*+$/g, '').trim();
 
         while (flavorHint.test(sanitized)) {
             sanitized = sanitized.replace(flavorHint, '').trim();
@@ -5601,18 +5601,63 @@ startCombatRoutes.forEach(route => app.post(route, async (req, res) => {
             console.log(`  Players: ${handoffData.participants.players.length}`);
             console.log(`  Enemies: ${handoffData.participants.enemies.length}`);
 
-            const combatState = await combatManager.startCombat(activeCampaignId, handoffData);
-            const sharedState = updateSharedCombatState(context, {
-                ...combatState,
-                participants: handoffData.participants,
-                context: handoffData.context
-            });
+            try {
+                const combatState = await combatManager.startCombat(activeCampaignId, handoffData);
+                const sharedState = updateSharedCombatState(context, {
+                    ...combatState,
+                    participants: handoffData.participants,
+                    context: handoffData.context
+                });
 
-            return res.json({
-                success: true,
-                combatState: sharedState,
-                systemPrompt: combatManager.getCombatSystemPrompt(sharedState)
-            });
+                return res.json({
+                    success: true,
+                    combatState: sharedState,
+                    systemPrompt: combatManager.getCombatSystemPrompt(sharedState)
+                });
+            } catch (error) {
+                console.error('❌ Combat start via handoff failed, falling back to manual initialization:', error);
+
+                const cloneCombatant = (entry = {}, forcePlayer) => ({
+                    ...entry,
+                    isPlayer: typeof forcePlayer === 'boolean' ? forcePlayer : entry.isPlayer === true
+                });
+
+                const fallbackPlayers = (handoffData.participants.players || []).map(entry => cloneCombatant(entry, true));
+                const fallbackEnemies = (handoffData.participants.enemies || []).map(entry => cloneCombatant(entry, false));
+                const baseOrder = Array.isArray(handoffData.initiativeOrder) && handoffData.initiativeOrder.length
+                    ? handoffData.initiativeOrder.map(entry => ({ ...entry }))
+                    : [...fallbackPlayers.map(entry => ({ ...entry })), ...fallbackEnemies.map(entry => ({ ...entry }))];
+
+                const fallbackState = {
+                    active: true,
+                    round: 1,
+                    currentTurn: 0,
+                    initiativeOrder: baseOrder,
+                    participants: {
+                        players: fallbackPlayers,
+                        enemies: fallbackEnemies
+                    },
+                    actionEconomy: {},
+                    conditions: {},
+                    context: handoffData.context || {},
+                    conversationHistory: []
+                };
+
+                try {
+                    combatManager.prepareCombatState(fallbackState);
+                    await combatManager.setCombatState(activeCampaignId, fallbackState, false);
+                } catch (fallbackError) {
+                    console.error('⚠️ Failed to persist fallback combat state:', fallbackError);
+                }
+
+                const sharedState = updateSharedCombatState(context, fallbackState);
+                return res.json({
+                    success: true,
+                    combatState: sharedState,
+                    systemPrompt: combatManager.getCombatSystemPrompt(sharedState),
+                    fallback: true
+                });
+            }
         }
 
         const safeOrder = Array.isArray(initiativeOrder) ? initiativeOrder : [];
