@@ -1,0 +1,509 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Claude DM - Campaign Manager</title>
+    <link rel="stylesheet" href="styles.css?v=1760014523">
+    <style>
+        :root {
+            --splash-bg: #0f0f0f;
+            --splash-card-bg: #1a1a1a;
+            --splash-card-hover: #252525;
+            --splash-border: #2a2a2a;
+            --splash-gold: #daa520;
+            --splash-gold-glow: rgba(218, 165, 32, 0.3);
+            --splash-text: #e0e0e0;
+            --splash-text-dim: #888;
+        }
+
+        body {
+            background: var(--splash-bg);
+            color: var(--splash-text);
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 0;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            background-image:
+                radial-gradient(circle at 20% 30%, rgba(218, 165, 32, 0.05) 0%, transparent 50%),
+                radial-gradient(circle at 80% 70%, rgba(218, 165, 32, 0.05) 0%, transparent 50%);
+        }
+
+        .splash-header {
+            text-align: center;
+            padding: 4rem 2rem 2rem;
+            max-width: 1200px;
+            width: 100%;
+        }
+
+        .splash-header h1 {
+            font-size: 3.5rem;
+            margin: 0 0 0.5rem;
+            color: var(--splash-gold);
+            text-shadow: 0 0 20px var(--splash-gold-glow), 2px 2px 4px rgba(0, 0, 0, 0.8);
+            font-weight: 700;
+            letter-spacing: 2px;
+        }
+
+        .splash-header p {
+            font-size: 1.2rem;
+            color: var(--splash-text-dim);
+            margin: 0;
+            letter-spacing: 1px;
+        }
+
+        .campaigns-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(380px, 1fr));
+            gap: 2rem;
+            padding: 2rem;
+            max-width: 1400px;
+            width: 100%;
+        }
+
+        .campaign-tile {
+            background: var(--tile-bg, var(--splash-card-bg));
+            border: 2px solid var(--tile-border, var(--splash-border));
+            border-radius: 16px;
+            padding: 2rem;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            position: relative;
+            overflow: hidden;
+            backdrop-filter: blur(10px);
+        }
+
+        .campaign-tile::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 4px;
+            background: linear-gradient(90deg, var(--tile-accent, var(--splash-gold)), transparent);
+            opacity: 0;
+            transition: opacity 0.3s ease;
+        }
+
+        .campaign-tile:hover {
+            border-color: var(--tile-accent, var(--splash-gold));
+            background: var(--splash-card-hover);
+            transform: translateY(-6px);
+            box-shadow: 0 12px 24px rgba(0, 0, 0, 0.6), 0 0 40px var(--tile-accent-glow, var(--splash-gold-glow));
+        }
+
+        .campaign-tile:hover::before {
+            opacity: 1;
+        }
+
+        .campaign-tile.inactive {
+            opacity: 0.4;
+            cursor: not-allowed;
+            border-style: dashed;
+        }
+
+        .campaign-tile.inactive:hover {
+            transform: none;
+            border-color: var(--splash-border);
+            box-shadow: none;
+        }
+
+        .campaign-name {
+            font-size: 1.75rem;
+            font-weight: 700;
+            color: var(--tile-accent, var(--splash-gold));
+            margin: 0 0 0.75rem;
+            text-shadow: 0 2px 4px rgba(0, 0, 0, 0.5);
+        }
+
+        .campaign-description {
+            color: var(--splash-text-dim);
+            font-size: 1rem;
+            margin: 0 0 1.5rem;
+            line-height: 1.6;
+        }
+
+        .campaign-meta {
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+            padding-top: 1.5rem;
+            border-top: 1px solid var(--splash-border);
+        }
+
+        .campaign-characters {
+            display: flex;
+            gap: 0.5rem;
+            flex-wrap: wrap;
+        }
+
+        .character-badge {
+            background: var(--tile-accent-glow, rgba(218, 165, 32, 0.15));
+            border: 1px solid var(--tile-accent, rgba(218, 165, 32, 0.4));
+            padding: 0.35rem 0.75rem;
+            border-radius: 6px;
+            font-size: 0.85rem;
+            color: var(--tile-accent, var(--splash-gold));
+            font-weight: 500;
+        }
+
+        .last-played {
+            font-style: italic;
+            font-size: 0.9rem;
+            color: var(--splash-text-dim);
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .last-played::before {
+            content: '🕐';
+            font-size: 1rem;
+        }
+
+        .new-campaign-icon {
+            font-size: 5rem;
+            margin: 2rem 0;
+            opacity: 0.2;
+        }
+
+        /* Password Modal */
+        .password-modal {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.9);
+            backdrop-filter: blur(8px);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+            animation: fadeIn 0.2s ease;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+
+        .password-modal.hidden {
+            display: none;
+        }
+
+        .password-modal-content {
+            background: var(--splash-card-bg);
+            border: 2px solid var(--splash-gold);
+            border-radius: 16px;
+            padding: 2.5rem;
+            max-width: 450px;
+            width: 90%;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.8), 0 0 80px var(--splash-gold-glow);
+            animation: slideUp 0.3s ease;
+        }
+
+        @keyframes slideUp {
+            from { transform: translateY(20px); opacity: 0; }
+            to { transform: translateY(0); opacity: 1; }
+        }
+
+        .password-modal h2 {
+            margin: 0 0 0.5rem;
+            color: var(--splash-gold);
+            font-size: 1.75rem;
+            font-weight: 700;
+        }
+
+        .password-modal p {
+            color: var(--splash-text-dim);
+            margin-bottom: 1.5rem;
+        }
+
+        .password-modal input {
+            width: 100%;
+            padding: 1rem;
+            font-size: 1rem;
+            background: var(--splash-bg);
+            border: 2px solid var(--splash-border);
+            border-radius: 8px;
+            color: var(--splash-text);
+            margin-bottom: 1rem;
+            transition: border-color 0.2s ease;
+            box-sizing: border-box;
+        }
+
+        .password-modal input:focus {
+            outline: none;
+            border-color: var(--splash-gold);
+            box-shadow: 0 0 0 3px var(--splash-gold-glow);
+        }
+
+        .password-modal-buttons {
+            display: flex;
+            gap: 1rem;
+        }
+
+        .password-modal button {
+            flex: 1;
+            padding: 1rem;
+            font-size: 1rem;
+            border-radius: 8px;
+            border: none;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            font-weight: 600;
+        }
+
+        .password-modal button.unlock {
+            background: var(--splash-gold);
+            color: var(--splash-bg);
+        }
+
+        .password-modal button.unlock:hover {
+            background: #e6b800;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px var(--splash-gold-glow);
+        }
+
+        .password-modal button.cancel {
+            background: var(--splash-border);
+            color: var(--splash-text);
+        }
+
+        .password-modal button.cancel:hover {
+            background: #3a3a3a;
+            transform: translateY(-2px);
+        }
+
+        .error-message {
+            color: #ff6b6b;
+            font-size: 0.9rem;
+            margin-top: 0.5rem;
+            font-weight: 500;
+        }
+    </style>
+</head>
+<body>
+    <div class="splash-header">
+        <h1>⚔️ Claude DM</h1>
+        <p>AI-Powered Campaign Manager</p>
+    </div>
+
+    <div class="campaigns-grid" id="campaigns-grid">
+        <!-- Campaign tiles loaded here -->
+    </div>
+
+    <!-- Password Modal -->
+    <div id="password-modal" class="password-modal hidden">
+        <div class="password-modal-content">
+            <h2>🔒 Enter Campaign Password</h2>
+            <p id="modal-campaign-name" style="color: var(--text-secondary); margin-bottom: 1rem;"></p>
+            <input type="password" id="campaign-password" placeholder="Password">
+            <p id="password-error" class="error-message" style="display: none;"></p>
+            <div class="password-modal-buttons">
+                <button class="cancel" onclick="closePasswordModal()">Cancel</button>
+                <button class="unlock" onclick="unlockCampaign()">Unlock</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let campaigns = [];
+        let selectedCampaignId = null;
+
+        // Load campaigns on page load
+        async function loadCampaigns() {
+            try {
+                const response = await fetch('/dnd-api/dnd/campaigns');
+                const data = await response.json();
+                campaigns = data.campaigns || [];
+                renderCampaigns();
+            } catch (error) {
+                console.error('Failed to load campaigns:', error);
+            }
+        }
+
+        function renderCampaigns() {
+            const grid = document.getElementById('campaigns-grid');
+            grid.innerHTML = '';
+
+            // Add Dax tile first (hardcoded - separate server)
+            const daxCampaign = {
+                id: 'default',
+                name: 'Titan Station Adventure',
+                description: 'Investigation on Titan Station - ongoing adventure (Narrative)',
+                characters: ['Dax', 'Chen', 'Dr. Yuen'],
+                lastPlayed: '2025-10-03T10:53:37',
+                requiresPassword: false
+            };
+            const daxTile = createCampaignTile(daxCampaign);
+            grid.appendChild(daxTile);
+
+            // Render active campaigns from API
+            campaigns.forEach(campaign => {
+                const tile = createCampaignTile(campaign);
+                grid.appendChild(tile);
+            });
+
+            // Add "Create New Campaign" tile (inactive for Phase 1)
+            const newTile = createNewCampaignTile();
+            grid.appendChild(newTile);
+        }
+
+        function createCampaignTile(campaign) {
+            const tile = document.createElement('div');
+            tile.className = 'campaign-tile';
+
+            // Apply campaign-specific theme colors
+            const themeColors = getCampaignTheme(campaign.id);
+            tile.style.setProperty('--tile-accent', themeColors.accent);
+            tile.style.setProperty('--tile-accent-glow', themeColors.accentGlow);
+            tile.style.setProperty('--tile-bg', themeColors.bg);
+            tile.style.setProperty('--tile-border', themeColors.border);
+
+            tile.onclick = () => {
+                // Dax is a separate standalone server with direct link
+                if (campaign.id === 'default') {
+                    window.location.href = '/dax/';
+                    return;
+                }
+
+                // Other campaigns check for password
+                if (campaign.requiresPassword) {
+                    openPasswordModal(campaign.id, campaign.name);
+                } else {
+                    // No password required, go directly to campaign
+                    window.location.href = `/dnd/game.html?campaign=${campaign.id}`;
+                }
+            };
+
+            const lastPlayed = new Date(campaign.lastPlayed);
+            const timeAgo = getTimeAgo(lastPlayed);
+
+            tile.innerHTML = `
+                <div class="campaign-name">${campaign.name}</div>
+                <div class="campaign-description">${campaign.description}</div>
+                <div class="campaign-characters">
+                    ${campaign.characters.map(c => `<span class="character-badge">${c}</span>`).join('')}
+                </div>
+                <div class="campaign-meta">
+                    <span class="last-played">Last played ${timeAgo}</span>
+                </div>
+            `;
+
+            return tile;
+        }
+
+        function getCampaignTheme(campaignId) {
+            const themes = {
+                'default': {
+                    // Dax - Sci-fi blue/gold
+                    accent: '#3498db',
+                    accentGlow: 'rgba(52, 152, 219, 0.3)',
+                    bg: '#1a1f2e',
+                    border: '#2c3e50'
+                },
+                'test-silverpeak': {
+                    // Silverpeak - Forest green/silver
+                    accent: '#2ecc71',
+                    accentGlow: 'rgba(46, 204, 113, 0.4)',
+                    bg: '#0f1f18',
+                    border: '#1a4d2e'
+                }
+            };
+
+            return themes[campaignId] || themes['default'];
+        }
+
+        function createNewCampaignTile() {
+            const tile = document.createElement('div');
+            tile.className = 'campaign-tile inactive';
+            tile.innerHTML = `
+                <div class="campaign-name">Create New Campaign</div>
+                <div class="new-campaign-icon">➕</div>
+                <div class="campaign-description">Coming soon in Phase 2</div>
+            `;
+            return tile;
+        }
+
+        function getTimeAgo(date) {
+            const now = new Date();
+            const diff = now - date;
+            const minutes = Math.floor(diff / 60000);
+            const hours = Math.floor(diff / 3600000);
+            const days = Math.floor(diff / 86400000);
+
+            if (minutes < 1) return 'just now';
+            if (minutes < 60) return `${minutes}m ago`;
+            if (hours < 24) return `${hours}h ago`;
+            if (days < 7) return `${days}d ago`;
+            return date.toLocaleDateString();
+        }
+
+        function openPasswordModal(campaignId, campaignName) {
+            selectedCampaignId = campaignId;
+            document.getElementById('modal-campaign-name').textContent = campaignName;
+            document.getElementById('campaign-password').value = '';
+            document.getElementById('password-error').style.display = 'none';
+            document.getElementById('password-modal').classList.remove('hidden');
+            document.getElementById('campaign-password').focus();
+        }
+
+        function closePasswordModal() {
+            selectedCampaignId = null;
+            document.getElementById('password-modal').classList.add('hidden');
+        }
+
+        async function unlockCampaign() {
+            const password = document.getElementById('campaign-password').value;
+            const errorEl = document.getElementById('password-error');
+
+            if (!password) {
+                errorEl.textContent = 'Please enter a password';
+                errorEl.style.display = 'block';
+                return;
+            }
+
+            try {
+                const response = await fetch(`/dnd-api/dnd/campaigns/${selectedCampaignId}/auth`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ password })
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    // Store auth token in cookie
+                    document.cookie = `dnd_campaign_${selectedCampaignId}_auth=${data.token}; path=/; max-age=2592000`; // 30 days
+
+                    // Redirect to game
+                    window.location.href = `/dnd/game.html?campaign=${selectedCampaignId}`;
+                } else {
+                    errorEl.textContent = data.error || 'Invalid password';
+                    errorEl.style.display = 'block';
+                }
+            } catch (error) {
+                console.error('Auth error:', error);
+                errorEl.textContent = 'Connection error. Please try again.';
+                errorEl.style.display = 'block';
+            }
+        }
+
+        // Allow Enter key to submit password
+        document.addEventListener('DOMContentLoaded', () => {
+            loadCampaigns();
+
+            document.getElementById('campaign-password').addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') {
+                    unlockCampaign();
+                }
+            });
+        });
+    </script>
+</body>
+</html>

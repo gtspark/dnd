@@ -1,0 +1,388 @@
+{
+  "campaign_title": "Dax Stargazer: The Wanderer Crisis",
+  "character": {
+    "name": "Dax Stargazer",
+    "species": "Vexian",
+    "class": "Tech-Scout",
+    "background": "Technical Specialist aboard U.E.S. Wanderer",
+    "stats": {
+      "hp": "9/9",
+      "strength": "-1",
+      "dexterity": "+4",
+      "constitution": "+0",
+      "intelligence": "+3",
+      "wisdom": "+1",
+      "charisma": "+0"
+    },
+    "abilities": "Four arms, compound eyes, natural technical aptitude, cave-dwelling evolution"
+  },
+  "world_context": {
+    "year": "2387",
+    "setting": "Milky Way galaxy, human space expansion era",
+    "first_contact": "87 years ago with Vexians",
+    "ftl_travel": "Exists but expensive, takes days/weeks between systems",
+    "government": "United Earth controls inner planets, corporations dominate outer systems",
+    "alien_species": "About a dozen known sapient species, peaceful trade relations"
+  },
+  "chronological_events": [
+    {
+      "phase": "Pre-Campaign Background",
+      "events": [
+        {
+          "timeframe": "3 weeks before main events",
+          "description": "Dax discovers cargo manifest discrepancies",
+          "details": "Scanned U.E.S. Wanderer's cargo containers, found Weyland Biosystems manufacturing tags embedded in shipping codes for supposed 'archaeological specimens' from LV-426",
+          "key_npcs": "Captain Morrison (shocked by revelation), Dr. Yuen (assists with investigation)",
+          "outcome": "Dax and Dr. Yuen create memory lock (code 5-5-3-7) to hide knowledge from potential interrogation"
+        }
+      ]
+    },
+    {
+      "phase": "Chapter 1: The Wanderer Crisis",
+      "events": [
+        {
+          "timeframe": "Day 1 - Awakening",
+          "location": "Medical Bay, U.E.S. Wanderer",
+          "description": "Dax awakens from damaged cryo-pod",
+          "details": "Ship's klaxon blaring, emergency power only, memory gaps present",
+          "items_found": ["Sidearm (holstered)", "Damaged datapad", "Medical scanner"],
+          "rolls": {
+            "intelligence_technology": "20 (success) - Bypassed damaged terminal, accessed ship schematics"
+          },
+          "key_discoveries": [
+            "Ship identified as U.E.S. Wanderer - Long-Range Exploration Vessel",
+            "Dax listed as Technical Specialist",
+            "Cargo bay showing BIOHAZARD warning",
+            "Security cam feed shows Corridor Gamma-7 covered in dark, web-like substance"
+          ]
+        },
+        {
+          "timeframe": "Day 1 - First Encounter",
+          "location": "Corridor Gamma-7",
+          "description": "First contact with Gloom Skitterer",
+          "creature_details": {
+            "name": "Gloom Skitterer",
+            "description": "Dog-sized, four serrated insectoid legs, two scythe-like front limbs, eyeless head with twitching antennae, glistening black carapace",
+            "abilities": "Hunts by sound, vulnerable to heat and light, can project web substance",
+            "weaknesses": "Thermal vulnerability, sound-based distraction"
+          },
+          "combat_tactics": [
+            "Dax uses medical scanner as improvised laser pointer to lure creature",
+            "Successfully leads Skitterer into Med Bay using blue light distraction",
+            "Stealth roll: 22 (critical success) - perfect silent movement past creature"
+          ],
+          "weapons_used": ["Medical scanner (modified for focused laser)", "Improvised datapad thermal bomb"],
+          "improvised_weapons": {
+            "datapad_bomb": {
+              "materials": "Dead datapad + jagged metal shard",
+              "method": "Puncture battery at precise angle for thermal discharge",
+              "effectiveness": "Successful against Skitterer thermal vulnerability",
+              "intelligence_roll": "18 (success)"
+            }
+          }
+        },
+        {
+          "timeframe": "Day 1 - Escape and Engineering",
+          "location": "Engineering Bay via maintenance conduit",
+          "description": "Repairs ship's reactor using Plasma Injector",
+          "key_discoveries": [
+            "Plasma Injector shattered, caused power surge and fire in Gamma-7",
+            "Ship salvageable with spare injector from storage bay",
+            "6 of 8 escape pods fully charged and ready (launch controls on Bridge only)",
+            "Cryo-purge option available (would destroy reactor but neutralize biological threats)"
+          ],
+          "npcs_encountered": {
+            "chen": {
+              "full_name": "Chen, M.",
+              "species": "Human",
+              "role": "Engineer",
+              "background": "3 years on Wanderer, worked up from junior engineer, Mars colony origin",
+              "status": "Injured (dislocated shoulder), survived in storage bay",
+              "key_quote": "Martinez was military, and even he..."
+            }
+          },
+          "medical_treatment": {
+            "patient": "Chen",
+            "injury": "Dislocated shoulder, mild concussion, dehydration",
+            "treatment": "Shoulder reset, Synth-Flesh applicators applied",
+            "medicine_roll": "12 (partial success) - functional but not pretty"
+          }
+        },
+        {
+          "timeframe": "Day 1 - The Amalgamation",
+          "location": "Officer Quarters Section",
+          "description": "Encounter with massive infected creature",
+          "creature_details": {
+            "name": "The Amalgamation",
+            "description": "3 meters tall, writhing mass of absorbed human flesh and materials, dozens of randomly blinking eyes, mouths where none should be",
+            "abilities": "Growing/spreading, absorbing materials and organic matter, acidic touch (melts metal doors)",
+            "origin": "Fusion of infected crew members and ship materials"
+          },
+          "weapons_used": [
+            "Flare gun (6 magnesium flares at 2000°C)",
+            "Flashbang grenades",
+            "Riot shotgun"
+          ],
+          "tactical_outcome": "Successful spacing of creature through hull breach, emergency bulkheads contained damage"
+        },
+        {
+          "timeframe": "Day 1 - Bridge and Escape",
+          "location": "Bridge, then escape pods",
+          "npcs_encountered": {
+            "captain_morrison": {
+              "full_name": "Captain Morrison",
+              "species": "Human",
+              "status": "Dying from internal bleeding, maintained quarantine until end",
+              "key_actions": "Kept quarantine protocols active, prepped escape pods, refused medical aid",
+              "final_words": "Tell them what happened here"
+            },
+            "dr_yuen": {
+              "full_name": "Dr. Yuen (later revealed as Dr. Sarah Yuen)",
+              "species": "Human",
+              "role": "Ship's Doctor/Cargo Specialist",
+              "status": "Rescued from Medical Bay, injured but stable",
+              "key_revelation": "Had placed memory lock on Dax 3 weeks prior"
+            }
+          },
+          "escape_method": "Improvised ammunition detonation as distraction, escape pods launched to Titan Station",
+          "final_weapon": "8-round ammunition clip + multi-tool jury-rigged as delayed explosive"
+        }
+      ]
+    },
+    {
+      "phase": "Chapter 2: Titan Station",
+      "events": [
+        {
+          "timeframe": "Day 1 - Arrival and Quarantine",
+          "location": "Titan Station - Quarantine Bay 7",
+          "description": "Survivors processed and placed in protective custody",
+          "key_npcs": {
+            "director_holbrook": {
+              "full_name": "Director Sarah Holbrook",
+              "role": "Titan Station Administrator",
+              "background": "12 years running station, dislikes Weyland influence",
+              "authority": "Independent station control, not corporate puppet"
+            },
+            "kellerman": {
+              "full_name": "James Kellerman",
+              "role": "Senior Liaison, Weyland Biosystems",
+              "description": "Mid-40s, sharp features, predator's smile, expensive suit",
+              "tactics": "Bribery, intimidation, divide-and-conquer"
+            }
+          },
+          "station_politics": {
+            "weyland_presence": "300 employees, mid-ring offices, significant but not dominant influence",
+            "corporate_structure": "Multiple companies (Sakura Industries largest, Kepler Mining, Weyland Biosystems)",
+            "station_independence": "Director maintains control, corporations are tenants not rulers"
+          }
+        },
+        {
+          "timeframe": "Day 2 - The Conspiracy Revealed",
+          "location": "Section A Diplomatic Quarters",
+          "description": "Memory lock broken, full truth revealed to Director Holbrook",
+          "memory_restoration": {
+            "trigger_code": "5-5-3-7 (Dax's employee ID reversed)",
+            "revealed_memories": "Cargo containers were Weyland bioweapons with manufacturer tags, Captain Morrison was deceived, memory lock was insurance policy"
+          },
+          "evidence_presented": [
+            "Martinez's data log (hidden by Chen)",
+            "Medical scanner biological data (engineered organisms)",
+            "Dax's recovered memories of pre-incident investigation"
+          ],
+          "kellerman_tactics": {
+            "bribery_offer": "250,000 Universal Credits each + passage anywhere + medical coverage",
+            "threats": "Paint survivors as unreliable due to trauma, pursue criminal negligence against Dr. Yuen",
+            "leverage_attempts": "Memory anomaly makes Dax unreliable witness, Chen easily replaceable, Yuen has medical license vulnerability"
+          },
+          "director_response": "Protocol Seven activated - all Weyland assets frozen, survivors under station protection"
+        },
+        {
+          "timeframe": "Day 2 Night - Osprey Surveillance",
+          "location": "Section A Secure Wing",
+          "description": "Discovery of corporate espionage and escalation",
+          "threat_escalation": {
+            "surveillance_device": "Military-grade drone (Osprey Security Solutions)",
+            "cost": "More than survivors' combined savings",
+            "capabilities": "Stealth recording, real-time transmission",
+            "discovery_method": "Dax's Vexian sensitivity to structural vibrations (Perception 18)"
+          },
+          "osprey_security": {
+            "background": "Ex-military contractors, 12 missing witness cases",
+            "founder": "Marcus 'Talon' Reeves, dishonorably discharged",
+            "methods": "48-hour resolution window, escalate from pressure to direct action",
+            "current_threat": "Two-person cell, one visible (Kellerman contact), one hidden extraction specialist"
+          }
+        }
+      ]
+    }
+  ],
+  "weapons_and_tactics": [
+    {
+      "weapon": "Improvised Datapad Bomb",
+      "materials": "Dead datapad + metal shard",
+      "effectiveness": "Thermal discharge against heat-sensitive creatures",
+      "usage_count": 2,
+      "success_rate": "100% when properly constructed"
+    },
+    {
+      "weapon": "Medical Scanner Laser",
+      "modification": "Focused beam for distraction",
+      "usage": "Creature luring and distraction",
+      "intelligence_required": "19+ for modification"
+    },
+    {
+      "weapon": "Sidearm",
+      "ammunition": "Started with unknown rounds, acquired 8-round spare magazine",
+      "usage": "Limited effectiveness against creatures, primarily for sound/distraction"
+    },
+    {
+      "weapon": "Cryo-Foam Canister",
+      "effect": "Flash-freezing, effective against biological threats",
+      "tactical_use": "Area denial, creature vulnerability exploitation"
+    }
+  ],
+  "creatures_encountered": [
+    {
+      "name": "Gloom Skitterer",
+      "size": "Large dog",
+      "appearance": "Black chitinous carapace, four serrated legs, two scythe limbs, eyeless with antennae",
+      "abilities": ["Sound-based hunting", "Web projection", "Wall climbing"],
+      "vulnerabilities": ["Heat/fire", "Loud noises (stunning)", "Cold (brittleness)"],
+      "scan_results": "Medical scanner confirmed engineered bioweapon markers"
+    },
+    {
+      "name": "Infected Crew",
+      "appearance": "Human crew with fungal growths on neck/arms, milky eyes",
+      "abilities": ["Immunity to conventional weapons", "Fungal spread", "Coordinated movement"],
+      "vulnerabilities": ["Cold (kills infection)", "Fire"],
+      "scan_results": "Fungal patterns match known weapon strains"
+    },
+    {
+      "name": "The Amalgamation",
+      "size": "3 meters tall",
+      "appearance": "Fused human/material mass, multiple eyes and mouths",
+      "abilities": ["Continuous growth", "Material absorption", "Acidic secretions"],
+      "vulnerabilities": ["Cold slows but doesn't stop", "Explosive force"],
+      "origin": "Infected crew members fused with ship materials"
+    }
+  ],
+  "key_locations": [
+    {
+      "name": "U.E.S. Wanderer",
+      "type": "Long-Range Exploration Vessel",
+      "status": "Destroyed/spaced",
+      "key_areas": ["Medical Bay (Dax's starting point)", "Corridor Gamma-7 (web infestation)", "Engineering Bay", "Cargo Bay (contamination source)", "Bridge"]
+    },
+    {
+      "name": "Titan Station",
+      "type": "Neutral trading station in Saturn orbit",
+      "population": "20,000 souls",
+      "governance": "Independent under Director Holbrook",
+      "corporate_presence": "Multiple companies, Weyland not dominant",
+      "security_features": "Section A diplomatic quarters, Protocol Seven lockdown capability"
+    }
+  ],
+  "major_discoveries": [
+    {
+      "discovery": "Weyland bioweapon conspiracy",
+      "evidence": ["Manufacturing tags in shipping codes", "Martinez's documentation", "Medical scanner bioweapon signatures"],
+      "implications": "Deliberate biological warfare disguised as archaeological transport"
+    },
+    {
+      "discovery": "Memory lock technology",
+      "purpose": "Protect knowledge from corporate interrogation",
+      "method": "Neurological trigger placed by Dr. Yuen",
+      "restoration": "Employee ID code reversed (5-5-3-7)"
+    },
+    {
+      "discovery": "Dr. Yuen's dual role",
+      "revelation": "Listed as Cargo Specialist, not just ship's doctor",
+      "responsibility": "Signed off on containers, was deceived by false manifests"
+    }
+  ],
+  "dice_rolls_record": [
+    {
+      "type": "Intelligence (Technology)",
+      "result": "20 (Critical Success)",
+      "context": "Bypassing damaged med bay terminal"
+    },
+    {
+      "type": "Dexterity (Stealth)",
+      "result": "22 (Critical Success)",
+      "context": "Silent movement past maintenance tunnel drip"
+    },
+    {
+      "type": "Intelligence (Technology)",
+      "result": "18 (Success)",
+      "context": "Creating improvised datapad bomb"
+    },
+    {
+      "type": "Persuasion",
+      "result": "20 (Natural 20 Critical Success)",
+      "context": "Convincing Director Holbrook to act against Weyland"
+    },
+    {
+      "type": "Wisdom (Insight)",
+      "result": "18 (Success)",
+      "context": "Reading Dr. Yuen's desperate message for authenticity"
+    },
+    {
+      "type": "Perception",
+      "result": "18 (Success)",
+      "context": "Detecting Osprey surveillance drone in ventilation"
+    },
+    {
+      "type": "Intelligence",
+      "result": "22 (Critical Success)",
+      "context": "Recalling Osprey Security Solutions background and methods"
+    }
+  ],
+  "character_relationships": [
+    {
+      "name": "Chen",
+      "relationship": "Crewmate/Partner",
+      "background": "Mars colony engineer, sends money to brother in technical school",
+      "skills": "Engineering, combat capable, quick decision-maker",
+      "personality": "Impulsive, loyal, good under pressure",
+      "status": "Committed to team, shared resources agreement"
+    },
+    {
+      "name": "Dr. Yuen",
+      "relationship": "Crewmate/Partner",
+      "background": "Earth-born, Luna medical school, supports Europa clinic",
+      "skills": "Medicine, biochemistry, xenobiology, cargo certification",
+      "personality": "Methodical, guilt-ridden about cargo approval, intelligent",
+      "status": "Revealed dual role, committed to justice for Morrison"
+    },
+    {
+      "name": "Director Holbrook",
+      "relationship": "Ally/Protector",
+      "motivation": "Station independence, dislikes corporate overreach",
+      "capabilities": "Station-wide authority, legal protection, investigation resources"
+    },
+    {
+      "name": "Captain Morrison",
+      "relationship": "Former Captain (deceased)",
+      "status": "Hero - maintained quarantine until death",
+      "legacy": "Inspiration for survivors to seek justice"
+    }
+  ],
+  "current_status": {
+    "location": "Titan Station, Section A Secure Wing",
+    "protection_level": "Station diplomatic protection under Protocol Seven",
+    "immediate_threats": ["Osprey Security two-person cell", "Kellerman's deadline pressure", "Potential extraction/kidnapping"],
+    "next_objectives": ["0600 legal team meeting", "Testify against Weyland", "Survive Osprey threat"],
+    "resources": "15,000 Universal Credits combined, survivor benefits pending, station protection",
+    "evidence_status": "Martinez data log secured, medical scans preserved, memory lock testimony documented"
+  },
+  "investigation_timeline": {
+    "legal_case_elements": [
+      "Corporate fraud (false manifests)",
+      "Biological warfare",
+      "Mass casualties (23 crew deaths)",
+      "Corporate espionage (Osprey surveillance)",
+      "Witness intimidation"
+    ],
+    "timeline_pressure": "48-hour Osprey resolution window, Kellerman's deadline, sector authority escalation"
+  }
+}

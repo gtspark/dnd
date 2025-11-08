@@ -1,0 +1,372 @@
+/* Silverpeak Chronicles - High Fantasy Theme */
+/* Deep forest green + silver aesthetic - enchanted woods */
+
+:root {
+    /* Primary Colors - Deep Forest */
+    --primary-bg: #0a1612;           /* Very dark forest green */
+    --card-bg: #10201a;              /* Dark moss green */
+    --text-primary: #e8f4f0;         /* Pale silver-green */
+    --text-secondary: #a8c4bc;       /* Muted silver */
+
+    /* Accent Colors - Emerald & Silver */
+    --accent-primary: #2ecc71;       /* Vibrant emerald */
+    --accent-gold: #c0d6df;          /* Cool silver */
+    --accent-purple-glow: rgba(46, 204, 113, 0.4);
+    --accent-gold-glow: rgba(192, 214, 223, 0.3);
+
+    /* UI Elements */
+    --border-color: #1a4d2e;         /* Deep forest border */
+    --hover-bg: #1a3a2e;             /* Hover state */
+    --input-bg: #0d1a14;             /* Input backgrounds */
+
+    /* Status Colors */
+    --accent-green: #27ae60;
+    --accent-red: #e74c3c;
+    --accent-blue: #3498db;
+
+    /* Shadows & Effects */
+    --shadow-sm: 0 2px 4px rgba(0, 0, 0, 0.6);
+    --shadow-md: 0 4px 8px rgba(0, 0, 0, 0.7);
+    --shadow-lg: 0 8px 16px rgba(0, 0, 0, 0.8);
+    --shadow-xl: 0 12px 24px rgba(0, 0, 0, 0.9);
+
+    /* Typography */
+    --font-display: 'Crimson Text', serif;
+    --font-body: 'Crimson Text', serif;
+}
+
+/* Override header styling for enchanted forest feel */
+.app-header {
+    background: linear-gradient(135deg, #0f1f18 0%, #0a1612 100%);
+    border-bottom: 2px solid var(--accent-primary);
+    padding-right: 0 !important; /* Kill right padding to let buttons reach edge */
+    position: sticky;
+    top: 0;
+    z-index: 1000;
+}
+
+/* Logo styling - mystical green gradient */
+.logo-text {
+    background: linear-gradient(135deg, var(--accent-primary) 0%, var(--accent-gold) 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+}
+
+/* Campaign title - bright emerald */
+#campaign-title {
+    color: var(--accent-primary);
+    text-shadow: 0 0 10px rgba(46, 204, 113, 0.6);
+}
+
+/* Character panel - deep forest */
+.character-panel {
+    background: linear-gradient(180deg, var(--card-bg) 0%, var(--primary-bg) 100%);
+    border-right: 2px solid var(--border-color);
+}
+
+/* Party tabs - emerald when active */
+.party-tab.active {
+    background: var(--accent-primary);
+    color: white;
+    box-shadow: 0 0 10px rgba(46, 204, 113, 0.5);
+}
+
+/* Buttons - emerald primary */
+.btn-primary {
+    background: linear-gradient(135deg, var(--accent-primary) 0%, #27ae60 100%);
+    color: white;
+    font-weight: 600;
+}
+
+.btn-primary:hover {
+    background: linear-gradient(135deg, #52d988 0%, var(--accent-primary) 100%);
+    box-shadow: 0 0 15px rgba(46, 204, 113, 0.6);
+}
+
+/* Stats and vitals - silver accents */
+.stat-modifier {
+    color: var(--accent-gold);
+}
+
+.hp-bar {
+    background: linear-gradient(90deg, var(--accent-primary) 0%, #27ae60 100%);
+}
+
+/* Game log - deep forest aesthetic */
+.game-log {
+    background: var(--primary-bg);
+    background-image:
+        repeating-linear-gradient(
+            0deg,
+            transparent,
+            transparent 35px,
+            rgba(26, 77, 46, 0.15) 35px,
+            rgba(26, 77, 46, 0.15) 36px
+        );
+}
+
+/* DM entries - mystical emerald */
+.dm-author {
+    color: var(--accent-primary);
+    font-weight: 700;
+}
+
+/* Message mode styling - distinct colors for IC/DM-Question/OOC */
+/* In-Character mode - bright emerald (canon story actions) */
+.log-entry[data-mode="ic"] {
+    border-left: 3px solid var(--accent-primary);
+    background: linear-gradient(90deg, rgba(46, 204, 113, 0.08) 0%, transparent 100%);
+}
+
+.log-entry[data-mode="ic"] .entry-author {
+    color: var(--accent-primary);
+}
+
+/* DM-Question mode - cool blue (meta clarification) */
+.log-entry[data-mode="dm-question"] {
+    border-left: 3px solid var(--accent-blue);
+    background: linear-gradient(90deg, rgba(52, 152, 219, 0.08) 0%, transparent 100%);
+}
+
+.log-entry[data-mode="dm-question"] .entry-author {
+    color: var(--accent-blue);
+}
+
+/* OOC mode - muted silver-gray (non-canon testing) */
+.log-entry[data-mode="ooc"] {
+    border-left: 3px solid #7a8a8f;
+    background: linear-gradient(90deg, rgba(122, 138, 143, 0.08) 0%, transparent 100%);
+    opacity: 0.85;
+}
+
+.log-entry[data-mode="ooc"] .entry-author {
+    color: #a8b8bd;
+}
+
+/* Tools panel - forest styling */
+.tools-panel {
+    background: linear-gradient(180deg, var(--card-bg) 0%, var(--primary-bg) 100%);
+    border-left: 2px solid var(--border-color);
+}
+
+/* Adventure Tools header */
+.tools-header h3 {
+    color: var(--accent-primary);
+    border-bottom-color: var(--accent-gold);
+}
+
+/* Modals - forest theme */
+.modal {
+    background: rgba(10, 22, 18, 0.95);
+}
+
+.modal-header {
+    background: linear-gradient(135deg, #1a4d2e 0%, #134d2e 100%);
+    border-bottom-color: var(--accent-primary);
+}
+
+.modal-header h3,
+.modal-header h4 {
+    color: var(--accent-gold);
+}
+
+/* Credits display - silver */
+.credits-amount {
+    color: var(--accent-gold);
+}
+
+/* Scene generator - mystical green glow */
+.scene-display {
+    border-color: var(--accent-primary);
+    box-shadow: inset 0 0 20px rgba(46, 204, 113, 0.3);
+}
+
+/* Input areas - deep forest */
+textarea,
+input[type="text"],
+input[type="number"],
+input[type="password"] {
+    background: var(--input-bg);
+    border-color: var(--border-color);
+    color: var(--text-primary);
+}
+
+textarea:focus,
+input:focus {
+    border-color: var(--accent-primary);
+    box-shadow: 0 0 0 3px rgba(46, 204, 113, 0.3);
+}
+
+/* Scrollbars - enchanted style */
+::-webkit-scrollbar {
+    width: 10px;
+}
+
+::-webkit-scrollbar-track {
+    background: var(--primary-bg);
+    border-left: 1px solid var(--border-color);
+}
+
+::-webkit-scrollbar-thumb {
+    background: linear-gradient(180deg, var(--accent-primary) 0%, #27ae60 100%);
+    border-radius: 5px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: linear-gradient(180deg, #52d988 0%, var(--accent-primary) 100%);
+}
+
+/* Side-by-side layout for Recent Rolls and Campaign Notes - Grid row 4 */
+.tools-row {
+    grid-column: 1 / -1;
+    grid-row: 4;
+    padding: 0 1.5rem 0 1.5rem;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.75rem;
+    height: 300px;
+}
+
+.tools-half {
+    min-width: 0;
+    height: 300px;
+}
+
+.tools-half > div,
+#recent-rolls-app,
+#campaign-notes-app {
+    height: 300px;
+}
+
+#recent-rolls-app > *,
+#campaign-notes-app > * {
+    height: 100%;
+}
+
+/* Override notes section to not interfere */
+.tools-full-width.notes-section {
+    display: none;
+}
+
+/* Header layout fixes */
+.header-content {
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    align-items: center;
+    width: 100%;
+    gap: 1rem;
+    padding-right: 0.5rem; /* Minimal right padding */
+}
+
+.logo {
+    grid-column: 1;
+    justify-self: start;
+}
+
+.campaign-info {
+    grid-column: 2;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+}
+
+/* Right-align header controls - far right edge */
+#header-controls-app {
+    grid-column: 3;
+    justify-self: end;
+    margin-right: -8rem !important; /* Pull to absolute edge - compensate for all padding */
+}
+
+/* Hide sandbox toggle button */
+#sandbox-toggle {
+    display: none !important;
+}
+
+/* Hide legacy modals - replaced by Svelte components */
+#ai-provider-modal,
+#about-modal {
+    display: none !important;
+}
+
+/* ==================== COMBAT MODE ====================  */
+
+/* Combat Panel Styling */
+.combat-panel {
+    grid-column: 3;
+    background: var(--primary-bg);
+    border-left: 2px solid var(--border-color);
+    overflow: hidden;
+    display: none; /* Hidden by default */
+}
+
+/* Combat Mode Active - Emerald Glow */
+body.combat-mode {
+    /* Subtle emerald overlay on entire page */
+    background: linear-gradient(rgba(46, 204, 113, 0.05), rgba(46, 204, 113, 0.05)), var(--primary-bg);
+}
+
+body.combat-mode .main-content {
+    /* Emerald border pulse animation */
+    animation: emeraldPulse 2s ease-in-out infinite;
+}
+
+body.combat-mode .character-panel,
+body.combat-mode .game-area,
+body.combat-mode .combat-panel {
+    border-color: var(--accent-primary);
+    box-shadow: 0 0 20px rgba(46, 204, 113, 0.4);
+}
+
+/* Emerald pulse animation */
+@keyframes emeraldPulse {
+    0%, 100% {
+        box-shadow: 0 0 20px rgba(46, 204, 113, 0.3);
+    }
+    50% {
+        box-shadow: 0 0 30px rgba(46, 204, 113, 0.6);
+    }
+}
+
+/* Combat Mode Badge - Fixed in header area */
+body.combat-mode::before {
+    content: '⚔️ COMBAT MODE';
+    position: fixed;
+    top: 1.25rem;
+    right: 14rem;
+    background: rgba(46, 204, 113, 0.2);
+    border: 2px solid var(--accent-primary);
+    padding: 0.5rem 1rem;
+    border-radius: 20px;
+    color: var(--accent-primary);
+    font-weight: 700;
+    font-size: 0.9rem;
+    text-shadow: 0 0 10px rgba(46, 204, 113, 0.8);
+    animation: combatBadgePulse 1.5s ease-in-out infinite;
+    z-index: 9999;
+    pointer-events: none;
+}
+
+@keyframes combatBadgePulse {
+    0%, 100% {
+        box-shadow: 0 0 15px rgba(46, 204, 113, 0.5);
+    }
+    50% {
+        box-shadow: 0 0 25px rgba(46, 204, 113, 0.8);
+    }
+}
+
+/* Panel Transitions */
+.tools-panel, .combat-panel {
+    transition: opacity 0.4s ease, transform 0.4s ease;
+}
+
+/* Hide tools panel in combat mode, show combat panel */
+body.combat-mode #tools-panel {
+    display: none;
+}
+
+body.combat-mode #combat-panel {
+    display: block !important;
+}

@@ -1,0 +1,102 @@
+{
+  "active": false,
+  "round": 0,
+  "currentTurn": 0,
+  "initiativeOrder": [],
+  "participants": {
+    "players": [],
+    "enemies": []
+  },
+  "context": {},
+  "actionEconomy": {},
+  "conditions": {},
+  "conversationHistory": [],
+  "rollQueue": [
+    {
+      "queueId": "rq-mh26ng5k-akhj1",
+      "campaignId": "test-silverpeak",
+      "reason": "Roll Initiative for Kira, Thorne, Riven, the Cult Fanatic, and the two Cultists *",
+      "type": "generic",
+      "requestedBy": "dm",
+      "source": "narrative",
+      "requestedAt": "2025-10-22T16:03:33.896Z",
+      "createdAt": "2025-10-22T16:03:33.896Z",
+      "lastUpdatedAt": "2025-10-22T16:03:33.896Z",
+      "expiresAt": null,
+      "status": "pending",
+      "ability": null,
+      "dc": null,
+      "advantage": "normal",
+      "metadata": {
+        "rawRequest": "Roll Initiative for Kira, Thorne, Riven, the Cult Fanatic, and the two Cultists *",
+        "ability": null,
+        "abilityKey": null,
+        "checkType": "generic",
+        "autoCreated": true,
+        "combatAction": null
+      },
+      "participants": [
+        {
+          "participantId": "kira",
+          "id": "kira",
+          "name": "Kira Moonwhisper",
+          "entityType": "player",
+          "ability": null,
+          "dc": null,
+          "advantage": "normal",
+          "status": "pending",
+          "result": null,
+          "notes": null,
+          "submittedBy": null,
+          "submittedAt": null,
+          "lastUpdatedAt": "2025-10-22T16:03:33.896Z",
+          "aliases": [
+            "kira moonwhisper",
+            "kira",
+            "moonwhisper"
+          ]
+        },
+        {
+          "participantId": "thorne",
+          "id": "thorne",
+          "name": "Thorne Ironheart",
+          "entityType": "player",
+          "ability": null,
+          "dc": null,
+          "advantage": "normal",
+          "status": "pending",
+          "result": null,
+          "notes": null,
+          "submittedBy": null,
+          "submittedAt": null,
+          "lastUpdatedAt": "2025-10-22T16:03:33.896Z",
+          "aliases": [
+            "thorne ironheart",
+            "thorne",
+            "ironheart"
+          ]
+        },
+        {
+          "participantId": "riven",
+          "id": "riven",
+          "name": "Riven Shadowstep",
+          "entityType": "player",
+          "ability": null,
+          "dc": null,
+          "advantage": "normal",
+          "status": "pending",
+          "result": null,
+          "notes": null,
+          "submittedBy": null,
+          "submittedAt": null,
+          "lastUpdatedAt": "2025-10-22T16:03:33.896Z",
+          "aliases": [
+            "riven shadowstep",
+            "riven",
+            "shadowstep"
+          ]
+        }
+      ]
+    }
+  ]
+}

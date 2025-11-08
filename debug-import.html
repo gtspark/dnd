@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Debug Campaign Import</title>
+    <style>
+        body { font-family: monospace; padding: 20px; background: #1a1a1a; color: #00ff00; }
+        .container { max-width: 1000px; margin: 0 auto; }
+        textarea { width: 100%; height: 200px; background: #000; color: #00ff00; border: 1px solid #333; }
+        pre { background: #000; color: #00ff00; padding: 10px; overflow: auto; max-height: 400px; }
+        button { background: #333; color: #00ff00; border: 1px solid #555; padding: 10px 20px; margin: 5px; cursor: pointer; }
+        button:hover { background: #555; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔍 Debug Campaign Import</h1>
+
+        <button onclick="loadAndAnalyze()">Load & Analyze Campaign File</button>
+        <button onclick="searchForChenPronouns()">Search for Chen Female Pronouns</button>
+
+        <h2>Analysis Results</h2>
+        <pre id="analysis"></pre>
+
+        <h2>Chen Pronoun Examples</h2>
+        <pre id="chen-examples"></pre>
+    </div>
+
+    <script>
+        let campaignText = '';
+
+        async function loadAndAnalyze() {
+            try {
+                const response = await fetch('./dax%20campaign%20full%20log.txt');
+                campaignText = await response.text();
+
+                const lines = campaignText.split('\n');
+                let analysis = `Total file size: ${campaignText.length} characters\n`;
+                analysis += `Total lines: ${lines.length}\n\n`;
+
+                // Count different patterns
+                const playerLines = lines.filter(line => line.toLowerCase().startsWith('player:'));
+                const daxLines = lines.filter(line => line.toLowerCase().includes('dax '));
+                const chenLines = lines.filter(line => line.toLowerCase().includes('chen'));
+                const sheLines = lines.filter(line => line.toLowerCase().includes('she'));
+                const herLines = lines.filter(line => line.toLowerCase().includes('her'));
+
+                analysis += `Lines starting with "player:": ${playerLines.length}\n`;
+                analysis += `Lines mentioning "dax": ${daxLines.length}\n`;
+                analysis += `Lines mentioning "chen": ${chenLines.length}\n`;
+                analysis += `Lines with "she": ${sheLines.length}\n`;
+                analysis += `Lines with "her": ${herLines.length}\n\n`;
+
+                // Show sample player lines
+                analysis += `Sample player lines:\n`;
+                playerLines.slice(0, 5).forEach((line, i) => {
+                    analysis += `${i+1}: ${line.substring(0, 100)}...\n`;
+                });
+
+                document.getElementById('analysis').textContent = analysis;
+
+            } catch (error) {
+                document.getElementById('analysis').textContent = 'Error: ' + error.message;
+            }
+        }
+
+        function searchForChenPronouns() {
+            if (!campaignText) {
+                document.getElementById('chen-examples').textContent = 'Load campaign file first';
+                return;
+            }
+
+            const lines = campaignText.split('\n');
+            const chenFemaleLines = [];
+
+            // Search for lines with Chen and female pronouns
+            lines.forEach((line, index) => {
+                const lower = line.toLowerCase();
+                if (lower.includes('chen') && (lower.includes('she') || lower.includes('her'))) {
+                    chenFemaleLines.push(`Line ${index}: ${line}`);
+                }
+            });
+
+            let result = `Found ${chenFemaleLines.length} lines with Chen + female pronouns:\n\n`;
+            chenFemaleLines.slice(0, 20).forEach(line => {
+                result += line + '\n';
+            });
+
+            if (chenFemaleLines.length > 20) {
+                result += `\n... and ${chenFemaleLines.length - 20} more`;
+            }
+
+            document.getElementById('chen-examples').textContent = result;
+        }
+    </script>
+</body>
+</html>

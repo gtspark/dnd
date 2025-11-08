@@ -1,0 +1,90 @@
+{
+  "characters": {
+    "kira": {
+      "name": "Kira Moonwhisper",
+      "race": "Moon Elf",
+      "class": "Arcane Scholar",
+      "level": 3,
+      "abilities": {
+        "str": 10,
+        "dex": 14,
+        "con": 12,
+        "int": 18,
+        "wis": 13,
+        "cha": 15
+      },
+      "hp": {
+        "current": 18,
+        "max": 18
+      },
+      "ac": 13,
+      "credits": 500,
+      "inventory": [],
+      "equipment": [],
+      "spells": [],
+      "conditions": []
+    },
+    "thorne": {
+      "name": "Thorne Ironheart",
+      "race": "Mountain Dwarf",
+      "class": "Battle Cleric",
+      "level": 3,
+      "abilities": {
+        "str": 16,
+        "dex": 10,
+        "con": 16,
+        "int": 10,
+        "wis": 17,
+        "cha": 12
+      },
+      "hp": {
+        "current": 24,
+        "max": 24
+      },
+      "ac": 16,
+      "credits": 500,
+      "inventory": [],
+      "equipment": [],
+      "spells": [],
+      "conditions": []
+    },
+    "riven": {
+      "name": "Riven Shadowstep",
+      "race": "Half-Elf",
+      "class": "Shadow Rogue",
+      "level": 3,
+      "abilities": {
+        "str": 12,
+        "dex": 18,
+        "con": 13,
+        "int": 14,
+        "wis": 12,
+        "cha": 14
+      },
+      "hp": {
+        "current": 20,
+        "max": 20
+      },
+      "ac": 15,
+      "credits": 500,
+      "inventory": [],
+      "equipment": [],
+      "spells": [],
+      "conditions": []
+    }
+  },
+  "party": {
+    "credits": 1500,
+    "inventory": [],
+    "reputation": {}
+  },
+  "quests": {
+    "active": [],
+    "completed": []
+  },
+  "world": {
+    "currentLocation": "Silverpeak",
+    "timeOfDay": "Morning",
+    "weather": "Clear"
+  }
+}

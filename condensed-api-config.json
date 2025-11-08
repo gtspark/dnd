@@ -1,0 +1,59 @@
+{
+  "campaign": "Dax Stargazer - Titan Station Crisis",
+  "api_config": {
+    "model": "claude-sonnet-4-5-20250929",
+    "max_tokens": 2000,
+    "temperature": 0.7
+  },
+  
+  "essential_context": {
+    "character": {
+      "name": "Dax Stargazer",
+      "species": "Vexian (4 arms)",
+      "class": "Tech-Scout",
+      "stats": "STR:8 DEX:18 CON:12 INT:16 WIS:13 CHA:10",
+      "hp": "9/9"
+    },
+    
+    "party": [
+      {"name": "Chen", "gender": "FEMALE", "role": "engineer", "trait": "impulsive"},
+      {"name": "Dr. Yuen", "gender": "FEMALE", "role": "doctor", "trait": "overthinks"}
+    ],
+    
+    "current_crisis": {
+      "location": "Titan Station secure quarters",
+      "time": "0300 hours",
+      "threat": "Osprey extraction team (1 caught, 1 at large)",
+      "deadline": "Legal meeting at 0600 (3 hours)"
+    },
+    
+    "key_evidence": [
+      "Martinez's data log (proves Weyland shipped bioweapons)",
+      "Kellerman's recorded slip about 'proprietary biological data'",
+      "Memory lock (Dax knew 3 weeks before incident)"
+    ],
+    
+    "immediate_goals": [
+      "Find hidden Osprey operative",
+      "Prepare for legal meeting",
+      "Protect evidence from corporate theft"
+    ]
+  },
+  
+  "system_prompt_template": "You are the DM for a space opera D&D campaign. The party escaped the infected ship Wanderer and is now on Titan Station fighting Weyland Biosystems' conspiracy. Professional killers (Osprey) are hunting them. Chen (female engineer) and Dr. Yuen (female doctor) are Dax's allies. Current scene: [INSERT_SCENE]. Maintain established facts: Chen and Yuen are FEMALE, Dax has 4 arms, Weyland deliberately sent bioweapons, Captain Morrison died a hero.",
+  
+  "minimum_context_tokens": 500,
+  "recommended_context_tokens": 2000,
+  
+  "api_endpoints": {
+    "action": "http://localhost:3000/api/dnd/action",
+    "context": "http://localhost:3000/api/dnd/context",
+    "state": "http://localhost:3000/api/dnd/state"
+  },
+  
+  "cost_estimate": {
+    "per_exchange": "~4000-5000 tokens",
+    "hourly_session": "~50,000-75,000 tokens",
+    "note": "Costs separate from Claude Pro/Max subscription"
+  }
+}

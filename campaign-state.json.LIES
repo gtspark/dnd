@@ -1,0 +1,191 @@
+{
+  "campaign_title": "Titan Station Crisis - Chapter 2",
+  "current_time": "2387-05-15T14:30:00Z",
+  "current_location": "New Horizons Colony - Central Hub",
+  "next_event": {
+    "time": "0600",
+    "description": "Critical legal meeting with corporate representatives",
+    "time_remaining": "3 hours"
+  },
+  "current_scene": {
+    "status": "The party has just arrived at New Horizons Colony, a frontier settlement on the edge of known space",
+    "threat_level": "low",
+    "environment": "Safe colonial settlement with basic facilities"
+  },
+  "party": {
+    "dax": {
+      "name": "Dax Stargazer",
+      "species": "Vexian",
+      "class": "Tech Specialist",
+      "level": 3,
+      "hp": {
+        "current": 28,
+        "max": 28
+      },
+      "abilities": {
+        "strength": 8,
+        "dexterity": 18,
+        "constitution": 10,
+        "intelligence": 16,
+        "wisdom": 12,
+        "charisma": 10
+      },
+      "equipment": [
+        "Portable Hacking Tool",
+        "Multi-tool Kit",
+        "Datapad",
+        "Standard Clothes"
+      ],
+      "credits": 2000
+    },
+    "chen": {
+      "name": "Chen",
+      "species": "Human",
+      "class": "Engineer",
+      "level": 3,
+      "hp": {
+        "current": 32,
+        "max": 32
+      },
+      "abilities": {
+        "strength": 14,
+        "dexterity": 12,
+        "constitution": 14,
+        "intelligence": 15,
+        "wisdom": 11,
+        "charisma": 13
+      },
+      "equipment": [
+        "Engineering Toolkit",
+        "Portable Welder",
+        "Technical Manual"
+      ],
+      "credits": 1000
+    },
+    "yuen": {
+      "name": "Dr. Yuen",
+      "species": "Human",
+      "class": "Xenobiologist",
+      "level": 3,
+      "hp": {
+        "current": 24,
+        "max": 24
+      },
+      "abilities": {
+        "strength": 9,
+        "dexterity": 13,
+        "constitution": 12,
+        "intelligence": 17,
+        "wisdom": 14,
+        "charisma": 12
+      },
+      "equipment": [
+        "Medical Scanner",
+        "Sample Collection Kit",
+        "Research Notes"
+      ],
+      "credits": 12800
+    }
+  },
+  "key_npcs": {
+    "jonathan_park": {
+      "name": "Jonathan Park",
+      "role": "U.E.S. Representative",
+      "status": "Nervous, on Titan Station",
+      "importance": "Government liaison for quarantine situation"
+    },
+    "holbrook": {
+      "name": "Director Holbrook",
+      "role": "Titan Station Director",
+      "status": "Allied - providing Protocol Seven protection",
+      "authority": "Station authority, research contract offer"
+    },
+    "torres": {
+      "name": "Commander Torres",
+      "role": "Station Security Chief",
+      "status": "Allied - handling forensics and background checks",
+      "importance": "Security coordination, evidence analysis"
+    },
+    "kellerman": {
+      "name": "Kellerman",
+      "role": "Weyland Biosystems Representative",
+      "status": "Hostile - escalating extraction pressure",
+      "tactics": "73 blocked messages, corporate threats"
+    },
+    "captain_morrison": {
+      "name": "Captain Morrison",
+      "role": "Former Wanderer Captain",
+      "status": "Deceased hero, maintained quarantine",
+      "importance": "Sacrificed to prevent bioweapon spread"
+    }
+  },
+  "major_plot_threads": [
+    "The colony is dealing with intermittent communication blackouts",
+    "Strange energy readings detected from nearby unexplored sectors",
+    "Supply shipments are running behind schedule"
+  ],
+  "current_threats": {
+    "immediate": [
+      "Hidden Osprey extraction specialist on station",
+      "48-hour corporate timeline for resolution",
+      "Career destruction through license revocation"
+    ],
+    "timeline": [
+      "T-3 hours: Legal meeting with corporate reps",
+      "T-24 hours: Station dock lockdown expires",
+      "T-48 hours: Corporate escalation deadline"
+    ]
+  },
+  "resources": {
+    "party_credits": 15800,
+    "fuel": 100,
+    "supplies": 85
+  },
+  "team_dynamics": {
+    "leadership": "Dax leads strategy and technology decisions",
+    "philosophy": "Justice for Morrison and fallen crew",
+    "motivation": "Survive corporate extraction, expose conspiracy",
+    "roles": {
+      "dax": "Technology/Hacking Expert, strategy, long-term planning",
+      "chen": "Engineering/Combat, quick decisions, tactical support",
+      "yuen": "Medicine/Biology, analysis, keeping team grounded"
+    }
+  },
+  "continuation_context": "Fresh start - the party has just arrived at New Horizons Colony and is meeting with local officials to discuss potential work opportunities.",
+  "factions": {
+    "titan_station": "Strong alliance, full protection",
+    "weyland_biosystems": "Active corporate threat, treaty violations",
+    "osprey_security": "Hidden extraction specialist on station",
+    "ues_government": "Government authority, monitoring through Jonathan Park"
+  },
+  "recent_events": [
+    "Landed at New Horizons Colony spaceport",
+    "Checked into temporary lodging",
+    "Scheduled meeting with Colony Administrator Wells"
+  ],
+  "current_objectives": [
+    "Survive legal meeting at 0600 (3 hours remaining)",
+    "Counter Osprey extraction attempts",
+    "Build legal case using surveillance evidence",
+    "Vet potential fourth crew member (background check in progress)",
+    "Secure 6-month research contract opportunity"
+  ],
+  "quests": {
+    "active": [
+      {
+        "title": "Colonial Survey",
+        "description": "Help the colony establish communication with nearby settlements",
+        "status": "just_started"
+      }
+    ],
+    "completed": []
+  },
+  "npcs": {
+    "colony_administrator": {
+      "name": "Administrator Wells",
+      "role": "Colony Leader",
+      "relationship": "neutral",
+      "last_interaction": "Initial meeting"
+    }
+  }
+}

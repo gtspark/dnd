@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Import Full Campaign History</title>
+    <style>
+        body { font-family: monospace; padding: 20px; background: #1a1a1a; color: #00ff00; }
+        .container { max-width: 800px; margin: 0 auto; }
+        textarea { width: 100%; height: 400px; background: #000; color: #00ff00; border: 1px solid #333; }
+        button { background: #333; color: #00ff00; border: 1px solid #555; padding: 10px 20px; margin: 5px; cursor: pointer; }
+        button:hover { background: #555; }
+        .status { margin: 10px 0; padding: 10px; border: 1px solid #333; background: #111; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>📚 Import Full Campaign History</h1>
+
+        <button onclick="loadCampaignFile()">Load Campaign Text File</button>
+        <button onclick="showCurrentGameLog()">Show Current Game Log</button>
+        <button onclick="clearAndImport()">Clear & Import Parsed History</button>
+
+        <div id="status" class="status">Ready to import campaign history...</div>
+
+        <h2>Campaign Text (Auto-loaded)</h2>
+        <textarea id="campaign-text" placeholder="Campaign text will be loaded here..."></textarea>
+
+        <h2>Parsed Entries</h2>
+        <div id="parsed-entries"></div>
+    </div>
+
+    <script>
+        let parsedHistory = [];
+
+        async function loadCampaignFile() {
+            try {
+                document.getElementById('status').innerHTML = '🔄 Loading campaign file...';
+                const response = await fetch('./dax%20campaign%20full%20log.txt');
+
+                if (!response.ok) {
+                    throw new Error('HTTP ' + response.status + ': ' + response.statusText);
+                }
+
+                const text = await response.text();
+                document.getElementById('campaign-text').value = text;
+                document.getElementById('status').innerHTML = '✅ Campaign file loaded. Parsing...';
+                parseCampaignText(text);
+            } catch (error) {
+                document.getElementById('status').innerHTML = '❌ Error loading campaign file: ' + error.message;
+                console.error('Load error:', error);
+            }
+        }
+
+        function parseCampaignText(text) {
+            parsedHistory = [];
+            const lines = text.split('\n');
+            let currentEntry = null;
+            let entryCount = 0;
+
+            for (let line of lines) {
+                line = line.trim();
+                if (!line) continue;
+
+                // Skip initial setup text
+                if (line.includes('== campaign started') || line.includes('Show thinking')) {
+                    continue;
+                }
+
+                // Check for player messages (lowercase, starts with common patterns)
+                if (line.startsWith('player:') ||
+                    (line.toLowerCase() === line &&
+                     (line.startsWith('dax ') || line.startsWith('he ') || line.startsWith('i ')) &&
+                     line.length > 10)) {
+
+                    if (currentEntry) {
+                        parsedHistory.push(currentEntry);
+                    }
+                    currentEntry = {
+                        author: 'player',
+                        content: line.replace(/^player:\s*/, ''),
+                        timestamp: new Date(Date.now() + entryCount * 1000).toISOString()
+                    };
+                    entryCount++;
+
+                } else if (line.length > 20 && !line.toLowerCase().startsWith('dax ') &&
+                          (line.includes('you') || line.includes('your') || line.includes('station') ||
+                           line.includes('chen') || line.includes('yuen') || line.includes('director'))) {
+                    // Likely DM response (longer text, second person perspective, NPCs mentioned)
+                    if (currentEntry) {
+                        parsedHistory.push(currentEntry);
+                    }
+                    currentEntry = {
+                        author: 'dm',
+                        content: line,
+                        timestamp: new Date(Date.now() + entryCount * 1000).toISOString()
+                    };
+                    entryCount++;
+
+                } else if (currentEntry && line.length > 5) {
+                    // Continuation of current message
+                    if (currentEntry.content) {
+                        currentEntry.content += '\n' + line;
+                    } else {
+                        currentEntry.content = line;
+                    }
+                }
+            }
+
+            // Add final entry
+            if (currentEntry && currentEntry.content) {
+                parsedHistory.push(currentEntry);
+            }
+
+            displayParsedEntries();
+            document.getElementById('status').innerHTML = 'Parsed ' + parsedHistory.length + ' entries from campaign text';
+        }
+
+        function displayParsedEntries() {
+            const container = document.getElementById('parsed-entries');
+            container.innerHTML = '<p>Parsed ' + parsedHistory.length + ' entries:</p>';
+
+            parsedHistory.slice(0, 10).forEach((entry, i) => {
+                const div = document.createElement('div');
+                div.style.margin = '5px 0';
+                div.style.padding = '5px';
+                div.style.border = '1px solid #333';
+                div.innerHTML =
+                    '<strong>[' + i + '] ' + entry.author + '</strong><br>' +
+                    entry.content.substring(0, 200) + (entry.content.length > 200 ? '...' : '');
+                container.appendChild(div);
+            });
+
+            if (parsedHistory.length > 10) {
+                const more = document.createElement('div');
+                more.innerHTML = '<p>... and ' + (parsedHistory.length - 10) + ' more entries</p>';
+                container.appendChild(more);
+            }
+        }
+
+        function clearAndImport() {
+            if (!parsedHistory.length) {
+                document.getElementById('status').innerHTML = '❌ No parsed history to import. Load campaign file first.';
+                return;
+            }
+
+            if (!confirm('Import ' + parsedHistory.length + ' entries? This will replace current game log.')) {
+                return;
+            }
+
+            // Clear current log and import parsed history
+            localStorage.setItem('dnd_game_log', JSON.stringify(parsedHistory));
+            document.getElementById('status').innerHTML = 'Imported ' + parsedHistory.length + ' entries to game log. Refresh main page.';
+        }
+
+        function showCurrentGameLog() {
+            const gameLog = JSON.parse(localStorage.getItem('dnd_game_log') || '[]');
+            alert('Current game log has ' + gameLog.length + ' entries.\n\nFirst entry: ' +
+                  (gameLog[0] ? gameLog[0].content.substring(0, 100) + '...' : 'None') +
+                  '\n\nLast entry: ' +
+                  (gameLog[gameLog.length-1] ? gameLog[gameLog.length-1].content.substring(0, 100) + '...' : 'None'));
+        }
+
+        // Auto-load on page load
+        window.addEventListener('load', loadCampaignFile);
+    </script>
+</body>
+</html>

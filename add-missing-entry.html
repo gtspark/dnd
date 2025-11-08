@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Add Missing Campaign Entry</title>
+    <style>
+        body { font-family: monospace; padding: 20px; background: #1a1a1a; color: #00ff00; }
+        .container { max-width: 800px; margin: 0 auto; }
+        textarea { width: 100%; height: 400px; background: #000; color: #00ff00; border: 1px solid #333; }
+        button { background: #333; color: #00ff00; border: 1px solid #555; padding: 10px 20px; margin: 5px; cursor: pointer; }
+        button:hover { background: #555; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎲 Add Missing Campaign Entry</h1>
+
+        <p>This will add the missing initial DM message to the beginning of the game log.</p>
+
+        <h2>Missing Entry</h2>
+        <textarea id="missing-entry" readonly>The soft hum of Titan Station's life support systems provides a constant backdrop as you settle into your temporary quarters. The three of you sit in the secure wing of the station's core - a reinforced section that Director Holbrook assured you is free from surveillance.
+
+It's been twelve hours since the discovery of the surveillance drone, and the station remains on heightened alert. Commander Torres's security teams continue their methodical sweep for the second Osprey operative, while the forensics team works to extract data from the disabled drone.
+
+Dr. Yuen checks her chronometer. "0300 hours," she says quietly. "The legal team meeting has been moved up to 0600 - that's three hours from now." She looks between you and Chen, both of whom show signs of the strain from the past weeks of pressure and threats.
+
+Chen stretches, her engineering jumpsuit rumpled from the long day. "Should we try to sleep? We need to be sharp for tomorrow's strategy session."
+
+The quarters are spartanly furnished but secure - three bunks, a small common area, and most importantly, a hardened communication system that Holbrook guarantees is isolated from Weyland's networks.
+
+Outside the reinforced viewports, you can see the ghostly ring structure of Titan Station's research facilities, where hundreds of scientists continue their work, unaware of the corporate shadow war playing out in their midst.
+
+What does Dax do?</textarea>
+
+        <h2>Actions</h2>
+        <button onclick="addMissingEntry()">Add Missing Entry to Beginning</button>
+        <button onclick="showCurrentLog()">Show Current Log</button>
+
+        <div id="status"></div>
+    </div>
+
+    <script>
+        function addMissingEntry() {
+            const gameLog = JSON.parse(localStorage.getItem('dnd_game_log') || '[]');
+            const missingEntry = {
+                author: 'dm',
+                content: document.getElementById('missing-entry').value,
+                timestamp: '2025-09-21T06:00:00.000Z' // Set earlier timestamp
+            };
+
+            // Add to beginning of log
+            gameLog.unshift(missingEntry);
+            localStorage.setItem('dnd_game_log', JSON.stringify(gameLog));
+
+            document.getElementById('status').innerHTML = `✅ Added missing entry. Log now has ${gameLog.length} entries. Refresh main page.`;
+        }
+
+        function showCurrentLog() {
+            const gameLog = JSON.parse(localStorage.getItem('dnd_game_log') || '[]');
+            let output = `Current log has ${gameLog.length} entries:\\n\\n`;
+
+            gameLog.slice(0, 5).forEach((entry, i) => {
+                output += `${i}: ${entry.author} - ${entry.content.substring(0, 100)}...\\n`;
+            });
+
+            alert(output);
+        }
+    </script>
+</body>
+</html>

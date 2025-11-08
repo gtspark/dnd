@@ -1,0 +1,51 @@
+{
+  "campaign_title": "SANDBOX TEST - Titan Station Crisis",
+  "current_time": "0300 hours",
+  "current_location": "Test Secure Quarters",
+  "next_event": {
+    "time": "0600",
+    "description": "Test legal meeting",
+    "time_remaining": "3 hours"
+  },
+
+  "current_scene": {
+    "status": "Testing API integration in secure quarters",
+    "immediate_context": "This is a sandbox test environment",
+    "player_prompt": "What does Dax do? (This is a test)",
+    "threat_level": "Low - this is just a test"
+  },
+
+  "party": {
+    "dax": {
+      "name": "Dax Stargazer (TEST)",
+      "race_class": "Vexian Tech-Scout",
+      "level": 3,
+      "stats": {
+        "str": 8, "dex": 18, "con": 12, "int": 16, "wis": 13, "cha": 10
+      },
+      "hp": { "current": 9, "max": 9 },
+      "ac": 12,
+      "credits": 3000,
+      "background": "TEST: Colony ship raised, 4 arms, skilled with technology"
+    },
+    "chen": {
+      "name": "Chen (TEST)",
+      "background": "TEST: Human Engineer, Mars colony",
+      "status": "Present for testing"
+    },
+    "yuen": {
+      "name": "Dr. Yuen (TEST)",
+      "background": "TEST: Human Medical Officer",
+      "status": "Present for testing"
+    }
+  },
+
+  "test_notes": [
+    "This is a sandbox environment for testing Claude API integration",
+    "No actual campaign progress will be saved",
+    "Use this to test roll mechanics and narrative flow",
+    "Switch to live mode when ready for real campaign"
+  ],
+
+  "continuation_context": "SANDBOX TEST: You are in a safe test environment. The party is ready to test the new Claude API integration. Try asking for various actions or rolls to test the system."
+}

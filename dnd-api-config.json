@@ -1,0 +1,16 @@
+{
+  "api_key": "",
+  "model": "",
+  "api_url": "/api/dnd/action",
+  "base_url": "/dnd-api/dnd",
+  "sandbox_mode": false,
+  "combat_state_endpoints": [
+    "/dnd-api/dnd/combat-state",
+    "/dnd-api/dnd/combat/state",
+    "/dnd/api/dnd/combat-state",
+    "/dnd/api/dnd/combat/state",
+    "/api/dnd/combat-state",
+    "/api/dnd/combat/state"
+  ],
+  "fallback_base_url": "/api/dnd"
+}

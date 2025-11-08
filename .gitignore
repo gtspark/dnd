@@ -1,0 +1,68 @@
+# Environment and secrets
+.env
+*.key
+*.pem
+api-config.json
+ai-provider-settings.json
+ecosystem.config.json
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+database/*.db
+
+# Campaign state (contains sensitive player data)
+campaign-state*.json
+conversation-history*.json
+game-log.json
+
+# Backups
+*.backup*
+*-backup-*
+*.pre-rollback*
+*.corrupted
+
+# Node modules
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Generated/built files
+dist/
+build/
+*.bundle.js
+
+# Logs
+*.log
+server.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Campaign-specific sensitive data
+campaigns/*/conversation-history*.json
+campaigns/*/campaign-state*.json
+campaigns/*/*.db
+campaigns/*/json-backup/
+
+# Character portraits (potentially copyrighted)
+*.png
+*.jpg
+*.jpeg
+*.gif
+
+# Search indices (generated)
+SEARCH_INDEX.json
+campaigns/*/SEARCH_INDEX.json
+
+# Test databases
+test-*.db

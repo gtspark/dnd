@@ -1,0 +1,598 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
+    <title>Claude DM - D&D Campaign Manager</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🎲</text></svg>">
+    <link rel="stylesheet" href="styles.css?v=1761137700">
+    <link href="https://fonts.googleapis.com/css2?family=Crimson+Text:wght@400;600;700&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+</head>
+<body>
+    <!-- Loading Screen -->
+    <div id="loading-screen" class="loading-screen">
+        <div class="loading-content">
+            <div class="loading-spinner">🎲</div>
+            <h2>Connecting to Claude DM...</h2>
+            <p>Initializing adventure systems</p>
+        </div>
+    </div>
+
+    <div class="app-container">
+        <!-- Header -->
+        <header class="app-header">
+            <div class="sandbox-banner" id="sandbox-banner" style="background: #dc2626; color: white; text-align: center; padding: 0.5rem; font-weight: bold; display: block;">
+                🧪 SANDBOX MODE - API TESTING ENVIRONMENT 🧪
+            </div>
+            <div class="header-content">
+                <h1 class="logo">
+                    <span class="logo-dice">🎲</span>
+                    <span class="logo-text">Claude DM</span>
+                </h1>
+                <div class="campaign-info">
+                    <h2 id="campaign-title">Titan Station Crisis</h2>
+                    <span id="session-counter">Chapter 2</span>
+                </div>
+                <div class="header-controls">
+                    <select id="character-preset" class="character-selector">
+                        <option value="">Custom Character</option>
+                        <option value="dax">Dax (Engineer)</option>
+                        <option value="chen">Chen (Security)</option>
+                        <option value="yuen">Dr. Yuen (Medical)</option>
+                    </select>
+                    <button id="sandbox-toggle" class="btn-icon" title="Toggle Sandbox/Live Mode">🧪</button>
+                    <button id="settings-btn" class="btn-icon" title="Settings">⚙️</button>
+                    <button id="help-btn" class="btn-icon" title="Help">❓</button>
+                    <button id="back-to-splash" class="btn-icon" title="Back to Campaigns">🏠</button>
+                </div>
+            </div>
+        </header>
+
+        <div class="main-content">
+            <!-- Left Panel - Character Sheet -->
+            <aside class="character-panel">
+                <div class="character-header">
+                    <h3>Party</h3>
+                </div>
+                <div class="party-tabs">
+                    <button class="party-tab active" data-character="dax">Dax</button>
+                    <button class="party-tab" data-character="chen">Chen</button>
+                    <button class="party-tab" data-character="yuen">Dr. Yuen</button>
+                </div>
+
+                <div class="character-portrait">
+                    <div class="portrait-placeholder">
+                        <img src="dax pfp.png" alt="Dax Stargazer" class="character-image" id="character-image">
+                        <span class="portrait-initials" id="character-initials" style="display: none;">DS</span>
+                    </div>
+                </div>
+
+                <div class="character-basic">
+                    <h4 id="character-name">Dax Stargazer</h4>
+                    <div class="character-details">
+                        <span id="character-race-class">Vexian Tech-Scout</span>
+                        <span id="character-level">Level 3</span>
+                    </div>
+                </div>
+
+                <div class="character-stats">
+                    <h5>Ability Scores</h5>
+                    <div class="stats-grid">
+                        <div class="stat-block">
+                            <span class="stat-name">STR:</span>
+                            <span class="stat-value" id="str-score">8</span>
+                            <span class="stat-modifier" id="str-mod">(-1)</span>
+                        </div>
+                        <div class="stat-block">
+                            <span class="stat-name">DEX:</span>
+                            <span class="stat-value" id="dex-score">18</span>
+                            <span class="stat-modifier" id="dex-mod">(+4)</span>
+                        </div>
+                        <div class="stat-block">
+                            <span class="stat-name">CON:</span>
+                            <span class="stat-value" id="con-score">12</span>
+                            <span class="stat-modifier" id="con-mod">(+1)</span>
+                        </div>
+                        <div class="stat-block">
+                            <span class="stat-name">INT:</span>
+                            <span class="stat-value" id="int-score">16</span>
+                            <span class="stat-modifier" id="int-mod">(+3)</span>
+                        </div>
+                        <div class="stat-block">
+                            <span class="stat-name">WIS:</span>
+                            <span class="stat-value" id="wis-score">13</span>
+                            <span class="stat-modifier" id="wis-mod">(+1)</span>
+                        </div>
+                        <div class="stat-block">
+                            <span class="stat-name">CHA:</span>
+                            <span class="stat-value" id="cha-score">10</span>
+                            <span class="stat-modifier" id="cha-mod">(+0)</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="character-vitals">
+                    <h5>Vitals</h5>
+                    <div class="hp-container">
+                        <div class="hp-label">
+                            <span class="stat-name">HP:</span>
+                            <span class="stat-value" id="hp-value">9/9</span>
+                        </div>
+                        <div class="hp-bar-container">
+                            <div class="hp-bar" id="hp-bar" style="width: 100%"></div>
+                        </div>
+                    </div>
+                    <div class="stats-grid">
+                        <div class="stat-block">
+                            <span class="stat-name">AC:</span>
+                            <span class="stat-value" id="ac-value">12</span>
+                        </div>
+                    </div>
+                    <div class="status-effects" id="status-effects">
+                        <!-- Status badges will be inserted here dynamically -->
+                    </div>
+                </div>
+            </aside>
+
+            <!-- Center Panel - Game Area -->
+            <main class="game-area">
+                <div class="game-log" id="game-log">
+                    <div class="log-entry dm-entry">
+                        <div class="entry-header">
+                            <span class="entry-author dm-author">🎭 Dungeon Master</span>
+                            <span class="entry-time">Just now</span>
+                        </div>
+                        <div class="entry-content">
+                            <p>Welcome, brave adventurer! You find yourself standing at the edge of the Whispering Woods, a mystical forest shrouded in ancient magic and forgotten secrets. The morning mist clings to the twisted branches above, and you can hear the distant sound of something rustling in the undergrowth.</p>
+                            <p>Your quest is simple: retrieve the lost Crystal of Echoing Dreams from the heart of the forest. But be warned - many have entered these woods, and few have returned with their sanity intact.</p>
+                            <p>What do you wish to do?</p>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="game-input">
+                    <div class="input-area">
+                        <textarea
+                            id="player-input"
+                            placeholder="Describe your action... (e.g., 'I cautiously step into the forest, sword drawn')"
+                            rows="3"
+                        ></textarea>
+                        <div class="input-controls">
+                            <div class="input-mode-selector">
+                                <button id="mode-ic" class="mode-btn active" data-mode="ic" title="In-Character action (canon, moves story, extracts state)">
+                                    ⚔️ In-Character
+                                </button>
+                                <button id="mode-dm-question" class="mode-btn" data-mode="dm-question" title="Ask DM a question (canon, doesn't move story)">
+                                    ❓ DM Question
+                                </button>
+                                <button id="mode-ooc" class="mode-btn" data-mode="ooc" title="Out-of-character (non-canon, testing)">
+                                    🔧 OOC
+                                </button>
+                            </div>
+                            <button id="send-btn" class="btn-primary">Send Action</button>
+                        </div>
+                    </div>
+                </div>
+            </main>
+
+            <!-- Right Panel - Tools -->
+            <aside class="tools-panel">
+                <div class="tools-header">
+                    <h3>Adventure Tools</h3>
+                </div>
+                <!-- Scene Generator - Top, Full Width -->
+                <div class="tools-full-width scene-section">
+                    <div class="scene-generator">
+                        <h5>Scene Visualizer</h5>
+                        <div class="scene-display" id="scene-display">
+                            <div class="scene-placeholder">
+                                <span class="scene-icon">🎨</span>
+                                <p>Generate a scene image from recent adventure</p>
+                            </div>
+                        </div>
+                        <button id="generate-scene-btn" class="btn-primary" style="width: 100%; margin-top: 0.5rem;">
+                            📸 Generate Scene Image
+                        </button>
+                    </div>
+                </div>
+                <!-- Party Inventory / Ship Status - Full Width -->
+                <div class="tools-full-width inventory-section">
+                    <!-- Svelte Equipment Manager (test-silverpeak only) -->
+                    <div id="equipment-app"></div>
+
+                    <!-- Legacy Inventory UI (other campaigns) -->
+                    <div class="party-inventory-section" id="legacy-inventory">
+                        <div class="section-tabs">
+                            <button class="section-tab active" data-section="inventory">Party Inventory</button>
+                            <button class="section-tab" data-section="ship">Ship Status</button>
+                        </div>
+                        <div class="section-content inventory-section active" id="inventory-section">
+                            <div class="inventory-tabs">
+                                <button class="inv-tab active" data-character="dax">Dax</button>
+                                <button class="inv-tab" data-character="chen">Chen</button>
+                                <button class="inv-tab" data-character="yuen">Dr. Yuen</button>
+                            </div>
+                            <div class="inventory-content">
+                                <div class="inventory-items" id="inventory-items">
+                                    <div class="inventory-item">
+                                        <span class="item-name">Sidearm (0/10 rounds - EMPTY)</span>
+                                    </div>
+                                    <div class="inventory-item">
+                                        <span class="item-name">Multi-Tool (plasma torch, sonic wrench, wire bypass)</span>
+                                    </div>
+                                    <div class="inventory-item">
+                                        <span class="item-name">Medical Scanner (charged)</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="section-content ship-section" id="ship-section" style="display: none;">
+                            <div class="ship-status-content">
+                                <p class="ship-status-empty">No active ship assigned</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <!-- Recent Rolls (Left) / Universal Credits (Right) -->
+                <div class="tools-column-left">
+                    <div class="roll-history">
+                        <h5>Recent Rolls</h5>
+                        <div id="roll-history-list" class="roll-history-list">
+                            <div class="roll-history-empty">No recent rolls</div>
+                        </div>
+                        <button id="clear-roll-history" class="btn-secondary btn-small">Clear History</button>
+                        <button id="clear-adventure-log" class="btn-secondary btn-small" style="margin-top: 0.25rem;">Clear Adventure Log</button>
+                    </div>
+                </div>
+                <div class="tools-column-right">
+                    <div class="party-credits">
+                        <h5>Universal Credits</h5>
+                        <div class="credits-display">
+                            <div class="total-credits">
+                                <span class="credits-label">Total Fund:</span>
+                                <span id="total-credits" class="credits-amount">15,800 UC</span>
+                            </div>
+                            <div class="individual-credits">
+                                <div class="character-credits">
+                                    <span class="char-name">Dax:</span>
+                                    <span id="dax-credits" class="credits-amount">3,000 UC</span>
+                                </div>
+                                <div class="character-credits">
+                                    <span class="char-name">Chen:</span>
+                                    <span id="chen-credits" class="credits-amount">800 UC</span>
+                                </div>
+                                <div class="character-credits">
+                                    <span class="char-name">Dr. Yuen:</span>
+                                    <span id="yuen-credits" class="credits-amount">12,000 UC</span>
+                                </div>
+                            </div>
+                            <div class="sync-status" id="sync-status">
+                                <span class="sync-indicator">●</span>
+                                <span class="sync-text">Synced</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <!-- Campaign Notes - Bottom, Full Width -->
+                <div class="tools-full-width notes-section">
+                    <div class="campaign-notes">
+                        <h5>Campaign Notes</h5>
+                        <textarea id="notes" placeholder="Keep track of important details, NPCs, locations, theories..."></textarea>
+                    </div>
+                </div>
+            </aside>
+        </div>
+    </div>
+
+    <!-- Character Creation Modal -->
+    <div id="character-modal" class="modal hidden">
+        <div class="modal-content large">
+            <div class="modal-header">
+                <h3>⚔️ Character Creation</h3>
+                <button class="modal-close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <form id="character-form">
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="char-name">Character Name</label>
+                            <input type="text" id="char-name" placeholder="Enter character name">
+                        </div>
+                        <div class="form-group">
+                            <label for="char-level">Level</label>
+                            <input type="number" id="char-level" value="1" min="1" max="20">
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="char-race">Race</label>
+                            <select id="char-race">
+                                <option value="human">Human</option>
+                                <option value="elf">Elf</option>
+                                <option value="dwarf">Dwarf</option>
+                                <option value="halfling">Halfling</option>
+                                <option value="dragonborn">Dragonborn</option>
+                                <option value="gnome">Gnome</option>
+                                <option value="half-elf">Half-Elf</option>
+                                <option value="half-orc">Half-Orc</option>
+                                <option value="tiefling">Tiefling</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label for="char-class">Class</label>
+                            <select id="char-class">
+                                <option value="fighter">Fighter</option>
+                                <option value="wizard">Wizard</option>
+                                <option value="rogue">Rogue</option>
+                                <option value="cleric">Cleric</option>
+                                <option value="ranger">Ranger</option>
+                                <option value="paladin">Paladin</option>
+                                <option value="barbarian">Barbarian</option>
+                                <option value="bard">Bard</option>
+                                <option value="druid">Druid</option>
+                                <option value="monk">Monk</option>
+                                <option value="sorcerer">Sorcerer</option>
+                                <option value="warlock">Warlock</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="abilities-section">
+                        <h4>Ability Scores</h4>
+                        <div class="abilities-grid">
+                            <div class="ability-input">
+                                <label for="str-input">Strength</label>
+                                <input type="number" id="str-input" value="16" min="3" max="20">
+                            </div>
+                            <div class="ability-input">
+                                <label for="dex-input">Dexterity</label>
+                                <input type="number" id="dex-input" value="14" min="3" max="20">
+                            </div>
+                            <div class="ability-input">
+                                <label for="con-input">Constitution</label>
+                                <input type="number" id="con-input" value="15" min="3" max="20">
+                            </div>
+                            <div class="ability-input">
+                                <label for="int-input">Intelligence</label>
+                                <input type="number" id="int-input" value="12" min="3" max="20">
+                            </div>
+                            <div class="ability-input">
+                                <label for="wis-input">Wisdom</label>
+                                <input type="number" id="wis-input" value="13" min="3" max="20">
+                            </div>
+                            <div class="ability-input">
+                                <label for="cha-input">Charisma</label>
+                                <input type="number" id="cha-input" value="10" min="3" max="20">
+                            </div>
+                        </div>
+                        <button type="button" id="roll-stats" class="btn-secondary">🎲 Roll 4d6 Drop Lowest</button>
+                    </div>
+                    <div class="form-actions">
+                        <button type="button" class="btn-secondary modal-close">Cancel</button>
+                        <button type="submit" class="btn-primary">Create Character</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- AI Provider Settings Modal -->
+    <div id="ai-provider-modal" class="modal hidden">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h4>AI Dungeon Master Settings</h4>
+                <button class="modal-close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="provider-selection">
+                    <h5>Select AI Provider:</h5>
+                    <div class="radio-group">
+                        <label class="radio-option">
+                            <input type="radio" name="ai-provider" value="claude" checked>
+                            <span class="radio-custom"></span>
+                            <div class="provider-info">
+                                <strong>Claude (Sonnet 4)</strong>
+                                <div class="provider-description">Excellent narrative, character consistency, creative storytelling</div>
+                                <div class="provider-availability" id="claude-status">Loading...</div>
+                            </div>
+                        </label>
+                        <label class="radio-option">
+                            <input type="radio" name="ai-provider" value="deepseek">
+                            <span class="radio-custom"></span>
+                            <div class="provider-info">
+                                <strong>DeepSeek (Chat)</strong>
+                                <div class="provider-description">Excellent reasoning, logical problem-solving, cost-effective</div>
+                                <div class="provider-availability" id="deepseek-status">Loading...</div>
+                            </div>
+                        </label>
+                        <label class="radio-option">
+                            <input type="radio" name="ai-provider" value="gpt4">
+                            <span class="radio-custom"></span>
+                            <div class="provider-info">
+                                <strong>GPT-4 (Turbo)</strong>
+                                <div class="provider-description">Balanced approach, consistent responses, steady pacing</div>
+                                <div class="provider-availability" id="gpt4-status">Loading...</div>
+                            </div>
+                        </label>
+                    </div>
+                </div>
+                <div class="modal-actions">
+                    <button type="button" class="btn-secondary modal-close">Cancel</button>
+                    <button type="button" id="save-ai-provider" class="btn-primary">Save Settings</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- About Modal -->
+    <div id="about-modal" class="modal hidden">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>About Claude DM</h2>
+                <button class="modal-close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p style="margin-bottom: 1rem;">
+                    <strong>Claude DM</strong> is an AI-powered D&D Campaign Manager that brings your adventures to life with intelligent narrative generation, real-time character management, and automated game state tracking.
+                </p>
+
+                <h3 style="color: var(--accent-gold); margin-top: 1.5rem; margin-bottom: 0.5rem; font-size: 1rem;">Features</h3>
+                <ul style="margin-left: 1.5rem; margin-bottom: 1rem; line-height: 1.8;">
+                    <li>🎲 Interactive dice rolling with automatic modifiers</li>
+                    <li>🤖 Multi-AI DM support (Claude, DeepSeek, GPT-4)</li>
+                    <li>👥 Three party members: Dax, Chen, and Dr. Yuen</li>
+                    <li>📊 Automatic state tracking (HP, inventory, credits)</li>
+                    <li>🎨 AI-generated scene images</li>
+                    <li>💾 Persistent campaign history with rollback support</li>
+                </ul>
+
+                <h3 style="color: var(--accent-gold); margin-top: 1.5rem; margin-bottom: 0.5rem; font-size: 1rem;">Message Modes</h3>
+                <ul style="margin-left: 1.5rem; margin-bottom: 1rem; line-height: 1.8;">
+                    <li><strong>⚔️ In-Character</strong> - Canon actions that advance the story and update game state</li>
+                    <li><strong>❓ DM Question</strong> - Ask questions without advancing the story</li>
+                    <li><strong>🔧 OOC</strong> - Non-canon testing and experimentation</li>
+                </ul>
+
+                <h3 style="color: var(--accent-gold); margin-top: 1.5rem; margin-bottom: 0.5rem; font-size: 1rem;">Keyboard Shortcuts</h3>
+                <ul style="margin-left: 1.5rem; margin-bottom: 1rem; line-height: 1.8;">
+                    <li><kbd>Ctrl/Cmd + Enter</kbd> - Send action</li>
+                    <li><kbd>Ctrl/Cmd + K</kbd> - Search (coming soon)</li>
+                </ul>
+
+                <p style="margin-top: 1.5rem; font-size: 0.9rem; color: var(--text-secondary);">
+                    Powered by Claude Sonnet 4.5, DeepSeek, and GPT-4 APIs
+                </p>
+            </div>
+        </div>
+    </div>
+
+    <script src="api-handler.js?v=1761137700&cf=dev"></script>
+    <script src="script.js?v=1761137700&cf=dev"></script>
+    <script>
+        // Extract campaign ID from URL parameter
+        const urlParams = new URLSearchParams(window.location.search);
+        const CAMPAIGN_ID = urlParams.get('campaign') || 'default';
+        console.log('📁 Loading campaign:', CAMPAIGN_ID);
+
+        // Store globally for API calls
+        window.campaignId = CAMPAIGN_ID;
+
+        // Debug and override functions
+        document.addEventListener('DOMContentLoaded', function() {
+            if (window.claudeAPI) {
+                // Override sendMessage to debug
+                const originalSendMessage = window.claudeAPI.sendMessage;
+                window.claudeAPI.sendMessage = async function(playerMessage, isRollResult = false) {
+                    console.log('=== DEBUGGING sendMessage ===');
+                    console.log('Input:', playerMessage, isRollResult);
+                    const result = await originalSendMessage.call(this, playerMessage, isRollResult);
+                    console.log('Backend response:', result);
+                    return result;
+                };
+
+                // Override parseRollRequest to fix the caching issue
+                window.claudeAPI.parseRollRequest = function(rollRequest) {
+                    console.log('parseRollRequest called with:', rollRequest);
+
+                    // Handle current format: "Roll Constitution (DC 10) for quality of rest"
+                    let match = rollRequest.match(/Roll\s+(.+?)\s+\(DC\s+(\d+)\)\s+(.+)/i);
+                    if (!match) {
+                        // Try without DC: "Roll Intelligence to decipher"
+                        match = rollRequest.match(/Roll\s+(.+?)\s+to\s+(.+)/i);
+                        if (match) {
+                            match = [match[0], match[1], null, match[2]];
+                        }
+                    }
+                    if (!match) {
+                        // Try legacy format: "Roll Technology/Hacking (DC 15) to attempt something"
+                        match = rollRequest.match(/Roll\s+(.+?)\s+\(DC\s+(\d+)\)\s+to\s+(.+)/i);
+                    }
+
+                    if (match) {
+                        const result = {
+                            skill: match[1].trim(),
+                            dc: match[2] ? parseInt(match[2]) : null,
+                            description: match[3] ? match[3].trim() : rollRequest
+                        };
+                        console.log('parseRollRequest result:', result);
+                        return result;
+                    }
+
+                    const fallback = {
+                        skill: 'Unknown',
+                        dc: null,
+                        description: rollRequest
+                    };
+                    console.log('parseRollRequest fallback:', fallback);
+                    return fallback;
+                };
+                console.log('Functions overridden for debugging');
+
+                // Override handleRollRequest when game object becomes available
+                const originalGameHandleRollRequest = setInterval(() => {
+                    if (window.game && window.game.handleRollRequest) {
+                        clearInterval(originalGameHandleRollRequest);
+
+                        // Store the original method
+                        const originalMethod = window.game.handleRollRequest;
+
+                        window.game.handleRollRequest = function(rollRequest, narrative) {
+                            console.log('OVERRIDDEN handleRollRequest called with:', rollRequest, narrative);
+
+                            // Display the narrative first
+                            this.addLogEntry('dm', narrative);
+
+                            // Use the Claude API's parseRollRequest method for consistency
+                            const rollDetails = window.claudeAPI.parseRollRequest(rollRequest);
+
+                            console.log('OVERRIDDEN Parsed roll details:', rollDetails);
+                            this.showRollPrompt(rollDetails, rollRequest);
+
+                            // Prevent the original method from being called by returning early
+                            return;
+                        };
+
+                        // Also override the prototype method to catch any other instances
+                        if (window.game.constructor && window.game.constructor.prototype) {
+                            window.game.constructor.prototype.handleRollRequest = window.game.handleRollRequest;
+                        }
+
+                        console.log('handleRollRequest successfully overridden on both instance and prototype');
+                    }
+                }, 100);
+            }
+        });
+
+        // Conditionally load Svelte Equipment Manager for test-silverpeak
+        if (CAMPAIGN_ID === 'test-silverpeak') {
+            // Hide legacy inventory UI
+            const legacyInventory = document.getElementById('legacy-inventory');
+            if (legacyInventory) {
+                legacyInventory.style.display = 'none';
+            }
+
+            // Load Svelte CSS
+            const svelteCSS = document.createElement('link');
+            svelteCSS.rel = 'stylesheet';
+            svelteCSS.href = '/dnd/campaigns/test-silverpeak/svelte-dist/assets/index-BZa3awbx.css?v=1761137700';
+            document.head.appendChild(svelteCSS);
+
+            // Load Svelte JS
+            const svelteJS = document.createElement('script');
+            svelteJS.type = 'module';
+            svelteJS.src = '/dnd/campaigns/test-silverpeak/svelte-dist/assets/index-CWWjSjdx.js?v=1761137700' + Date.now();
+            document.body.appendChild(svelteJS);
+
+            console.log('✅ Loaded Svelte Equipment Manager for test-silverpeak');
+        } else {
+            // Hide Svelte mount point for other campaigns
+            const equipmentApp = document.getElementById('equipment-app');
+            if (equipmentApp) {
+                equipmentApp.style.display = 'none';
+            }
+        }
+    </script>
+</body>
+</html>

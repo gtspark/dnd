@@ -1,0 +1,564 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Campaign Rollback Tool</title>
+    <style>
+        body { font-family: monospace; padding: 20px; background: #1a1a1a; color: #00ff00; }
+        .container { max-width: 800px; margin: 0 auto; }
+        textarea { width: 100%; height: 200px; background: #000; color: #00ff00; border: 1px solid #333; }
+        button { background: #333; color: #00ff00; border: 1px solid #555; padding: 10px 20px; margin: 5px; cursor: pointer; }
+        button:hover { background: #555; }
+        .log-entry { margin: 10px 0; padding: 10px; border: 1px solid #333; background: #111; }
+        .dm { border-left: 4px solid #00ff00; }
+        .player { border-left: 4px solid #0080ff; }
+        .system { border-left: 4px solid #ff8000; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎲 Campaign Rollback Tool</h1>
+
+        <h2>Select Campaign</h2>
+        <select id="campaign-selector" onchange="switchCampaign()" style="width: 100%; padding: 10px; background: #000; color: #00ff00; border: 1px solid #555; font-size: 16px;">
+            <option value="">Loading campaigns...</option>
+        </select>
+        <br><br>
+
+        <h2>Current Game Log</h2>
+        <div id="current-log"></div>
+
+        <h2>Export & Rollback Actions</h2>
+        <button onclick="exportFullCampaign()">📄 Export Complete Campaign (Historical + Current)</button>
+        <button onclick="exportCurrentOnly()">📋 Export Current Session Only</button>
+        <br><br>
+        <button onclick="rollbackToPoint()">Rollback to "0600 meeting is in three hours"</button>
+        <button onclick="showLastEntries()">Show Last 10 Entries</button>
+        <button onclick="clearAllLogs()">Clear All Logs</button>
+
+        <h2>Manual Rollback</h2>
+        <textarea id="manual-log" placeholder="Paste rolled back log entries here..."></textarea>
+        <br>
+        <button onclick="applyManualRollback()">Apply Manual Rollback</button>
+
+        <div id="status"></div>
+    </div>
+
+    <script>
+        let frozenLog = []; // Store the log state when page loads for consistent rollback
+        let currentCampaignId = 'default'; // Current active campaign
+
+        // Load available campaigns on page load
+        async function loadCampaigns() {
+            try {
+                // Fetch campaigns from both servers
+                const [dndResponse, daxResponse] = await Promise.all([
+                    fetch('/dnd-api/dnd/campaigns').catch(e => ({ok: false})),
+                    fetch('/api/dax/campaigns').catch(e => ({ok: false}))
+                ]);
+
+                let allCampaigns = [];
+
+                // Add D&D 5e campaigns
+                if (dndResponse.ok) {
+                    const dndData = await dndResponse.json();
+                    const dndCampaigns = (dndData.campaigns || []).map(c => ({
+                        ...c,
+                        server: 'dnd-5e'
+                    }));
+                    allCampaigns.push(...dndCampaigns);
+                }
+
+                // Add Dax campaigns
+                if (daxResponse.ok) {
+                    const daxData = await daxResponse.json();
+                    const daxCampaigns = (daxData.campaigns || []).map(c => ({
+                        ...c,
+                        id: `dax-${c.id}`,
+                        name: `${c.name} (Dax)`,
+                        server: 'dax'
+                    }));
+                    allCampaigns.push(...daxCampaigns);
+                }
+
+                const selector = document.getElementById('campaign-selector');
+                selector.innerHTML = allCampaigns.map(c =>
+                    `<option value="${c.id}" data-server="${c.server}">${c.name}</option>`
+                ).join('');
+
+                // Set default campaign
+                currentCampaignId = allCampaigns[0]?.id || 'default';
+                selector.value = currentCampaignId;
+
+                // Load the first campaign's log
+                await loadCurrentLog();
+            } catch (error) {
+                console.error('Failed to load campaigns:', error);
+                document.getElementById('campaign-selector').innerHTML = '<option value="default">Default Campaign</option>';
+                currentCampaignId = 'default';
+                await loadCurrentLog();
+            }
+        }
+
+        function switchCampaign() {
+            currentCampaignId = document.getElementById('campaign-selector').value;
+            console.log('Switching to campaign:', currentCampaignId);
+            loadCurrentLog();
+        }
+
+        function getCampaignPrefix() {
+            // Map campaign IDs to their localStorage prefixes
+            const prefixes = {
+                'default': 'dnd',
+                'test-silverpeak': 'silverpeak',
+                'dax-default': 'dnd'  // Dax server's default campaign
+            };
+            return prefixes[currentCampaignId] || 'dnd';
+        }
+
+        function getCampaignServer() {
+            // Determine which server this campaign belongs to
+            if (currentCampaignId.startsWith('dax-')) {
+                return 'dax';
+            }
+            return 'dnd-5e';
+        }
+
+        function getCampaignPath() {
+            // Get the actual campaign ID without server prefix
+            if (currentCampaignId.startsWith('dax-')) {
+                return currentCampaignId.substring(4); // Remove 'dax-' prefix
+            }
+            return currentCampaignId;
+        }
+
+        async function loadCurrentLog() {
+            // Try to load from enhanced server first, fallback to localStorage
+            let log = [];
+
+            try {
+                const server = getCampaignServer();
+                const campaignId = getCampaignPath();
+                const basePath = server === 'dax' ? '/dax' : '/dnd';
+                const campaignPath = `${basePath}/campaigns/${campaignId}/conversation-history.json`;
+
+                const response = await fetch(campaignPath);
+                if (response.ok) {
+                    const serverLog = await response.json();
+                    // Convert enhanced server format to game log format
+                    log = serverLog.map(entry => ({
+                        author: entry.role === 'player' ? 'player' : 'dm',
+                        content: entry.content,
+                        timestamp: entry.timestamp
+                    }));
+                    console.log(`Loaded from ${server} enhanced server conversation history`);
+                } else {
+                    throw new Error('Server log not available');
+                }
+            } catch (error) {
+                console.log('Falling back to localStorage:', error);
+                const localStorageKey = `${getCampaignPrefix()}_game_log`;
+                log = JSON.parse(localStorage.getItem(localStorageKey) || '[]');
+            }
+
+            // Freeze the log state for consistent rollback behavior
+            frozenLog = [...log];
+
+            const container = document.getElementById('current-log');
+            container.innerHTML = `<p>Total entries: ${log.length} (Source: ${log.length > 0 && log[0].timestamp ? 'Enhanced Server' : 'LocalStorage'}) - Last updated: ${new Date().toLocaleTimeString()}</p>`;
+
+            log.forEach((entry, i) => {
+                const div = document.createElement('div');
+                div.className = `log-entry ${entry.author}`;
+                div.style.cursor = 'pointer';
+                div.style.border = '1px solid #333';
+                div.style.margin = '5px 0';
+                div.onclick = () => {
+                    console.log('Clicked on display index:', i, 'Content:', entry.content.substring(0, 100));
+                    rollbackToIndex(i);
+                };
+                div.innerHTML = `
+                    <strong>[${i}] ${entry.author}</strong> (${new Date(entry.timestamp).toLocaleString()})<br>
+                    ${entry.content.substring(0, 300)}${entry.content.length > 300 ? '...' : ''}
+                    <div style="margin-top: 5px; font-size: 0.8em; color: #888;">Click to rollback to this point</div>
+                `;
+                container.appendChild(div);
+            });
+        }
+
+        function rollbackToIndex(index) {
+            // Use the frozen log state instead of re-reading localStorage
+            const localStorageKey = `${getCampaignPrefix()}_game_log`;
+            const log = frozenLog.length > 0 ? frozenLog : JSON.parse(localStorage.getItem(localStorageKey) || '[]');
+
+            if (index < 0 || index >= log.length) {
+                document.getElementById('status').innerHTML = '❌ Invalid index';
+                return;
+            }
+
+            // SAFETY CHECK: Confirm rollback action
+            const targetEntry = log[index];
+            const entriesToRemove = log.length - (index + 1);
+
+            console.log('Rollback Debug:', {
+                clickedIndex: index,
+                logLength: log.length,
+                targetEntry: targetEntry,
+                entryContent: targetEntry ? targetEntry.content.substring(0, 100) : 'undefined'
+            });
+
+            if (!confirm(`⚠️ WARNING: This will permanently delete ${entriesToRemove} entries from the live campaign!\n\nRollback to entry ${index}: "${targetEntry ? targetEntry.content.substring(0, 100) : 'ENTRY NOT FOUND'}..."\n\nLog has ${log.length} entries. This action cannot be undone. Are you sure?`)) {
+                document.getElementById('status').innerHTML = '❌ Rollback cancelled by user';
+                return;
+            }
+
+            // Call the enhanced server rollback API
+            performServerRollback(index, log);
+        }
+
+        async function performServerRollback(index, log) {
+            try {
+                document.getElementById('status').innerHTML = '🔄 Performing rollback...';
+
+                const server = getCampaignServer();
+                const campaignId = getCampaignPath();
+                const apiPath = server === 'dax' ? '/api/dax/rollback' : '/dnd-api/dnd/rollback';
+
+                const response = await fetch(apiPath, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        index: index,
+                        campaign: campaignId
+                    })
+                });
+
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+
+                const result = await response.json();
+                console.log('Rollback API response:', result);
+
+                // Check multiple possible success indicators
+                if (result.success || result.message || response.ok) {
+                    const originalLength = result.originalLength || log.length;
+                    const newLength = result.newLength || (index + 1);
+                    const stateChangesRolledBack = result.stateChangesRolledBack || 0;
+
+                    let statusMsg = `✅ Rollback successful! Conversation: ${originalLength} → ${newLength} entries`;
+                    if (stateChangesRolledBack > 0) {
+                        statusMsg += `<br>🔄 State changes rolled back: ${stateChangesRolledBack} (credits, inventory, HP, conditions, ship)`;
+                    }
+                    statusMsg += '<br>Refreshing display...';
+
+                    document.getElementById('status').innerHTML = statusMsg;
+
+                    // Update localStorage for consistency
+                    const rolledBackLog = log.slice(0, index + 1);
+                    const localStorageKey = `${getCampaignPrefix()}_game_log`;
+                    localStorage.setItem(localStorageKey, JSON.stringify(rolledBackLog));
+
+                    // Reload the display after a short delay
+                    setTimeout(() => {
+                        loadCurrentLog();
+                        document.getElementById('status').innerHTML = statusMsg.replace('Refreshing display...', 'Display refreshed.');
+                    }, 1000);
+
+                } else {
+                    document.getElementById('status').innerHTML = `❌ Rollback failed: ${result.error || result.message || 'Unknown error'}`;
+                }
+
+            } catch (error) {
+                console.error('Rollback API error:', error);
+                document.getElementById('status').innerHTML = `❌ Rollback API call failed: ${error.message}`;
+            }
+        }
+
+        function rollbackToPoint() {
+            const localStorageKey = `${getCampaignPrefix()}_game_log`;
+            const log = JSON.parse(localStorage.getItem(localStorageKey) || '[]');
+            const searchText = '"0600 meeting is in three hours," Yuen says quietly. "Should we try to sleep?"';
+
+            let rollbackIndex = -1;
+            for (let i = log.length - 1; i >= 0; i--) {
+                if (log[i].content && log[i].content.includes('0600 meeting is in three hours')) {
+                    rollbackIndex = i;
+                    break;
+                }
+            }
+
+            if (rollbackIndex === -1) {
+                document.getElementById('status').innerHTML = '❌ Could not find rollback point';
+                return;
+            }
+
+            rollbackToIndex(rollbackIndex);
+        }
+
+        function showLastEntries() {
+            const localStorageKey = `${getCampaignPrefix()}_game_log`;
+            const log = JSON.parse(localStorage.getItem(localStorageKey) || '[]');
+            const last10 = log.slice(-10);
+
+            let output = `Last 10 entries for ${currentCampaignId}:\\n\\n`;
+            last10.forEach((entry, i) => {
+                output += `${log.length - 10 + i}: ${entry.author} - ${entry.content.substring(0, 100)}...\\n`;
+            });
+
+            alert(output);
+        }
+
+        function clearAllLogs() {
+            if (confirm(`⚠️ Are you sure you want to clear ALL logs for ${currentCampaignId}?`)) {
+                const localStorageKey = `${getCampaignPrefix()}_game_log`;
+                localStorage.removeItem(localStorageKey);
+                document.getElementById('status').innerHTML = `🗑️ All logs cleared for ${currentCampaignId}`;
+                loadCurrentLog();
+            }
+        }
+
+        function applyManualRollback() {
+            const manualData = document.getElementById('manual-log').value;
+            try {
+                const parsedLog = JSON.parse(manualData);
+                const localStorageKey = `${getCampaignPrefix()}_game_log`;
+                localStorage.setItem(localStorageKey, JSON.stringify(parsedLog));
+                document.getElementById('status').innerHTML = `✅ Manual rollback applied to ${currentCampaignId}. Refresh the main page.`;
+                loadCurrentLog();
+            } catch (error) {
+                document.getElementById('status').innerHTML = '❌ Invalid JSON data';
+            }
+        }
+
+        async function loadJSZip() {
+            return new Promise((resolve, reject) => {
+                if (window.JSZip) {
+                    resolve(window.JSZip);
+                    return;
+                }
+
+                const script = document.createElement('script');
+                script.src = 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js';
+                script.onload = () => resolve(window.JSZip);
+                script.onerror = () => reject(new Error('Failed to load JSZip library'));
+                document.head.appendChild(script);
+            });
+        }
+
+        async function exportFullCampaign() {
+            try {
+                document.getElementById('status').innerHTML = '⏳ Loading campaign data...';
+
+                // Load historical logs (Dax campaign only - other campaigns don't have historical logs)
+                const historicalResponse = await fetch('./dax campaign full log.txt');
+                const historicalText = await historicalResponse.text();
+
+                // Load current conversation
+                let currentLog = [];
+                try {
+                    const campaignPath = `/dnd/campaigns/${currentCampaignId}/conversation-history.json`;
+                    const currentResponse = await fetch(campaignPath);
+                    if (currentResponse.ok) {
+                        currentLog = await currentResponse.json();
+                    }
+                } catch (error) {
+                    console.log('No current conversation history');
+                }
+
+                // Combine everything
+                let fullExport = '';
+                fullExport += '# COMPLETE D&D CAMPAIGN EXPORT\n';
+                fullExport += `# Generated: ${new Date().toISOString()}\n`;
+                fullExport += `# Historical entries: ~991+ | Current session entries: ${currentLog.length}\n\n`;
+
+                fullExport += '## HISTORICAL CAMPAIGN LOG (Pre-Enhanced Server)\n';
+                fullExport += '```\n';
+                fullExport += historicalText;
+                fullExport += '\n```\n\n';
+
+                if (currentLog.length > 0) {
+                    fullExport += '## CURRENT SESSION (Enhanced Server)\n\n';
+                    currentLog.forEach((entry, i) => {
+                        const timestamp = entry.timestamp ? new Date(entry.timestamp).toISOString() : 'No timestamp';
+                        fullExport += `### Entry ${i + 1} - ${entry.role.toUpperCase()} [${timestamp}]\n`;
+                        fullExport += `${entry.content}\n\n`;
+                    });
+                }
+
+                // Split into multiple files if needed (95k char limit each)
+                const MAX_CHARS = 95000;
+                const files = [];
+
+                if (fullExport.length <= MAX_CHARS) {
+                    // Single file
+                    files.push({
+                        content: fullExport,
+                        filename: `dnd-campaign-complete-${new Date().toISOString().split('T')[0]}.md`
+                    });
+                } else {
+                    // Multiple files - split smartly at section boundaries
+                    let currentContent = '';
+                    let partNumber = 1;
+                    const header = fullExport.substring(0, fullExport.indexOf('## HISTORICAL'));
+
+                    // Add header to first part
+                    currentContent = header;
+
+                    // Add historical log
+                    const historicalSection = fullExport.substring(
+                        fullExport.indexOf('## HISTORICAL'),
+                        fullExport.indexOf('## CURRENT SESSION') > -1 ?
+                        fullExport.indexOf('## CURRENT SESSION') : fullExport.length
+                    );
+
+                    if ((currentContent + historicalSection).length > MAX_CHARS) {
+                        // Historical section too big, split it
+                        const availableSpace = MAX_CHARS - currentContent.length - 100; // Leave some buffer
+                        const historicalLines = historicalSection.split('\n');
+                        let tempContent = currentContent + '## HISTORICAL CAMPAIGN LOG (Pre-Enhanced Server)\n```\n';
+
+                        for (let i = 0; i < historicalLines.length; i++) {
+                            const line = historicalLines[i] + '\n';
+                            if ((tempContent + line + '\n```\n').length > MAX_CHARS && tempContent.length > header.length + 100) {
+                                // Save current part
+                                files.push({
+                                    content: tempContent + '\n```\n\n*[Continued in part ' + (partNumber + 1) + ']*',
+                                    filename: `dnd-campaign-part${partNumber}-${new Date().toISOString().split('T')[0]}.md`
+                                });
+                                partNumber++;
+                                tempContent = header + '## HISTORICAL CAMPAIGN LOG (Part ' + partNumber + ') (Pre-Enhanced Server)\n*[Continued from part ' + (partNumber - 1) + ']*\n\n```\n';
+                            }
+                            tempContent += line;
+                        }
+                        currentContent = tempContent + '\n```\n\n';
+                    } else {
+                        currentContent += historicalSection;
+                    }
+
+                    // Add current session if exists
+                    if (currentLog.length > 0) {
+                        const currentSection = fullExport.substring(fullExport.indexOf('## CURRENT SESSION'));
+
+                        if ((currentContent + currentSection).length > MAX_CHARS) {
+                            // Save historical part
+                            files.push({
+                                content: currentContent + '\n*[Current session in part ' + (partNumber + 1) + ']*',
+                                filename: `dnd-campaign-part${partNumber}-${new Date().toISOString().split('T')[0]}.md`
+                            });
+                            partNumber++;
+
+                            // Start new part with current session
+                            files.push({
+                                content: header + currentSection,
+                                filename: `dnd-campaign-part${partNumber}-${new Date().toISOString().split('T')[0]}.md`
+                            });
+                        } else {
+                            currentContent += currentSection;
+                            files.push({
+                                content: currentContent,
+                                filename: `dnd-campaign-part${partNumber}-${new Date().toISOString().split('T')[0]}.md`
+                            });
+                        }
+                    } else {
+                        files.push({
+                            content: currentContent,
+                            filename: `dnd-campaign-part${partNumber}-${new Date().toISOString().split('T')[0]}.md`
+                        });
+                    }
+                }
+
+                // Create ZIP file using JSZip
+                const JSZip = window.JSZip || await loadJSZip();
+                const zip = new JSZip();
+
+                // Add all files to zip
+                files.forEach(file => {
+                    zip.file(file.filename, file.content);
+                });
+
+                // Generate ZIP and create download
+                const zipBlob = await zip.generateAsync({type: 'blob'});
+                const zipUrl = URL.createObjectURL(zipBlob);
+                const zipFilename = `dnd-campaign-complete-${new Date().toISOString().split('T')[0]}.zip`;
+                const zipSizeMB = Math.round(zipBlob.size / 1024 / 1024 * 100) / 100;
+
+                // Create download interface
+                let downloadHtml = '<div style="margin-top: 20px; padding: 15px; background: #222; border: 1px solid #555;">';
+                downloadHtml += '<h3>📦 Campaign Export Package:</h3>';
+                downloadHtml += `<div style="margin: 15px 0; padding: 10px; background: #333; border-radius: 5px;">`;
+                downloadHtml += `<a href="${zipUrl}" download="${zipFilename}" style="color: #00ff00; text-decoration: none; font-weight: bold; font-size: 18px;">`;
+                downloadHtml += `📦 ${zipFilename} (${zipSizeMB}MB)</a><br>`;
+                downloadHtml += `<small style="color: #ccc;">Contains ${files.length} markdown files</small>`;
+                downloadHtml += `</div>`;
+
+                // Show file contents
+                downloadHtml += '<h4>📄 Package Contents:</h4>';
+                files.forEach((file, i) => {
+                    const sizeKB = Math.round(file.content.length / 1024);
+                    downloadHtml += `<div style="margin: 5px 0; color: #aaa;">`;
+                    downloadHtml += `📄 ${file.filename} (${sizeKB}KB)`;
+                    downloadHtml += `</div>`;
+                });
+
+                downloadHtml += '</div>';
+                document.getElementById('status').innerHTML = downloadHtml;
+
+                console.log(`✅ Campaign packaged into ZIP with ${files.length} files:`, files.map(f => `${f.filename} (${Math.round(f.content.length/1024)}KB)`));
+
+            } catch (error) {
+                document.getElementById('status').innerHTML = `❌ Export failed: ${error.message}`;
+                console.error('Export error:', error);
+            }
+        }
+
+        async function exportCurrentOnly() {
+            try {
+                document.getElementById('status').innerHTML = `⏳ Loading current session for ${currentCampaignId}...`;
+
+                const server = getCampaignServer();
+                const campaignId = getCampaignPath();
+                const basePath = server === 'dax' ? '/dax' : '/dnd';
+                const campaignPath = `${basePath}/campaigns/${campaignId}/conversation-history.json`;
+
+                const response = await fetch(campaignPath);
+                if (!response.ok) throw new Error('No current session data');
+
+                const currentLog = await response.json();
+
+                let export_text = '';
+                export_text += '# CURRENT D&D SESSION EXPORT\n';
+                export_text += `# Generated: ${new Date().toISOString()}\n`;
+                export_text += `# Entries: ${currentLog.length}\n\n`;
+
+                currentLog.forEach((entry, i) => {
+                    const timestamp = entry.timestamp ? new Date(entry.timestamp).toISOString() : 'No timestamp';
+                    export_text += `## Entry ${i + 1} - ${entry.role.toUpperCase()} [${timestamp}]\n`;
+                    export_text += `${entry.content}\n\n`;
+                });
+
+                // Download as file
+                const blob = new Blob([export_text], { type: 'text/markdown' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `dnd-session-current-${new Date().toISOString().split('T')[0]}.md`;
+                a.click();
+                URL.revokeObjectURL(url);
+
+                document.getElementById('status').innerHTML = `✅ Current session exported! ${currentLog.length} entries`;
+
+            } catch (error) {
+                document.getElementById('status').innerHTML = `❌ Export failed: ${error.message}`;
+                console.error('Export error:', error);
+            }
+        }
+
+        // Load on page load
+        window.addEventListener('DOMContentLoaded', () => {
+            loadCampaigns();
+        });
+    </script>
+</body>
+</html>

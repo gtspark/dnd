@@ -1,0 +1,18 @@
+{
+  "campaigns": [
+    {
+      "id": "test-silverpeak",
+      "name": "Silverpeak Chronicles",
+      "created": "2025-10-04T00:00:00",
+      "lastPlayed": "2025-10-04T00:00:00",
+      "passwordHash": "$2b$10$CCWxSdTKn13uxGe1U6EjqeTwBwA6Sy9FWLDCga0k6XZWoUj0rQZea",
+      "characters": [
+        "Kira",
+        "Thorne",
+        "Riven"
+      ],
+      "description": "Test campaign for shared core architecture - High fantasy world",
+      "thumbnail": null
+    }
+  ]
+}
