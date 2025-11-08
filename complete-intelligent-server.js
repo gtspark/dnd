@@ -2197,6 +2197,14 @@ class IntelligentContextManager {
                             // Try format 3: "1. **Name** (14)" or "1. Name (14)" or "1. Name (Initiative 14)"
                             match = line.match(/\d+\.\s+\*{0,2}([^*(]+?)\*{0,2}\s*\((?:Initiative\s+)?(\d+)\)/i);
                         }
+                        if (!match) {
+                            // Try format 4: "- **Name**: 14" or bullet list variations
+                            match = line.match(/[-•]\s+\*{0,2}([^:*]+?)\*{0,2}:\s*(\d+)/);
+                        }
+                        if (!match) {
+                            // Try format 5: "- **Name** (14)" bullet style
+                            match = line.match(/[-•]\s+\*{0,2}([^*(]+?)\*{0,2}\s*\((?:Initiative\s+)?(\d+)\)/i);
+                        }
 
                         if (match) {
                             const rawName = match[1].trim();
