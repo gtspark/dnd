@@ -66,3 +66,4 @@ campaigns/*/SEARCH_INDEX.json
 
 # Test databases
 test-*.db
+ecosystem.config.js
