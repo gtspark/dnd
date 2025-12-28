@@ -5,11 +5,13 @@
 
 const fs = require('fs').promises;
 const path = require('path');
+const { CombatStateMachine, STATE } = require('./combat-state-machine');
 
 class CombatManager {
     constructor(campaignDataPath) {
         this.campaignDataPath = campaignDataPath;
         this.activeCombats = new Map(); // campaignId -> combat state
+        this.stateMachines = new Map(); // campaignId -> CombatStateMachine
     }
 
     normalizeIdentifier(value) {
@@ -45,8 +47,16 @@ class CombatManager {
             reaction: true
         };
 
+        const defaultDeathSaves = {
+            successes: 0,
+            failures: 0,
+            isStabilized: false
+        };
+
         const existingEconomy = combatState.actionEconomy || {};
         const existingConditions = combatState.conditions || {};
+        const existingDeathSaves = combatState.deathSaves || {};
+        const existingState = combatState.combatState;
 
         combatState.initiativeOrder = combatState.initiativeOrder.map((entry = {}, index) => {
             const combatant = { ...entry };
@@ -78,8 +88,17 @@ class CombatManager {
                 || combatant.conditions;
             const mergedConditions = Array.isArray(conditionsSource) ? [...conditionsSource] : [];
 
-            combatant.actionEconomy = mergedEconomy;
+            const deathSavesSource = existingDeathSaves[finalKey]
+                || existingDeathSaves[combatant.name]
+                || combatant.deathSaves;
+            const mergedDeathSaves = {
+                ...defaultDeathSaves,
+                ...(deathSavesSource || {})
+            };
+
+            // Note: Action economy NOT set here - only reset in nextTurn() when turn starts
             combatant.conditions = mergedConditions;
+            combatant.deathSaves = mergedDeathSaves;
 
             if (!combatant.hp || typeof combatant.hp !== 'object') {
                 combatant.hp = { current: null, max: null };
@@ -95,14 +114,20 @@ class CombatManager {
 
         const normalizedEconomy = {};
         const normalizedConditions = {};
+        const normalizedDeathSaves = {};
         combatState.initiativeOrder.forEach(combatant => {
             const key = combatant.uid;
             normalizedEconomy[key] = combatant.actionEconomy || { ...defaultEconomy };
             normalizedConditions[key] = Array.isArray(combatant.conditions) ? combatant.conditions : [];
+            normalizedDeathSaves[key] = combatant.deathSaves || { successes: 0, failures: 0, isStabilized: false };
         });
 
         combatState.actionEconomy = normalizedEconomy;
         combatState.conditions = normalizedConditions;
+        combatState.deathSaves = normalizedDeathSaves;
+
+        // Ensure combatState field for state machine
+        combatState.combatState = combatState.combatState || STATE.IDLE;
 
         const lookup = new Map(combatState.initiativeOrder.map(combatant => [combatant.uid, combatant]));
 
@@ -145,32 +170,21 @@ class CombatManager {
 
     /**
      * Initialize combat from narrative handoff
+     * @param {string} campaignId - Campaign identifier
+     * @param {Object} handoffData - Combat initialization data
+     * @param {string} combatType - Type of combat: 'random_encounter', 'quest_combat', 'boss_fight', 'treasure_find'
      */
-    async startCombat(campaignId, handoffData) {
+    async startCombat(campaignId, handoffData, combatType = 'random_encounter') {
         const startTime = Date.now();
         const { context, participants } = handoffData;
-
-        let contextPreview = '';
-        if (typeof context === 'string') {
-            contextPreview = context.substring(0, 50);
-        } else if (context && typeof context === 'object') {
-            if (context.reason && typeof context.reason === 'string') {
-                contextPreview = context.reason.substring(0, 50);
-            } else if (context.source && typeof context.source === 'string') {
-                contextPreview = context.source.substring(0, 50);
-            } else {
-                try {
-                    contextPreview = JSON.stringify(context).substring(0, 50);
-                } catch {
-                    contextPreview = '[context object]';
-                }
-            }
-        } else if (context != null) {
+        
+        let contextPreview;
+        if (context != null) {
             contextPreview = String(context).substring(0, 50);
         } else {
             contextPreview = '[no context]';
         }
-
+ 
         console.log('⚔️  [COMBAT] Starting combat', {
             campaign: campaignId,
             players: participants.players.length,
@@ -181,10 +195,8 @@ class CombatManager {
         const sanitizeCombatant = (entry, isPlayerDefault) => {
             const combatant = { ...(entry || {}) };
             combatant.isPlayer = isPlayerDefault || combatant.isPlayer === true;
-            combatant.type = combatant.isPlayer ? 'player' : 'enemy';
             const numericInitiative = Number(combatant.initiative);
             combatant.initiative = Number.isFinite(numericInitiative) ? numericInitiative : null;
-            combatant.conditions = Array.isArray(combatant.conditions) ? [...combatant.conditions] : [];
             return combatant;
         };
 
@@ -192,37 +204,74 @@ class CombatManager {
         const enemyCombatants = (participants.enemies || []).map(enemy => sanitizeCombatant(enemy, false));
         const allCombatants = [...playerCombatants, ...enemyCombatants];
 
+        // Sort by initiative
         allCombatants.sort((a, b) => {
             const aInit = Number.isFinite(a.initiative) ? a.initiative : -Infinity;
             const bInit = Number.isFinite(b.initiative) ? b.initiative : -Infinity;
             return bInit - aInit;
         });
 
-        console.log('📊 [COMBAT] Initiative order:', allCombatants.map(c =>
-            `${c.name}(${Number.isFinite(c.initiative) ? c.initiative : '—'})${c.isPlayer ? '👤' : '💀'}`
-        ).join(', '));
-
         const combatState = {
-            active: true,
-            round: 1,
+            active: 'pending',
+            round: 0,
             currentTurn: 0,
             initiativeOrder: allCombatants,
-            participants: {
-                players: playerCombatants,
-                enemies: enemyCombatants
-            },
+            participants: { players: playerCombatants, enemies: enemyCombatants },
             actionEconomy: {},
             conditions: {},
+            conversationHistory: [],
+            rollQueue: [],
             context,
-            conversationHistory: [], // Separate combat conversation
-            startTime: new Date().toISOString(),
-            rollQueue: []
+            combatType: combatType || 'random_encounter', // DMG loot type
+            startTime: new Date().toISOString()
         };
 
-        this.prepareCombatState(combatState);
+        // Get or create state machine for this campaign
+        const sm = this.getOrCreateStateMachine(campaignId);
+        if (sm.getCurrentState() === STATE.IDLE) {
+            sm.transition(STATE.COMBAT_PENDING, { handoffData });
+        }
 
+        this.prepareCombatState(combatState);
         this.activeCombats.set(campaignId, combatState);
         await this.saveCombatState(campaignId, combatState);
+
+        return combatState;
+    }
+
+    getOrCreateStateMachine(campaignId) {
+        if (!this.stateMachines.has(campaignId)) {
+            this.stateMachines.set(campaignId, new CombatStateMachine());
+        }
+        return this.stateMachines.get(campaignId);
+    }
+
+    getCurrentCombatState() {
+        const combat = this.activeCombats.get(this.campaignDataPath);
+        if (!combat || !combat.active) {
+            return null;
+        }
+        const sm = this.stateMachines.get(this.campaignDataPath);
+        return {
+            active: combat.active,
+            round: combat.round,
+            currentTurn: combat.currentTurn,
+            initiativeOrder: combat.initiativeOrder,
+            participants: combat.participants,
+            actionEconomy: combat.actionEconomy,
+            conditions: combat.conditions,
+            deathSaves: combat.deathSaves,
+            rollQueue: combat.rollQueue,
+            context: combat.context,
+            startTime: combat.startTime,
+            combatState: sm ? sm.getCurrentState() : 'IDLE'
+        };
+    }
+
+    /**
+     * Fuzzy match combatant names to handle variations
+     */
+    fuzzyMatchName(name1, name2) {
 
         const duration = Date.now() - startTime;
         console.log(`✅ [COMBAT] Combat started successfully (${duration}ms)`, {
@@ -327,7 +376,7 @@ class CombatManager {
 
         // Advance turn, skipping defeated combatants
         let attempts = 0;
-        const maxAttempts = combat.initiativeOrder.length;
+        const maxAttempts = combat.initiativeOrder.length * 2;
 
         do {
             combat.currentTurn++;
@@ -344,13 +393,15 @@ class CombatManager {
 
             attempts++;
         } while (
-            combat.initiativeOrder[combat.currentTurn]?.isDefeated &&
+            (combat.initiativeOrder[combat.currentTurn]?.isDefeated || 
+             combat.initiativeOrder[combat.currentTurn]?.hp?.current <= 0) &&
             attempts < maxAttempts
         );
 
-        // If all combatants defeated, combat should end
+        // If all combatants defeated, end combat automatically
         if (attempts >= maxAttempts) {
-            console.log('⚠️  [COMBAT] All combatants defeated, combat should end');
+            console.log('💀 [COMBAT] All combatants defeated, ending combat');
+            return await this.endCombat(campaignId);
         }
 
         const nextCombatant = combat.initiativeOrder[combat.currentTurn];
@@ -440,6 +491,99 @@ class CombatManager {
     }
 
     /**
+     * Process a death save for a combatant
+     */
+    async processDeathSave(campaignId, combatantName, result, isCrit = false) {
+        const combat = this.activeCombats.get(campaignId);
+        if (!combat) {
+            throw new Error('No active combat');
+        }
+
+        const combatant = this.findCombatant(combat, combatantName);
+        if (!combatant) {
+            throw new Error(`Combatant ${combatantName} not found`);
+        }
+
+        const key = this.getCombatantKey(combatant);
+        if (!combat.deathSaves[key]) {
+            combat.deathSaves[key] = { successes: 0, failures: 0, isStabilized: false };
+        }
+
+        const deathSaves = combat.deathSaves[key];
+
+        // Natural 20: consciousness restored immediately
+        if (isCrit && result === 20) {
+            combatant.hp.current = 1;
+            combatant.isDefeated = false;
+            deathSaves.successes = 0;
+            deathSaves.failures = 0;
+            deathSaves.isStabilized = false;
+            console.log(`💚 [COMBAT] ${combatantName} regained consciousness!`);
+            await this.saveCombatState(campaignId, combat);
+            return { type: 'revived', combatant };
+        }
+
+        // Natural 1: 2 failures
+        if (isCrit && result === 1) {
+            deathSaves.failures += 2;
+            console.log(`🎲 [COMBAT] ${combatantName} death save: Natural 1 = 2 failures`);
+        } else if (result >= 10) {
+            deathSaves.successes += 1;
+            console.log(`🎲 [COMBAT] ${combatantName} death save: Success (${deathSaves.successes}/3)`);
+        } else {
+            deathSaves.failures += 1;
+            console.log(`🎲 [COMBAT] ${combatantName} death save: Failure (${deathSaves.failures}/3)`);
+        }
+
+        // Stabilized: 3 successes
+        if (deathSaves.successes >= 3) {
+            deathSaves.isStabilized = true;
+            deathSaves.successes = 0;
+            deathSaves.failures = 0;
+            console.log(`✨ [COMBAT] ${combatantName} stabilized!`);
+        }
+
+        // Death: 3 failures
+        if (deathSaves.failures >= 3) {
+            combatant.hp.current = 0;
+            combatant.isDefeated = true;
+            console.log(`💀 [COMBAT] ${combatantName} died from death save failure!`);
+        }
+
+        combatant.deathSaves = deathSaves;
+        await this.saveCombatState(campaignId, combat);
+        return { type: deathSaves.isStabilized ? 'stabilized' : (deathSaves.failures >= 3 ? 'died' : 'continue'), deathSaves };
+    }
+
+    /**
+     * Check if combat should end based on defeated combatants
+     */
+    async checkCombatEndCondition(campaignId) {
+        const combat = this.activeCombats.get(campaignId);
+        if (!combat || !combat.active) {
+            return null;
+        }
+
+        const enemies = combat.participants?.enemies || [];
+        const players = combat.participants?.players || [];
+
+        const allEnemiesDefeated = enemies.length > 0 && enemies.every(e => e.isDefeated || e.hp?.current === 0);
+        const allPlayersDefeated = players.length > 0 && players.every(p => p.isDefeated || p.hp?.current === 0);
+
+        if (allEnemiesDefeated) {
+            console.log('🏆 [COMBAT] All enemies defeated - auto-ending combat with victory');
+            return await this.endCombat(campaignId, { outcome: 'victory', autoTriggered: true });
+        }
+
+        if (allPlayersDefeated) {
+            console.log('💀 [COMBAT] All party members defeated - auto-ending combat with defeat');
+            return await this.endCombat(campaignId, { outcome: 'defeat', autoTriggered: true });
+        }
+
+        return null;
+    }
+
+    /**
      * Add/remove condition
      */
     async updateCondition(campaignId, combatantName, condition, add = true) {
@@ -500,11 +644,15 @@ class CombatManager {
         });
 
         // Generate combat summary
-        const summary = this.generateCombatSummary(combat);
+        const summary = await this.generateCombatSummary(combat);
 
-        // Mark combat as inactive
+        // Mark combat as inactive and clear all combat flags
         combat.active = false;
+        combat.pending = false;  // Clear pending flag too
         combat.endTime = new Date().toISOString();
+        combat.initiativeOrder = [];  // Clear initiative order
+        combat.participants = { players: [], enemies: [] };  // Clear participants
+        combat.rollQueue = [];  // Clear any pending rolls
 
         await this.saveCombatState(campaignId, combat);
         this.activeCombats.delete(campaignId);
@@ -520,7 +668,7 @@ class CombatManager {
     /**
      * Generate combat summary for handoff back to narrative
      */
-    generateCombatSummary(combat) {
+    async generateCombatSummary(combat) {
         const casualties = {
             players: combat.initiativeOrder
                 .filter(c => c.isPlayer && c.isDefeated)
@@ -542,6 +690,38 @@ class CombatManager {
                 };
             });
 
+        // Collect death save information
+        const deathSaves = {};
+        combat.initiativeOrder.forEach(combatant => {
+            if (combatant.deathSaves && (combatant.deathSaves.successes > 0 || combatant.deathSaves.failures > 0)) {
+                deathSaves[combatant.name] = {
+                    successes: combatant.deathSaves.successes,
+                    failures: combatant.deathSaves.failures,
+                    isStabilized: combatant.deathSaves.isStabilized
+                };
+            }
+        });
+
+        // Calculate XP for defeated enemies
+        const xpCalc = require('./xp-calculator');
+        const defeatedEnemies = combat.initiativeOrder.filter(c => !c.isPlayer && (c.isDefeated || c.hp?.current === 0));
+        const xpData = xpCalc.getXPBreakdown(defeatedEnemies);
+
+        // Generate loot if enemies were defeated (using DMG-accurate tables)
+        let loot = { coins: {}, items: [], questItems: [] };
+        if (defeatedEnemies.length > 0) {
+            try {
+                const lootGen = require('./loot-generator-dmg');
+                const combatType = combat.combatType || 'random_encounter';
+                loot = await lootGen.generateLoot(defeatedEnemies, combatType, this.campaignDataPath);
+                console.log(`💰 [LOOT] Generated (${combatType}):`, JSON.stringify(loot));
+            } catch (lootError) {
+                console.error('⚠️ Failed to generate loot:', lootError.message);
+            }
+        } else {
+            console.log('📦 No defeated enemies for loot generation');
+        }
+
         return {
             combatComplete: true,
             rounds: combat.round,
@@ -549,10 +729,13 @@ class CombatManager {
                 new Date(combat.endTime) - new Date(combat.startTime) : 0,
             casualties,
             hpChanges,
+            deathSaves,
             context: combat.context.reason,
             survivors: combat.initiativeOrder
                 .filter(c => !c.isDefeated)
-                .map(c => ({ name: c.name, isPlayer: c.isPlayer }))
+                .map(c => ({ name: c.name, isPlayer: c.isPlayer })),
+            xp: xpData,
+            loot
         };
     }
 
@@ -565,7 +748,20 @@ class CombatManager {
             combatState.rollQueue = [];
         }
 
-        const combatFile = path.join(this.campaignDataPath, campaignId, 'combat-state.json');
+        // Ensure campaign directory exists before writing
+        const campaignDir = path.join(this.campaignDataPath, campaignId);
+        try {
+            await fs.access(campaignDir);
+        } catch (err) {
+            if (err.code === 'ENOENT') {
+                await fs.mkdir(campaignDir, { recursive: true });
+                console.log(`📁 Created campaign directory: ${campaignDir}`);
+            } else {
+                throw err;
+            }
+        }
+
+        const combatFile = path.join(campaignDir, 'combat-state.json');
         await fs.writeFile(combatFile, JSON.stringify(combatState, null, 2));
     }
 

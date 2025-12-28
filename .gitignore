@@ -1,10 +1,15 @@
 # Environment and secrets
 .env
+.env.*
 *.key
 *.pem
 api-config.json
 ai-provider-settings.json
 ecosystem.config.json
+ecosystem.config.js
+
+# RAG/Chroma database
+rag-service/chroma_db/
 
 # Database files
 *.db
@@ -67,3 +72,15 @@ campaigns/*/SEARCH_INDEX.json
 # Test databases
 test-*.db
 ecosystem.config.js
+
+# Archive folder (old backups and dead code)
+_archive/
+_backup*/
+*-backup/
+
+# Combat state (runtime state, not config)
+campaigns/*/combat-state.json
+
+# Built UI assets (regenerated on build)
+ui/dist/
+campaigns/*/svelte-dist/assets/

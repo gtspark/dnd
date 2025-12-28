@@ -1,8 +1,9 @@
 // COMPLETE INTELLIGENT D&D CAMPAIGN SERVER
 // Combines intelligent context retrieval with full game management
 
-// Load environment variables from .env file
-require('dotenv').config();
+// Load environment variables from .env file (explicit absolute path for PM2, override existing)
+require('dotenv').config({ path: '/opt/dnd/.env', override: true });
+
 if (!process.env.CLAUDE_API_KEY) {
     console.warn('⚠️ CLAUDE_API_KEY not found in environment – enhanced server will be unable to call the DM provider.');
 }
@@ -13,17 +14,104 @@ const path = require('path');
 const cors = require('cors');
 const fetch = require('node-fetch');
 
-// Database and RAG integration (Silverpeak only)
+// Stranger detection & lockdown
+const { notifyIfStranger, checkLockdown } = require('/home/admin/shared/notify.js');
+
+// Database and RAG integration
 const CampaignDatabase = require('./database/CampaignDatabase');
 const MemoryClient = require('./MemoryClient');
+const { getCampaignFeatures, hasFeature } = require('./campaign-features');
 const { getEquipmentProperties } = require('./5e-equipment-data');
 const { getSpellProperties } = require('./5e-spell-data');
 const DnDRulesService = require('./DnDRulesService');
 
 // Combat System
 const CombatManager = require('./combat-manager');
+const { CombatStateMachine, STATE } = require('./combat-state-machine');
+const KeywordTransitionDetector = require('./keyword-transition-detector');
+const xpCalculator = require('./xp-calculator');
+const lootGenerator = require('./loot-generator-dmg');
 
 const rulesLookupService = new DnDRulesService();
+
+// ==================== INPUT VALIDATION ====================
+
+const CAMPAIGN_ID_REGEX = /^[a-zA-Z0-9_-]+$/;
+const MAX_ACTION_LENGTH = 10000;
+const MAX_MESSAGE_LENGTH = 50000;
+
+/**
+ * Validate campaign ID format
+ * @param {string} campaignId
+ * @returns {{ valid: boolean, error?: string }}
+ */
+function validateCampaignId(campaignId) {
+    if (!campaignId || typeof campaignId !== 'string') {
+        return { valid: false, error: 'Campaign ID is required' };
+    }
+    if (campaignId.length > 50) {
+        return { valid: false, error: 'Campaign ID too long (max 50 chars)' };
+    }
+    if (!CAMPAIGN_ID_REGEX.test(campaignId)) {
+        return { valid: false, error: 'Campaign ID contains invalid characters (alphanumeric, hyphens, underscores only)' };
+    }
+    // Prevent path traversal
+    if (campaignId.includes('..') || campaignId.includes('/') || campaignId.includes('\\')) {
+        return { valid: false, error: 'Invalid campaign ID' };
+    }
+    return { valid: true };
+}
+
+/**
+ * Validate player action/message content
+ * @param {string} action
+ * @param {number} maxLength
+ * @returns {{ valid: boolean, error?: string, sanitized?: string }}
+ */
+function validateActionContent(action, maxLength = MAX_ACTION_LENGTH) {
+    if (!action || typeof action !== 'string') {
+        return { valid: false, error: 'Action is required' };
+    }
+    const trimmed = action.trim();
+    if (trimmed.length === 0) {
+        return { valid: false, error: 'Action cannot be empty' };
+    }
+    if (trimmed.length > maxLength) {
+        return { valid: false, error: `Action too long (max ${maxLength} chars)` };
+    }
+    return { valid: true, sanitized: trimmed };
+}
+
+/**
+ * Validate dice notation
+ * @param {string} dice
+ * @returns {{ valid: boolean, error?: string }}
+ */
+function validateDiceNotation(dice) {
+    if (!dice || typeof dice !== 'string') {
+        return { valid: false, error: 'Dice notation is required' };
+    }
+    // Basic dice notation: XdY+Z or XdY-Z or just XdY
+    const diceRegex = /^(\d+)?d(\d+)([+-]\d+)?$/i;
+    if (!diceRegex.test(dice.trim())) {
+        return { valid: false, error: 'Invalid dice notation (use format like 1d20, 2d6+3)' };
+    }
+    return { valid: true };
+}
+
+/**
+ * Validate mode parameter
+ * @param {string} mode
+ * @returns {{ valid: boolean, sanitized: string }}
+ */
+function validateMode(mode) {
+    const validModes = ['ic', 'ooc', 'dm-question'];
+    const m = (mode || 'ic').toLowerCase();
+    return {
+        valid: validModes.includes(m),
+        sanitized: validModes.includes(m) ? m : 'ic'
+    };
+}
 
 // ==================== AI PROVIDER SYSTEM ====================
 
@@ -120,6 +208,8 @@ class BaseAIProvider {
 // Claude Provider
 class ClaudeProvider extends BaseAIProvider {
     constructor() {
+        // Using Sonnet 4.5 for production quality
+        // Haiku 4.5 (claude-haiku-4-5) had issues with combat context tracking
         super('claude', 'claude-sonnet-4-5-20250929');
         const DnDRulesService = require('./DnDRulesService');
         this.rulesService = new DnDRulesService();
@@ -136,8 +226,9 @@ class ClaudeProvider extends BaseAIProvider {
             systemPromptLength: system.length
         });
 
-        // Define D&D 5e tools
+        // Define D&D 5e tools - lookup tools + state mutation tools
         const tools = [
+            // === LOOKUP TOOLS (return data, don't mutate) ===
             {
                 "name": "get_spell_details",
                 "description": "Get complete D&D 5e SRD spell details including damage, components, casting time, and duration. Use this when a character casts a spell or you need accurate spell mechanics.",
@@ -183,6 +274,135 @@ class ClaudeProvider extends BaseAIProvider {
                     },
                     "required": ["item_name"]
                 }
+            },
+            // === STATE MUTATION TOOLS (modify game state) ===
+            {
+                "name": "update_character",
+                "description": "Update a character's state when HP, conditions, inventory, or resources change. ALWAYS call this when narrating damage, healing, gaining/losing items, or status effects.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "character": {
+                            "type": "string",
+                            "description": "Character name (e.g., 'Kira', 'Thorne')"
+                        },
+                        "hp_change": {
+                            "type": "integer",
+                            "description": "HP delta: negative for damage, positive for healing (e.g., -5 for 5 damage, +10 for 10 healing)"
+                        },
+                        "add_conditions": {
+                            "type": "array",
+                            "items": { "type": "string" },
+                            "description": "Conditions to add (e.g., ['Prone', 'Poisoned'])"
+                        },
+                        "remove_conditions": {
+                            "type": "array",
+                            "items": { "type": "string" },
+                            "description": "Conditions to remove"
+                        },
+                        "gold_change": {
+                            "type": "integer",
+                            "description": "Gold/credits delta (negative for spending, positive for gaining)"
+                        },
+                        "add_items": {
+                            "type": "array",
+                            "items": { "type": "string" },
+                            "description": "Items to add to inventory"
+                        },
+                        "remove_items": {
+                            "type": "array",
+                            "items": { "type": "string" },
+                            "description": "Items to remove from inventory"
+                        }
+                    },
+                    "required": ["character"]
+                }
+            },
+            {
+                "name": "start_combat",
+                "description": "Initialize combat when a fight begins. Call this to set up enemies - the system will roll initiative for enemies automatically. After calling this, you MUST ask players to roll initiative with '🎲 Roll Initiative' - combat won't fully start until they roll.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "enemies": {
+                            "type": "array",
+                            "description": "List of enemies entering combat",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "name": { "type": "string", "description": "Enemy name (e.g., 'Goblin', 'Orc Warrior')" },
+                                    "hp": { "type": "integer", "description": "Hit points" },
+                                    "ac": { "type": "integer", "description": "Armor class" },
+                                    "initiative_bonus": { "type": "integer", "description": "Initiative modifier (usually DEX mod)" }
+                                },
+                                "required": ["name"]
+                            }
+                        },
+                        "surprise": {
+                            "type": "string",
+                            "enum": ["none", "players", "enemies"],
+                            "description": "Who is surprised, if anyone"
+                        },
+                        "context": {
+                            "type": "string",
+                            "description": "Brief description of why combat started"
+                        }
+                    },
+                    "required": ["enemies"]
+                }
+            },
+            {
+                "name": "end_combat",
+                "description": "End the current combat encounter. Call when all enemies are defeated, the party flees, or combat otherwise concludes.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "outcome": {
+                            "type": "string",
+                            "enum": ["victory", "defeat", "fled", "negotiated"],
+                            "description": "How combat ended"
+                        },
+                        "summary": {
+                            "type": "string",
+                            "description": "Brief summary of the combat outcome"
+                        },
+                        "xp_awarded": {
+                            "type": "integer",
+                            "description": "Total XP to award the party"
+                        }
+                    },
+                    "required": ["outcome"]
+                }
+            },
+            {
+                "name": "request_roll",
+                "description": "Request a dice roll from a player. Use for skill checks, saving throws, and attack rolls. STOP your response after calling this - don't describe the outcome until the roll is made.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "character": {
+                            "type": "string",
+                            "description": "Which character should roll"
+                        },
+                        "roll_type": {
+                            "type": "string",
+                            "description": "Type of roll (e.g., 'Perception', 'Athletics', 'Attack', 'Dexterity Saving Throw')"
+                        },
+                        "dc": {
+                            "type": "integer",
+                            "description": "Difficulty class for the check (if applicable)"
+                        },
+                        "target_ac": {
+                            "type": "integer",
+                            "description": "Target AC for attack rolls (if applicable)"
+                        },
+                        "reason": {
+                            "type": "string",
+                            "description": "Why the roll is needed (e.g., 'to notice the hidden trap', 'to hit the goblin')"
+                        }
+                    },
+                    "required": ["character", "roll_type"]
+                }
             }
         ];
 
@@ -206,16 +426,34 @@ CRITICAL DICE ROLL RULES - FOLLOW EXACTLY OR FAIL:
 - WRONG: "🎲 Roll Perception (DC 15)... You notice the trap and..." - DO NOT DESCRIBE OUTCOMES
 
 ───────────────────────────────────────────────────────────
-TOOL USAGE - D&D 5E SRD DATABASE
+TOOL USAGE - CRITICAL FOR GAME STATE
 ───────────────────────────────────────────────────────────
-You have access to tools for looking up official D&D 5e SRD data.
+You have access to tools that AUTOMATICALLY update game state. USE THEM.
 
-WHEN TO USE TOOLS:
-✓ Character casts a spell → ALWAYS call get_spell_details first
-✓ NEW enemies appear → IMMEDIATELY call get_monster_stats to get AC, HP, abilities, CR
-✓ Character examines/uses equipment → call get_item_details for accurate properties
+LOOKUP TOOLS (for accurate mechanics):
+✓ Character casts a spell → call get_spell_details first
+✓ NEW enemies appear → call get_monster_stats for AC, HP, abilities, CR
+✓ Character examines/uses equipment → call get_item_details
 
-CRITICAL: Always use tools BEFORE narrating spell/monster mechanics. Never guess.
+STATE MUTATION TOOLS - ALWAYS USE THESE:
+✓ Character takes damage → call update_character with hp_change (REQUIRED)
+✓ Character heals → call update_character with hp_change (REQUIRED)
+✓ Character gains condition (Prone, Poisoned, etc.) → call update_character with add_conditions
+✓ Character loses condition → call update_character with remove_conditions
+✓ Character gains/loses items → call update_character with add_items/remove_items
+✓ Character gains/spends gold → call update_character with gold_change
+
+COMBAT TOOLS - ALWAYS USE THESE:
+✓ Combat begins → call start_combat with enemy list (REQUIRED)
+✓ Combat ends (victory/defeat/flee) → call end_combat (REQUIRED)
+✓ Need a dice roll → call request_roll then STOP (don't describe outcome)
+
+CRITICAL RULES:
+1. NEVER describe damage without calling update_character
+2. NEVER start combat without calling start_combat
+3. NEVER end combat without calling end_combat
+4. After calling request_roll, STOP - don't write the outcome
+5. The tools update the game state automatically - trust them
 
 ───────────────────────────────────────────────────────────
 COMBAT FLOW - INITIATIVE AND TURN ORDER
@@ -594,10 +832,14 @@ END D&D 5E COMBAT MECHANICS
 
         const data = await response.json();
 
-        // Handle tool use
+        // Collect all state mutations across tool calls
+        let allStateMutations = [];
+
+        // Handle tool use (may recurse if AI uses multiple tools)
         if (data.stop_reason === 'tool_use') {
             console.log('🔧 Claude requested tool use');
-            const toolResults = await this.handleToolUse(data.content);
+            const { toolResults, stateMutations } = await this.handleToolUse(data.content);
+            allStateMutations.push(...stateMutations);
 
             // Continue conversation with tool results
             const followUpMessages = [...messages, {
@@ -608,11 +850,21 @@ END D&D 5E COMBAT MECHANICS
                 content: toolResults
             }];
 
-            // Recursive call without tools to get final response - pass enhanced system prompt
-            return await this.generateResponseWithoutTools(enhancedSystem, followUpMessages, apiKey);
+            // Recursive call to get final response (with tools enabled to allow more tool calls)
+            const finalResult = await this.generateResponseWithTools(enhancedSystem, followUpMessages, apiKey, tools);
+
+            // Merge state mutations from recursive calls
+            if (finalResult.stateMutations) {
+                allStateMutations.push(...finalResult.stateMutations);
+            }
+
+            return {
+                text: finalResult.text || finalResult,
+                stateMutations: allStateMutations
+            };
         }
 
-        // Normal text response
+        // Normal text response (no tool use)
         if (data.content && data.content[0]) {
             const duration = Date.now() - startTime;
             let content = data.content[0].text;
@@ -623,26 +875,114 @@ END D&D 5E COMBAT MECHANICS
                 responseLength: content.length,
                 inputTokens: data.usage?.input_tokens,
                 outputTokens: data.usage?.output_tokens,
-                stopReason: data.stop_reason
+                stopReason: data.stop_reason,
+                stateMutations: allStateMutations.length
             });
 
             content = content.replace(/\*\*DM \([^)]+\)\*\*/g, '').trim();
-            // Don't add DM signature - it's in the UI header
-            return content;
+
+            return {
+                text: content,
+                stateMutations: allStateMutations
+            };
         } else {
             throw new Error('No content in Claude response');
         }
     }
 
+    // Helper for recursive tool use calls
+    async generateResponseWithTools(system, messages, apiKey, tools) {
+        const fetch = require('node-fetch');
+
+        const response = await fetch('https://api.anthropic.com/v1/messages', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'x-api-key': apiKey,
+                'anthropic-version': '2023-06-01'
+            },
+            body: JSON.stringify({
+                model: this.modelName,
+                system: system,
+                messages: messages,
+                max_tokens: 2000,
+                temperature: 0.7,
+                tools: tools
+            })
+        });
+
+        if (!response.ok) {
+            const errorBody = await response.text();
+            throw new Error(`Claude API error: ${response.status} - ${errorBody}`);
+        }
+
+        const data = await response.json();
+        let allStateMutations = [];
+
+        // Handle more tool use
+        if (data.stop_reason === 'tool_use') {
+            console.log('🔧 Claude requested additional tool use');
+            const { toolResults, stateMutations } = await this.handleToolUse(data.content);
+            allStateMutations.push(...stateMutations);
+
+            const followUpMessages = [...messages, {
+                role: 'assistant',
+                content: data.content
+            }, {
+                role: 'user',
+                content: toolResults
+            }];
+
+            const finalResult = await this.generateResponseWithTools(system, followUpMessages, apiKey, tools);
+            if (finalResult.stateMutations) {
+                allStateMutations.push(...finalResult.stateMutations);
+            }
+
+            return {
+                text: finalResult.text || finalResult,
+                stateMutations: allStateMutations
+            };
+        }
+
+        // Extract text from response - handle mixed content blocks (text + tool_use)
+        if (data.content && data.content.length > 0) {
+            // Find all text blocks and combine them
+            const textBlocks = data.content
+                .filter(block => block.type === 'text' && block.text)
+                .map(block => block.text);
+
+            if (textBlocks.length > 0) {
+                let content = textBlocks.join('\n');
+                content = content.replace(/\*\*DM \([^)]+\)\*\*/g, '').trim();
+                return {
+                    text: content,
+                    stateMutations: allStateMutations
+                };
+            }
+
+            // If no text but we have mutations, return empty text (mutations still applied)
+            if (allStateMutations.length > 0) {
+                return {
+                    text: '',
+                    stateMutations: allStateMutations
+                };
+            }
+        }
+
+        throw new Error('No content in Claude response');
+    }
+
     async handleToolUse(contentBlocks) {
         const toolResults = [];
+        const stateMutations = [];  // Track state-changing tool calls for later processing
 
         for (const block of contentBlocks) {
             if (block.type === 'tool_use') {
-                console.log(`🔍 Tool: ${block.name} with input:`, block.input);
+                console.log(`🔧 Tool: ${block.name} with input:`, JSON.stringify(block.input));
                 let result;
 
                 try {
+                    // === LOOKUP TOOLS (return data to AI) ===
                     if (block.name === 'get_spell_details') {
                         result = await this.rulesService.getSpellDetails(
                             block.input.spell_name,
@@ -652,6 +992,27 @@ END D&D 5E COMBAT MECHANICS
                         result = await this.rulesService.getMonsterStats(block.input.monster_name);
                     } else if (block.name === 'get_item_details') {
                         result = await this.rulesService.getItemDetails(block.input.item_name);
+                    }
+                    // === STATE MUTATION TOOLS (queue for processing after response) ===
+                    else if (block.name === 'update_character') {
+                        stateMutations.push({ type: 'update_character', input: block.input });
+                        result = { success: true, message: `Character ${block.input.character} update registered` };
+                        console.log(`📝 State mutation: update_character for ${block.input.character}`, block.input);
+                    } else if (block.name === 'start_combat') {
+                        stateMutations.push({ type: 'start_combat', input: block.input });
+                        result = { success: true, message: `Combat initialized with ${block.input.enemies?.length || 0} enemies` };
+                        console.log(`⚔️ State mutation: start_combat with enemies:`, block.input.enemies?.map(e => e.name));
+                    } else if (block.name === 'end_combat') {
+                        stateMutations.push({ type: 'end_combat', input: block.input });
+                        result = { success: true, message: `Combat ended: ${block.input.outcome}` };
+                        console.log(`🏁 State mutation: end_combat (${block.input.outcome})`);
+                    } else if (block.name === 'request_roll') {
+                        stateMutations.push({ type: 'request_roll', input: block.input });
+                        result = { success: true, message: `Roll requested: ${block.input.roll_type} for ${block.input.character}` };
+                        console.log(`🎲 State mutation: request_roll - ${block.input.roll_type} for ${block.input.character}`);
+                    } else {
+                        result = { error: `Unknown tool: ${block.name}` };
+                        console.warn(`⚠️ Unknown tool requested: ${block.name}`);
                     }
 
                     toolResults.push({
@@ -671,7 +1032,7 @@ END D&D 5E COMBAT MECHANICS
             }
         }
 
-        return toolResults;
+        return { toolResults, stateMutations };
     }
 
     async generateResponseWithoutTools(system, messages, apiKey) {
@@ -709,21 +1070,8 @@ END D&D 5E COMBAT MECHANICS
     }
 
     getApiKey() {
-        try {
-            const fs = require('fs');
-            const config = JSON.parse(fs.readFileSync('./api-config.json', 'utf8'));
-            const fileKey = (config.api_key || '').trim();
-            if (fileKey) {
-                if (!this._apiKeyLoggedFromFile) {
-                    console.log('🔑 Using Claude API key from api-config.json');
-                    this._apiKeyLoggedFromFile = true;
-                }
-                return fileKey;
-            }
-        } catch (err) {
-            // Fall through to environment lookup below
-        }
-
+        // API keys should ONLY come from environment variables (via .env file)
+        // Never store API keys in config files that might be committed to git
         const envKey = process.env.CLAUDE_API_KEY && process.env.CLAUDE_API_KEY.trim();
         if (envKey) {
             if (!this._apiKeyLoggedFromEnv) {
@@ -733,8 +1081,8 @@ END D&D 5E COMBAT MECHANICS
             return envKey;
         }
 
-        console.error('❌ Claude API key not configured in api-config.json or environment');
-        throw new Error('Claude API key not configured in api-config.json or environment');
+        console.error('❌ Claude API key not found in environment (CLAUDE_API_KEY)');
+        throw new Error('Claude API key not found in environment (CLAUDE_API_KEY)');
     }
 }
 
@@ -928,6 +1276,9 @@ class IntelligentContextManager {
             currentTurn: 0,
             initiativeOrder: []
         };
+        
+        // Combat state machine for tracking IDLE/PENDING/ACTIVE/ENDED states
+        this.stateMachine = new CombatStateMachine();
 
         // Context windows
         this.contextWindows = {
@@ -959,6 +1310,10 @@ class IntelligentContextManager {
         // Lightweight caches
         this.monsterCache = new Map();
 
+        // Concurrency guards
+        this.extractionInProgress = false;
+        this.saveInProgress = false;
+
         // Campaign-specific file paths
         const campaignDir = `./campaigns/${campaignId}`;
         this.paths = {
@@ -986,9 +1341,10 @@ class IntelligentContextManager {
         await this.buildSearchIndices();
         await this.createRelevanceMap();
 
-        // Initialize database for Silverpeak
-        if (this.campaignId === 'test-silverpeak') {
-            console.log('📊 Initializing database for Silverpeak...');
+        // Initialize database for campaigns that support it
+        const features = getCampaignFeatures(this.campaignId);
+        if (features.usesDatabase) {
+            console.log(`📊 Initializing database for ${this.campaignId}...`);
             try {
                 this.db = new CampaignDatabase(this.campaignId);
                 await this.db.initialize();
@@ -1078,26 +1434,43 @@ class IntelligentContextManager {
                 this.campaignState.key_npcs = {};
             }
 
-            // Silverpeak campaign: ensure crucial NPC anchors exist
-            if (this.campaignId === 'test-silverpeak') {
+            // Fantasy campaigns: ensure world state exists
+            const campaignFeatures = getCampaignFeatures(this.campaignId);
+            if (campaignFeatures.genre === 'fantasy') {
                 if (!this.campaignState.world) {
                     this.campaignState.world = {};
                 }
-                this.campaignState.world.currentLocation = this.campaignState.world.currentLocation || 'Thornhaven';
-                this.campaignState.world.timeOfDay = this.campaignState.world.timeOfDay || 'Afternoon';
-                this.campaignState.world.weather = this.campaignState.world.weather || 'Crisp autumn breeze from the mountains';
-
-                if (!this.campaignState.key_npcs.elder_miriam) {
-                    this.campaignState.key_npcs.elder_miriam = {
-                        name: "Elder Miriam",
-                        role: "Village elder of Thornhaven",
-                        status: "Anxious about the missing Westmarch caravan",
-                        importance: "Quest giver and moral compass for the party"
-                    };
-                }
+                this.campaignState.world.currentLocation = this.campaignState.world.currentLocation || 'Unknown';
+                this.campaignState.world.timeOfDay = this.campaignState.world.timeOfDay || 'Day';
+                this.campaignState.world.weather = this.campaignState.world.weather || 'Clear';
             }
             
             console.log('📋 Campaign state loaded successfully');
+            
+            // Sync combat state machine with persisted state
+            if (this.stateMachine && this.campaignState.combatMachineState) {
+                const persistedState = this.campaignState.combatMachineState;
+                const currentMachineState = this.stateMachine.getCurrentState();
+                
+                if (persistedState !== currentMachineState) {
+                    console.log(`🔍 [STATE SYNC] Syncing state machine: ${currentMachineState} → ${persistedState}`);
+                    // Directly set the state (bypassing transition validation for load)
+                    this.stateMachine.currentState = persistedState;
+                }
+                
+                // If combat was COMBAT_ENDED, auto-transition to IDLE
+                if (persistedState === 'COMBAT_ENDED') {
+                    console.log('🔄 [STATE SYNC] Combat was ENDED, transitioning to IDLE');
+                    this.stateMachine.currentState = 'IDLE';
+                    this.campaignState.combatMachineState = 'IDLE';
+                }
+            }
+            
+            // Sync combat state object
+            if (this.campaignState.combat) {
+                this.combatState = this.campaignState.combat;
+                console.log(`🔍 [STATE SYNC] Combat state loaded: active=${this.combatState.active}`);
+            }
             
         } catch (err) {
             console.log('⚠️ No campaign state found, using defaults');
@@ -2169,15 +2542,9 @@ class IntelligentContextManager {
                 // Match multiple heading formats: "INITIATIVE ORDER", "Turn Order - Round 1", "═══ INITIATIVE ORDER ═══", "📋 INITIATIVE ORDER" etc.
                 // Capture until next section (marked by ##, ---, or **ROUND)
                 const initiativeMatch = response.match(/(?:##\s*)?\*\*(?:[^\w\s]*\s*)?(?:═+\s*)?(?:INITIATIVE ORDER|Turn Order|TURN ORDER)(?:\s+═+)?(?:\s*-\s*Round\s+\d+)?[:\s]*\*\*?[\s\S]*?(?=\n(?:##|---|---\n|\*\*(?:ROUND|Round)))/i);
-                console.log('🔍 DEBUG: Initiative regex matched:', !!initiativeMatch);
-                if (!initiativeMatch) {
-                    console.log('🔍 DEBUG: Response snippet:', response.substring(0, 500));
-                }
                 if (initiativeMatch) {
                     const combatants = [];
                     const initiativeText = initiativeMatch[0];
-
-                    console.log('🔍 DEBUG: Initiative text to parse:', initiativeText.substring(0, 200));
 
                     // Split into lines and parse each one
                     const lines = initiativeText.split('\n');
@@ -2370,7 +2737,7 @@ class IntelligentContextManager {
                         cache.set(cacheKey, cached);
 
                         // Store in RAG for future quick access (only once per monster)
-                        if (this.memoryClient && this.campaignId === 'test-silverpeak') {
+                        if (this.memoryClient && hasFeature(this.campaignId, 'usesRAG')) {
                             try {
                                 await this.memoryClient.storeMonsterStats(name, monsterData);
                                 console.log(`💾 Stored "${name}" stats in campaign RAG`);
@@ -2543,6 +2910,23 @@ ${this.combatState.initiativeOrder.map((c, i) =>
             console.log('\n📝 Processing:', playerAction.substring(0, 50) + '...');
             console.log('🎭 Message mode:', mode);
 
+            // CRITICAL: For campaigns that require RAG, verify service health before processing
+            // Without RAG, long-term memory is lost and catastrophic continuity errors can occur
+            if (hasFeature(this.campaignId, 'usesRAG')) {
+                if (!this.memoryClient) {
+                    console.error('🚨 RAG_SERVICE_REQUIRED: Memory service not connected');
+                    throw new Error('RAG_SERVICE_REQUIRED: Memory service not connected. Campaign cannot continue without long-term memory. Please check the silverpeak-memory service.');
+                }
+                
+                // Verify service is still responsive
+                const isHealthy = await this.memoryClient.checkHealth();
+                if (!isHealthy) {
+                    console.error('🚨 RAG_SERVICE_UNAVAILABLE: Memory service health check failed');
+                    throw new Error('RAG_SERVICE_UNAVAILABLE: Memory service is down. Campaign paused to prevent continuity errors. Please restart the silverpeak-memory service.');
+                }
+                console.log('✅ RAG service health verified');
+            }
+
             const wasCombatActive = !!(this.combatState?.active);
             const previousInitiativeCount = Array.isArray(this.combatState?.initiativeOrder)
                 ? this.combatState.initiativeOrder.length
@@ -2580,6 +2964,8 @@ ${this.combatState.initiativeOrder.map((c, i) =>
             // Send to AI for Phase 1
             const response = await this.sendToAI(prompt, playerAction);
 
+            console.log(`🔍 After sendToAI - combatState.active:`, this.combatState?.active);
+
             // Check if we got a valid response
             if (!response) {
                 console.log('❌ No response from AI, using fallback');
@@ -2605,24 +2991,36 @@ ${this.combatState.initiativeOrder.map((c, i) =>
                 };
             } else {
                             // Complete narrative - save normally with mode
+                            console.log('🔍 Before updateMemory - combatState.active:', this.combatState?.active);
                             await this.updateMemory(playerAction, response, sessionId, mode);
-                
-                            // Check for [TURN_COMPLETE] signal from AI during active combat
+                            console.log('🔍 After updateMemory - combatState.active:', this.combatState?.active);
+
+                            // Legacy [TURN_COMPLETE] signal - now handled by advanceCombatTurns() with pattern detection
+                            // Just strip the signal if present (turn advancement happens later via advanceCombatTurns)
                             let narrative = response;
-                            if (this.combatState.active && narrative.includes('[TURN_COMPLETE]')) {
-                                console.log('➡️  [COMBAT] AI signaled turn complete. Advancing turn...');
-                                const updatedCombatState = await combatManager.nextTurn(this.campaignId);
-                                updateSharedCombatState(this, updatedCombatState);
+                            if (narrative.includes('[TURN_COMPLETE]')) {
+                                console.log('➡️  [COMBAT] Found [TURN_COMPLETE] signal - will be processed by advanceCombatTurns()');
                                 narrative = narrative.replace('[TURN_COMPLETE]', '').trim();
                             }
                 
                             // Extract enemy data if present (for combat mode triggers)
-                            const enemyData = await this.extractEnemyData(narrative);
-                            console.log('🔍 DEBUG extractEnemyData result:', JSON.stringify(enemyData, null, 2));
+                            // But skip if combat was already initiated via start_combat tool
+                            let enemyData = null;
+                            if (this.combatState?.active === 'pending' || this.combatState?.active === true) {
+                                console.log('🔍 Skipping extractEnemyData in processPlayerAction - combat already active/pending');
+                            } else {
+                                enemyData = await this.extractEnemyData(narrative);
+                                console.log('🔍 DEBUG extractEnemyData result:', JSON.stringify(enemyData, null, 2));
+                            }
                 
+                            // Strip JSON code blocks from narrative before sending to frontend
+                            let cleanNarrative = narrative.replace(/```json\s*\n[\s\S]*?\n```/g, '').trim();
+                            // Also strip any leftover empty lines from the removal
+                            cleanNarrative = cleanNarrative.replace(/\n{3,}/g, '\n\n');
+
                             const result = {
                                 success: true,
-                                narrative: narrative
+                                narrative: cleanNarrative
                             };
                 const nowCombatActive = !!(this.combatState?.active) && Array.isArray(this.combatState?.initiativeOrder) && this.combatState.initiativeOrder.length > 0;
 
@@ -2652,6 +3050,30 @@ ${this.combatState.initiativeOrder.map((c, i) =>
                     result.initiativeOrder = initiativeOrder;
 
                     console.log(`⚔️  Combat encounter detected! ${participants.enemies.length} enemies found`);
+
+                    // Set combat state to pending when combat detected from narrative JSON
+                    if (!this.combatState?.active) {
+                        this.combatState = {
+                            active: 'pending',
+                            round: 0,
+                            currentTurn: 0,
+                            initiativeOrder: initiativeOrder,
+                            participants: participants,
+                            context: contextInfo,
+                            actionEconomy: {}
+                        };
+                        // Also update campaign state
+                        if (this.campaignState) {
+                            this.campaignState.combat = {
+                                ...this.campaignState.combat,
+                                active: 'pending',
+                                initiativeOrder: initiativeOrder,
+                                participants: participants
+                            };
+                            await this.updateCampaignState({ combat: this.campaignState.combat });
+                        }
+                        console.log(`⚔️  Combat state set to pending`);
+                    }
                 } else if (nowCombatActive && (!wasCombatActive || previousInitiativeCount === 0)) {
                     const participants = this.combatState.participants || {
                         players: [],
@@ -2731,6 +3153,80 @@ ${this.combatState.initiativeOrder.map((c, i) =>
                     console.log(`🎲 Found ${allRollRequests.length} roll request(s) in narrative:`, allRollRequests);
                 }
 
+                // Advance combat turns after player action (chains through enemy turns)
+                if (this.combatState?.active === true && mode === 'ic') {
+                    await this.advanceCombatTurns(result, mode);
+                }
+
+                // Detect narrative combat endings (DM says combat ended but didn't call end_combat tool)
+                // Check if combat is active OR pending (combat might not have fully started)
+                if ((this.combatState?.active === true || this.combatState?.active === 'pending') && mode === 'ic') {
+                    const narrative = result.narrative || '';
+                    const combatEndPatterns = [
+                        // Explicit combat end
+                        /combat\s+(has\s+)?(end|ended|ends|concluded|concludes|finished|finishes|is\s+over)/i,
+                        /fight\s+(is\s+)?(over|done|finished)/i,
+                        /battle\s+(has\s+)?(end|ended|ends|concluded|concludes|finished|finishes|is\s+over)/i,
+                        /encounter\s+(has\s+)?(end|ended|ends|concluded|concludes)/i,
+                        
+                        // Enemy defeat
+                        /enemies?\s+(are\s+|have\s+been\s+|were\s+)?(all\s+)?(defeated|slain|destroyed|killed|dead|fallen)/i,
+                        /\ball\s+enemies?\s+(defeated|slain|destroyed|dead)/i,
+                        /last\s+enemy\s+(falls?|defeated|slain|dies?)/i,
+                        /both\s+.{0,20}(defeated|slain|dead|motionless)/i,
+                        
+                        // Enemy flight
+                        /enemies?\s+(have\s+)?(fled|escaped|retreated|ran\s+away)/i,
+                        /\b(fled|escaped|retreated)\s+(into|down|through|from)/i,
+                        
+                        // Surrender
+                        /enemies?\s+(have\s+)?surrender(s|ed)?/i,
+                        /\bsurrenders?\s+(to\s+you|completely|unconditionally)/i,
+                        
+                        // Victory
+                        /\b(victory|victorious|triumph(ant)?)\b/i,
+                        /you\s+(have\s+)?won/i,
+                        /you\s+are\s+victorious/i,
+                        
+                        // Threat elimination
+                        /threat\s+(has\s+been\s+)?(eliminated|neutralized|removed)/i,
+                        /no\s+(more\s+)?enemies?\s+(remain|left)/i,
+                        /no\s+(more\s+)?threats?\s+(remain|left)/i,
+                        
+                        // Post-combat activities
+                        /search(ing)?\s+(the\s+)?(bodies|corpses|remains)/i,
+                        /bodies?\s+(lie|lay|litter|scattered)/i,
+                        /\blooting\s+(the|their)\b/i,
+                        /corpses?\s+(of\s+the|lie|lay)/i
+                    ];
+
+                    const narrativeMatchesEndPattern = combatEndPatterns.some(pattern => pattern.test(narrative));
+
+                    // Safeguard: Also verify no active enemies remain
+                    const hasActiveEnemies = this.combatState.initiativeOrder?.some(
+                        c => !c.isPlayer && !c.isDefeated && !c.isDead
+                    ) || false;
+
+                    if (narrativeMatchesEndPattern) {
+                        const matchedPattern = combatEndPatterns.find(p => p.test(narrative));
+                        console.log('🏁 [AUTO-END] Combat end pattern detected in narrative');
+                        console.log(`   Matched pattern: ${matchedPattern}`);
+                        console.log(`   Narrative excerpt: "${narrative.substring(0, 200)}..."`);
+                        console.log(`   Active enemies remaining: ${hasActiveEnemies}`);
+                        
+                        if (!hasActiveEnemies) {
+                            console.log('🏁 [AUTO-END] No active enemies - triggering terminateCombatFromTool');
+                            await this.terminateCombatFromTool({ 
+                                outcome: 'victory', 
+                                summary: 'Combat ended via narrative detection' 
+                            });
+                            result.combatEnded = true;
+                        } else {
+                            console.log('⚠️ [AUTO-END] Pattern matched but active enemies remain - NOT ending combat');
+                        }
+                    }
+                }
+
                 return result;
             }
         } catch (error) {
@@ -2746,9 +3242,9 @@ ${this.combatState.initiativeOrder.map((c, i) =>
         const fetch = require('node-fetch');
 
         try {
-            // Retrieve relevant RAG memories (Silverpeak only)
+            // Retrieve relevant RAG memories (for campaigns that support it)
             let enhancedPrompt = systemPrompt;
-            if (this.campaignId === 'test-silverpeak' && this.memoryClient) {
+            if (hasFeature(this.campaignId, 'usesRAG') && this.memoryClient) {
                 try {
                     const memories = await this.memoryClient.retrieveMemories(playerAction, 5);
                     if (memories && memories.length > 0) {
@@ -2763,8 +3259,20 @@ ${this.combatState.initiativeOrder.map((c, i) =>
             }
 
             const messages = [{ role: "user", content: playerAction }];
-            const response = await this.aiProvider.generateResponse(enhancedPrompt, messages);
-            return response;
+            const aiResponse = await this.aiProvider.generateResponse(enhancedPrompt, messages);
+
+            // Handle new response format { text, stateMutations } from ClaudeProvider
+            if (aiResponse && typeof aiResponse === 'object' && aiResponse.text !== undefined) {
+                // Process state mutations from tool calls
+                if (aiResponse.stateMutations && aiResponse.stateMutations.length > 0) {
+                    console.log(`🔧 Processing ${aiResponse.stateMutations.length} state mutations from AI tools`);
+                    await this.processStateMutations(aiResponse.stateMutations);
+                }
+                return aiResponse.text;
+            }
+
+            // Legacy format (string response from DeepSeek/GPT4)
+            return aiResponse;
 
         } catch (error) {
             console.error(`${this.aiProvider.getCurrentProvider().toUpperCase()} API Error:`, error);
@@ -2772,6 +3280,507 @@ ${this.combatState.initiativeOrder.map((c, i) =>
             // Fallback response
             return this.getFallbackResponse(playerAction);
         }
+    }
+
+    /**
+     * Process state mutations from AI tool calls
+     * This replaces the old extractStateChanges() approach
+     */
+    async processStateMutations(mutations) {
+        for (const mutation of mutations) {
+            try {
+                switch (mutation.type) {
+                    case 'update_character':
+                        await this.applyCharacterUpdate(mutation.input);
+                        break;
+                    case 'start_combat':
+                        await this.initiateCombatFromTool(mutation.input);
+                        console.log(`🔍 After initiateCombatFromTool - combatState.active:`, this.combatState?.active);
+                        break;
+                    case 'end_combat':
+                        await this.terminateCombatFromTool(mutation.input);
+                        break;
+                    case 'request_roll':
+                        // Roll requests are handled separately by the roll queue system
+                        this.pendingRollRequest = mutation.input;
+                        console.log(`🎲 Pending roll request: ${mutation.input.roll_type} for ${mutation.input.character}`);
+                        break;
+                    default:
+                        console.warn(`⚠️ Unknown mutation type: ${mutation.type}`);
+                }
+            } catch (error) {
+                console.error(`❌ Error processing mutation ${mutation.type}:`, error);
+            }
+        }
+    }
+
+    /**
+     * Apply character update from update_character tool
+     */
+    async applyCharacterUpdate(input) {
+        const { character, hp_change, add_conditions, remove_conditions, gold_change, add_items, remove_items } = input;
+
+        // Find character in campaign state (handle different campaign structures)
+        let charData = null;
+        let charKey = null;
+
+        // Try fantasy structure (characters object)
+        if (this.campaignState?.characters) {
+            for (const [key, data] of Object.entries(this.campaignState.characters)) {
+                if (data.name?.toLowerCase() === character.toLowerCase() ||
+                    key.toLowerCase() === character.toLowerCase()) {
+                    charData = data;
+                    charKey = key;
+                    break;
+                }
+            }
+        }
+
+        // Try sci-fi structure (party object)
+        if (!charData && this.campaignState?.party) {
+            for (const [key, data] of Object.entries(this.campaignState.party)) {
+                if (data.name?.toLowerCase() === character.toLowerCase() ||
+                    key.toLowerCase() === character.toLowerCase()) {
+                    charData = data;
+                    charKey = key;
+                    break;
+                }
+            }
+        }
+
+        if (!charData) {
+            console.warn(`⚠️ Character not found: ${character}`);
+            return;
+        }
+
+        console.log(`📝 Updating character: ${charData.name || charKey}`);
+
+        // Apply HP change
+        if (hp_change !== undefined && hp_change !== 0) {
+            if (charData.hp && typeof charData.hp === 'object') {
+                const oldHp = charData.hp.current;
+                charData.hp.current = Math.max(0, Math.min(charData.hp.max, charData.hp.current + hp_change));
+                console.log(`   HP: ${oldHp} → ${charData.hp.current} (${hp_change > 0 ? '+' : ''}${hp_change})`);
+            } else if (typeof charData.hp === 'number') {
+                const oldHp = charData.hp;
+                charData.hp = Math.max(0, charData.hp + hp_change);
+                console.log(`   HP: ${oldHp} → ${charData.hp} (${hp_change > 0 ? '+' : ''}${hp_change})`);
+            }
+        }
+
+        // Apply conditions
+        if (!charData.conditions) charData.conditions = [];
+        if (add_conditions && add_conditions.length > 0) {
+            for (const cond of add_conditions) {
+                if (!charData.conditions.includes(cond)) {
+                    charData.conditions.push(cond);
+                    console.log(`   Added condition: ${cond}`);
+                }
+            }
+        }
+        if (remove_conditions && remove_conditions.length > 0) {
+            charData.conditions = charData.conditions.filter(c => !remove_conditions.includes(c));
+            console.log(`   Removed conditions: ${remove_conditions.join(', ')}`);
+        }
+
+        // Apply gold/credits change
+        if (gold_change !== undefined && gold_change !== 0) {
+            const resourceKey = charData.credits !== undefined ? 'credits' : 'gold';
+            const oldVal = charData[resourceKey] || 0;
+            charData[resourceKey] = Math.max(0, oldVal + gold_change);
+            console.log(`   ${resourceKey}: ${oldVal} → ${charData[resourceKey]} (${gold_change > 0 ? '+' : ''}${gold_change})`);
+        }
+
+        // Apply inventory changes
+        if (!charData.inventory) charData.inventory = [];
+        if (add_items && add_items.length > 0) {
+            charData.inventory.push(...add_items);
+            console.log(`   Added items: ${add_items.join(', ')}`);
+        }
+        if (remove_items && remove_items.length > 0) {
+            charData.inventory = charData.inventory.filter(i => !remove_items.includes(i));
+            console.log(`   Removed items: ${remove_items.join(', ')}`);
+        }
+
+        // Save updated state
+        await this.updateCampaignState(this.campaignState);
+    }
+
+    /**
+     * Initiate combat from start_combat tool
+     * Only rolls initiative for enemies - waits for player initiative submission
+     */
+    async initiateCombatFromTool(input) {
+        // Guard: Prevent starting combat when already active or pending
+        if (this.combatState?.active === true || this.combatState?.active === 'pending') {
+            const currentState = this.combatState.active === true ? 'ACTIVE' : 'PENDING';
+            console.error(`⚠️ [COMBAT GUARD] Blocked combat re-initialization. Combat already ${currentState}`);
+            throw new Error(`COMBAT_ALREADY_ACTIVE: Cannot start new combat while combat is ${currentState}. End current combat first.`);
+        }
+
+        const { enemies, surprise, context, combatType } = input;
+
+        console.log(`⚔️ Initiating combat from AI tool call (pending player initiatives)`);
+        console.log(`   Combat Type: ${combatType || 'random_encounter'} (affects loot generation)`);
+        console.log(`   Enemies: ${enemies?.map(e => e.name).join(', ')}`);
+        console.log(`   Surprise: ${surprise || 'none'}`);
+
+        // Get player character info (but DON'T roll initiative - players will roll)
+        const playerPlaceholders = [];
+        const characters = this.campaignState?.characters || this.campaignState?.party || {};
+
+        for (const [key, char] of Object.entries(characters)) {
+            if (!char || typeof char !== 'object') continue;
+
+            const dexMod = char.abilities?.dex ? Math.floor((char.abilities.dex - 10) / 2) : 0;
+
+            playerPlaceholders.push({
+                id: key,
+                name: char.name || key,
+                type: 'player',
+                isPlayer: true,
+                initiative: null,  // Will be set when players submit their roll
+                dexMod: dexMod,    // Store for calculating final initiative
+                hp: char.hp,
+                ac: char.ac || 10
+            });
+            console.log(`   Player ${char.name || key}: Awaiting initiative roll (DEX mod: ${dexMod >= 0 ? '+' : ''}${dexMod})`);
+        }
+
+        // Roll initiative for enemies only
+        const enemyInits = (enemies || []).map((enemy, i) => {
+            const initBonus = enemy.initiative_bonus || 0;
+            const initRoll = Math.floor(Math.random() * 20) + 1 + initBonus;
+
+            console.log(`   Enemy ${enemy.name}: Initiative ${initRoll} (d20${initBonus >= 0 ? '+' : ''}${initBonus})`);
+
+            return {
+                id: `enemy-${i}`,
+                name: enemy.name,
+                type: 'enemy',
+                isPlayer: false,
+                initiative: initRoll,
+                hp: { current: enemy.hp || 20, max: enemy.hp || 20 },
+                ac: enemy.ac || 12
+            };
+        });
+
+        // Set combat state as PENDING (awaiting player initiative rolls)
+        this.combatState = {
+            active: 'pending',  // Not fully active until players roll
+            pending: true,
+            round: 0,
+            currentTurn: 0,
+            initiativeOrder: [],  // Will be populated after player rolls
+            participants: {
+                players: playerPlaceholders,
+                enemies: enemyInits
+            },
+            enemyInitiatives: enemyInits,  // Store enemy rolls
+            playerCharacters: playerPlaceholders,  // Store player info for later
+            actionEconomy: {},
+            surprise: surprise || 'none',
+            context: context || 'Combat initiated by DM',
+            combatType: combatType || 'random_encounter',  // For DMG loot generation
+            startTime: new Date().toISOString()
+        };
+
+        // Transition state machine to COMBAT_PENDING
+        if (this.stateMachine && this.stateMachine.getCurrentState() === 'IDLE') {
+            try {
+                this.stateMachine.transition('COMBAT_PENDING', { enemies: enemies?.length, context });
+                console.log('🔄 [STATE] Transitioned to COMBAT_PENDING');
+            } catch (e) {
+                console.warn('⚠️ State machine transition failed:', e.message);
+            }
+        }
+
+        // Update campaign state
+        if (!this.campaignState) this.campaignState = {};
+        this.campaignState.combat = JSON.parse(JSON.stringify(this.combatState));
+        this.campaignState.combatMachineState = this.stateMachine?.getCurrentState() || 'COMBAT_PENDING';
+
+        console.log(`⚔️ Combat pending! Waiting for player initiative rolls...`);
+        console.log(`   Enemy initiatives ready: ${enemyInits.map(e => `${e.name}(${e.initiative})`).join(', ')}`);
+    }
+
+    /**
+     * Complete combat initialization after players submit initiative rolls
+     * Called when players roll initiative via the roll system
+     */
+    async completeInitiativeRolls(rollResult) {
+        if (!this.combatState || this.combatState.active !== 'pending') {
+            console.warn('⚠️ No pending combat to complete initiative for');
+            return null;
+        }
+
+        console.log(`🎲 Processing player initiative roll: ${rollResult}`);
+
+        // Parse the roll result - expecting a single d20 roll that applies to all PCs
+        // Each PC adds their own DEX mod
+        const baseRoll = parseInt(rollResult) || Math.floor(Math.random() * 20) + 1;
+
+        const playerInits = this.combatState.playerCharacters.map(pc => {
+            const finalInit = baseRoll + (pc.dexMod || 0);
+            console.log(`   ${pc.name}: ${baseRoll} + ${pc.dexMod || 0} = ${finalInit}`);
+            return {
+                ...pc,
+                initiative: finalInit
+            };
+        });
+
+        // Combine with enemy initiatives and sort
+        const enemyInits = this.combatState.enemyInitiatives || [];
+        const initiativeOrder = [...playerInits, ...enemyInits]
+            .sort((a, b) => b.initiative - a.initiative);
+
+        // Update to fully active combat
+        this.combatState = {
+            ...this.combatState,
+            active: true,
+            pending: false,
+            round: 1,
+            currentTurn: 0,
+            initiativeOrder,
+            participants: {
+                players: playerInits,
+                enemies: enemyInits
+            }
+        };
+
+        // Clean up temporary fields
+        delete this.combatState.enemyInitiatives;
+        delete this.combatState.playerCharacters;
+
+        // Transition state machine to COMBAT_ACTIVE
+        if (this.stateMachine && this.stateMachine.getCurrentState() === 'COMBAT_PENDING') {
+            try {
+                this.stateMachine.transition('COMBAT_ACTIVE', { round: 1, firstCombatant: initiativeOrder[0]?.name });
+                console.log('🔄 [STATE] Transitioned to COMBAT_ACTIVE');
+            } catch (e) {
+                console.warn('⚠️ State machine transition failed:', e.message);
+            }
+        }
+
+        // Update via combat manager if available
+        if (combatManager) {
+            try {
+                await combatManager.setCombatState(this.campaignId, this.combatState, true);
+            } catch (e) {
+                console.warn('⚠️ Could not update combat manager:', e.message);
+            }
+        }
+
+        // Update campaign state
+        this.campaignState.combat = JSON.parse(JSON.stringify(this.combatState));
+        this.campaignState.combatMachineState = this.stateMachine?.getCurrentState() || 'COMBAT_ACTIVE';
+
+        console.log(`⚔️ Combat fully started! Turn order: ${initiativeOrder.map(c => `${c.name}(${c.initiative})`).join(' → ')}`);
+
+        return this.combatState;
+    }
+
+    /**
+     * Terminate combat from end_combat tool
+     */
+    async terminateCombatFromTool(input) {
+        const { outcome, summary, xp_awarded } = input;
+
+        console.log(`🏁 Ending combat from AI tool call`);
+        console.log(`   Outcome: ${outcome}`);
+        console.log(`   Summary: ${summary}`);
+        if (xp_awarded) console.log(`   XP Awarded: ${xp_awarded}`);
+
+        // Transition state machine to COMBAT_ENDED
+        if (this.stateMachine) {
+            const currentState = this.stateMachine.getCurrentState();
+            if (currentState !== 'COMBAT_ENDED' && currentState !== 'IDLE') {
+                try {
+                    if (this.stateMachine.canTransition('COMBAT_ENDED')) {
+                        this.stateMachine.transition('COMBAT_ENDED', { reason: outcome || 'combat_ended', source: 'end_combat_tool' });
+                        console.log('🔄 [STATE] Transitioned to COMBAT_ENDED');
+                    }
+                } catch (e) {
+                    console.warn('⚠️ State machine transition failed:', e.message);
+                }
+            }
+        }
+
+        this.combatState = {
+            active: false,
+            round: 0,
+            currentTurn: 0,
+            initiativeOrder: [],
+            participants: { players: [], enemies: [] },
+            outcome,
+            summary,
+            xp_awarded,
+            endTime: new Date().toISOString()
+        };
+
+        // Clear via combat manager
+        if (combatManager) {
+            try {
+                await combatManager.endCombat(this.campaignId);
+            } catch (e) {
+                console.warn('⚠️ Could not end combat via manager:', e.message);
+            }
+        }
+
+        // Update campaign state - fully reset combat state and clear roll queue
+        if (this.campaignState) {
+            this.campaignState.combat = {
+                active: false,
+                round: 0,
+                currentTurn: 0,
+                initiativeOrder: [],
+                participants: { players: [], enemies: [] },
+                context: {},
+                actionEconomy: {},
+                conditions: {},
+                conversationHistory: [],
+                rollQueue: []  // Clear stale roll requests
+            };
+            this.campaignState.combatMachineState = 'COMBAT_ENDED';
+
+            // Persist to disk
+            await this.updateCampaignState({ 
+                combat: this.campaignState.combat,
+                combatMachineState: 'COMBAT_ENDED'
+            });
+        }
+
+        console.log(`🏁 Combat ended: ${outcome}`);
+        console.log(`🔍 [STATE SYNC] After combat end: Machine=${this.stateMachine?.getCurrentState()} | Combat.active=${this.combatState?.active}`);
+
+        // Auto-transition to IDLE after a short delay
+        const self = this;
+        setTimeout(async () => {
+            try {
+                if (self.stateMachine && self.stateMachine.getCurrentState() === 'COMBAT_ENDED') {
+                    if (self.stateMachine.canTransition('IDLE')) {
+                        self.stateMachine.transition('IDLE', { reason: 'combat_cleanup', source: 'auto' });
+                        if (self.campaignState) {
+                            self.campaignState.combatMachineState = 'IDLE';
+                            await self.updateCampaignState({ combatMachineState: 'IDLE' });
+                        }
+                        console.log('🔄 [STATE SYNC] Auto-transitioned: COMBAT_ENDED → IDLE');
+                    }
+                }
+            } catch (error) {
+                console.warn('⚠️ [STATE SYNC] Failed to auto-transition to IDLE:', error.message);
+            }
+        }, 1000);
+    }
+
+    /**
+     * Advance combat turns after a player action, chaining through enemy turns
+     * Detects enemy turn patterns in the narrative and advances the turn tracker accordingly
+     */
+    async advanceCombatTurns(result, mode) {
+        // Only process during active combat in IC mode
+        if (this.combatState?.active !== true || mode !== 'ic') {
+            return;
+        }
+
+        const narrative = result.narrative || '';
+        const initiativeOrder = this.combatState.initiativeOrder || [];
+        
+        if (initiativeOrder.length === 0) {
+            console.log('⚠️ [TURN CHAIN] No initiative order, skipping turn advance');
+            return;
+        }
+
+        // Find all enemy turn patterns in the narrative: **Name's turn**:
+        // Handles variations like "**Goblin's turn**:", "**Cult Fanatic's turn**:"
+        const enemyTurnPattern = /\*\*([^*]+)'s turn\*\*:/gi;
+        const narratedEnemyTurns = [];
+        let match;
+        
+        while ((match = enemyTurnPattern.exec(narrative)) !== null) {
+            narratedEnemyTurns.push(match[1].trim());
+        }
+
+        if (narratedEnemyTurns.length > 0) {
+            console.log(`➡️  [TURN CHAIN] Detected ${narratedEnemyTurns.length} enemy turn(s) in narrative:`, narratedEnemyTurns);
+        }
+
+        // Get current combatant before advancing
+        let currentIndex = this.combatState.currentTurn || 0;
+        let currentCombatant = initiativeOrder[currentIndex];
+        
+        // Check if DM is requesting a damage roll - don't advance turn if so
+        const awaitingDamageRoll = /roll\s+damage|now\s+roll.*d\d+|damage.*roll/i.test(narrative);
+        if (awaitingDamageRoll) {
+            console.log(`⏸️  [TURN CHAIN] Awaiting damage roll, NOT advancing turn`);
+            return;
+        }
+        
+        // If current combatant is a player (just acted), advance past them
+        if (currentCombatant?.isPlayer) {
+            console.log(`➡️  [TURN CHAIN] Player ${currentCombatant.name} finished their turn, advancing...`);
+            const updatedState = await combatManager.nextTurn(this.campaignId);
+            updateSharedCombatState(this, updatedState);
+            currentIndex = updatedState.currentTurn;
+            currentCombatant = updatedState.initiativeOrder[currentIndex];
+        }
+
+        // Now chain through any enemy turns that were narrated
+        let turnsAdvanced = 0;
+        const maxTurns = initiativeOrder.length; // Safety limit
+        
+        while (turnsAdvanced < maxTurns) {
+            currentCombatant = this.combatState.initiativeOrder[this.combatState.currentTurn];
+            
+            if (!currentCombatant) break;
+            
+            // If we've reached a player, stop - it's their turn now
+            if (currentCombatant.isPlayer) {
+                console.log(`➡️  [TURN CHAIN] Reached player ${currentCombatant.name}'s turn, stopping chain`);
+                result.nextTurn = {
+                    name: currentCombatant.name,
+                    isPlayer: true,
+                    initiative: currentCombatant.initiative
+                };
+                break;
+            }
+            
+            // Check if this enemy's turn was narrated
+            const enemyName = currentCombatant.name;
+            const wasNarrated = narratedEnemyTurns.some(narrated => {
+                // Fuzzy match: check if names match (case insensitive, partial match)
+                const n1 = narrated.toLowerCase();
+                const n2 = enemyName.toLowerCase();
+                return n1 === n2 || n1.includes(n2) || n2.includes(n1);
+            });
+            
+            if (wasNarrated) {
+                console.log(`➡️  [TURN CHAIN] Enemy ${enemyName}'s turn was narrated, advancing...`);
+                const updatedState = await combatManager.nextTurn(this.campaignId);
+                updateSharedCombatState(this, updatedState);
+                turnsAdvanced++;
+            } else {
+                // Enemy's turn wasn't narrated - this might be a problem
+                // For now, log a warning but don't auto-advance (DM should narrate it)
+                console.log(`⚠️ [TURN CHAIN] Enemy ${enemyName}'s turn not narrated - waiting for DM to narrate`);
+                result.nextTurn = {
+                    name: enemyName,
+                    isPlayer: false,
+                    initiative: currentCombatant.initiative,
+                    needsNarration: true
+                };
+                break;
+            }
+        }
+
+        // Update result with final combat state
+        result.combatState = {
+            round: this.combatState.round,
+            currentTurn: this.combatState.currentTurn,
+            currentCombatant: this.combatState.initiativeOrder[this.combatState.currentTurn]?.name
+        };
+
+        console.log(`➡️  [TURN CHAIN] Complete. Advanced ${turnsAdvanced} enemy turn(s). Now: Round ${this.combatState.round}, Turn ${this.combatState.currentTurn + 1}`);
     }
 
     // ==================== TWO-PHASE DICE SYSTEM ====================
@@ -3140,6 +4149,18 @@ What do you do?`;
     }
 
     async saveConversationHistory(playerAction, dmResponse, mode = 'ic') {
+        // Prevent concurrent saves
+        if (this.saveInProgress) {
+            console.log('⏳ Save already in progress, queuing...');
+            // Wait briefly and retry once
+            await new Promise(resolve => setTimeout(resolve, 500));
+            if (this.saveInProgress) {
+                console.warn('⚠️ Save still in progress after wait, skipping');
+                return;
+            }
+        }
+
+        this.saveInProgress = true;
         console.log('💾 saveConversationHistory called');
         console.log('📝 Player action length:', playerAction?.length || 0, 'chars');
         console.log('📝 DM response length:', dmResponse?.length || 0, 'chars');
@@ -3174,16 +4195,21 @@ What do you do?`;
             stateChanges = await this.extractStateChanges(dmResponse, playerAction);
 
             // Check for combat encounter in DM response
-            const enemyData = await this.extractEnemyData(dmResponse);
-            if (enemyData && enemyData.enemies && enemyData.enemies.length > 0) {
-                console.log(`⚔️  Combat detected! Adding ${enemyData.enemies.length} enemies to stateChanges`);
-                if (!stateChanges) stateChanges = {};
-                stateChanges.combat = {
-                    active: true,
-                    enemies: enemyData.enemies,
-                    turnOrder: [],
-                    currentTurn: 0
-                };
+            // BUT skip if combat was already initiated via start_combat tool (pending state)
+            if (this.combatState?.active === 'pending') {
+                console.log(`⚔️  Skipping extractEnemyData - combat already pending from start_combat tool`);
+            } else {
+                const enemyData = await this.extractEnemyData(dmResponse);
+                if (enemyData && enemyData.enemies && enemyData.enemies.length > 0) {
+                    console.log(`⚔️  Combat detected via extraction! Adding ${enemyData.enemies.length} enemies to stateChanges`);
+                    if (!stateChanges) stateChanges = {};
+                    stateChanges.combat = {
+                        active: true,
+                        enemies: enemyData.enemies,
+                        turnOrder: [],
+                        currentTurn: 0
+                    };
+                }
             }
 
             // Validate and add DM response
@@ -3205,11 +4231,20 @@ What do you do?`;
                 console.log('🔄 State changes applied:', stateChanges);
             }
 
+            // Detect combat end from narrative (in case end_combat tool wasn't called)
+            if ((this.combatState?.active === true || this.combatState?.active === 'pending' || this.campaignState?.combat?.active) &&
+                (dmResponse.includes('Combat ended') || dmResponse.includes('Victory!') ||
+                 dmResponse.match(/combat\s+(ends|is over|concludes)/i) ||
+                 dmResponse.match(/enemies?\s+(flee|fled|retreat|defeated)/i))) {
+                console.log('🏁 Combat end detected from narrative, cleaning up state');
+                await this.terminateCombatFromTool({ outcome: 'victory', summary: 'Combat ended via narrative' });
+            }
+
             // The handleCombatTurnAnnouncements logic is now handled by processPlayerAction
             // await this.handleCombatTurnAnnouncements(dmResponse);
 
-            // Record in RAG memory (Silverpeak only)
-            if (this.campaignId === 'test-silverpeak' && this.memoryClient) {
+            // Record in RAG memory (for campaigns that support it)
+            if (hasFeature(this.campaignId, 'usesRAG') && this.memoryClient) {
                 try {
                     await this.memoryClient.addAction('player', playerAction);
                     await this.memoryClient.addAction('assistant', dmResponse);
@@ -3230,10 +4265,19 @@ What do you do?`;
             );
         } catch (error) {
             console.error('Failed to save conversation history:', error);
+        } finally {
+            this.saveInProgress = false;
         }
     }
 
     async extractStateChanges(dmResponse, playerAction = '') {
+        // Prevent concurrent extractions
+        if (this.extractionInProgress) {
+            console.log('⏳ Extraction already in progress, skipping...');
+            return {};
+        }
+
+        this.extractionInProgress = true;
         try {
             // Detect campaign structure (sci-fi vs fantasy)
             const isFantasyStructure = this.campaignState.characters !== undefined;
@@ -3323,7 +4367,12 @@ Critical Rules:
 
             console.log(`📊 Current state for extraction: party_credits=${this.campaignState.resources?.party_credits || 0}`);
 
-            const extractionResponse = await this.aiProvider.generateResponse('You are a JSON extraction system. Return only valid JSON.', messages);
+            const rawResponse = await this.aiProvider.generateResponse('You are a JSON extraction system. Return only valid JSON.', messages);
+
+            // Handle new response format { text, stateMutations } from ClaudeProvider
+            const extractionResponse = typeof rawResponse === 'object' && rawResponse.text !== undefined
+                ? rawResponse.text
+                : rawResponse;
 
             console.log(`🤖 AI extraction response: ${extractionResponse.substring(0, 500)}`);
 
@@ -3340,6 +4389,8 @@ Critical Rules:
         } catch (error) {
             console.error('State extraction failed:', error);
             return {};
+        } finally {
+            this.extractionInProgress = false;
         }
     }
 
@@ -3541,14 +4592,19 @@ Critical Rules:
             }
 
             // Apply combat state (both fantasy and sci-fi)
+            // BUT don't overwrite if we have pending combat from start_combat tool
             if (changes.combat) {
-                console.log('⚔️  Applying combat state to campaign');
-                this.campaignState.combat = changes.combat;
+                if (this.combatState?.active === 'pending' || this.combatState?.active === true) {
+                    console.log('⚔️  Skipping combat state from extraction - combat already active/pending from tool');
+                } else {
+                    console.log('⚔️  Applying combat state to campaign from extraction');
+                    this.campaignState.combat = changes.combat;
+                }
             }
 
             // Save updated state
-            // For Silverpeak: save to database AND JSON (backwards compat)
-            if (this.campaignId === 'test-silverpeak' && this.db) {
+            // For campaigns with database support: save to database AND JSON
+            if (hasFeature(this.campaignId, 'usesDatabase') && this.db) {
                 try {
                     // Save to database
                     await this.applyStateToDB(changes);
@@ -3843,10 +4899,70 @@ Critical Rules:
     async updateCampaignState(updates) {
         if (updates && typeof updates === 'object') {
             this.campaignState = { ...this.campaignState, ...updates };
-            await fs.writeFile(
-                this.paths.campaignState,
-                JSON.stringify(this.campaignState, null, 2)
-            );
+            try {
+                await fs.writeFile(
+                    this.paths.campaignState,
+                    JSON.stringify(this.campaignState, null, 2)
+                );
+            } catch (error) {
+                console.error('❌ Failed to write campaign state JSON:', error.message);
+                throw error;
+            }
+        }
+    }
+
+    /**
+     * Verify state consistency between JSON and DB (for debugging)
+     * Returns comparison object showing any differences
+     */
+    async verifyStateConsistency() {
+        if (!this.db || !hasFeature(this.campaignId, 'usesDatabase')) {
+            return { consistent: true, dbEnabled: false };
+        }
+
+        try {
+            const dbState = await this.db.exportFullState();
+            const jsonState = this.campaignState;
+
+            const differences = [];
+
+            // Compare party credits
+            const dbCredits = dbState.party?.credits || 0;
+            const jsonCredits = jsonState.party?.credits || 0;
+            if (dbCredits !== jsonCredits) {
+                differences.push({
+                    field: 'party.credits',
+                    db: dbCredits,
+                    json: jsonCredits
+                });
+            }
+
+            // Compare character HP
+            for (const [charName, dbChar] of Object.entries(dbState.characters || {})) {
+                const jsonChar = jsonState.characters?.[charName];
+                if (jsonChar) {
+                    if (dbChar.hp?.current !== jsonChar.hp?.current) {
+                        differences.push({
+                            field: `characters.${charName}.hp.current`,
+                            db: dbChar.hp?.current,
+                            json: jsonChar.hp?.current
+                        });
+                    }
+                }
+            }
+
+            return {
+                consistent: differences.length === 0,
+                dbEnabled: true,
+                differences,
+                timestamp: new Date().toISOString()
+            };
+        } catch (error) {
+            return {
+                consistent: false,
+                dbEnabled: true,
+                error: error.message
+            };
         }
     }
 }
@@ -3892,13 +5008,15 @@ const app = express();
 const campaignContexts = new Map();
 
 async function getCampaignContext(campaignId) {
-    if (campaignId === 'test-silverpeak') {
+    // Use the pre-loaded default campaign context if matching
+    if (campaignId === DEFAULT_CAMPAIGN) {
         if (!campaignContexts.has(campaignId)) {
             campaignContexts.set(campaignId, contextManager);
         }
         return campaignContexts.get(campaignId);
     }
 
+    // Lazy-load other campaigns
     if (!campaignContexts.has(campaignId)) {
         console.log(`🎮 Loading context manager for campaign: ${campaignId}`);
         const context = new IntelligentContextManager(campaignId);
@@ -3908,8 +5026,9 @@ async function getCampaignContext(campaignId) {
     return campaignContexts.get(campaignId);
 }
 
-// Pre-load Silverpeak campaign (with database and RAG support)
-const contextManager = new IntelligentContextManager('test-silverpeak');
+// Pre-load campaign - configurable via DEFAULT_CAMPAIGN env var
+const DEFAULT_CAMPAIGN = process.env.DEFAULT_CAMPAIGN || 'default';
+const contextManager = new IntelligentContextManager(DEFAULT_CAMPAIGN);
 
 // Initialize Combat Manager
 const combatManager = new CombatManager(path.join(__dirname, 'campaigns'));
@@ -3940,6 +5059,18 @@ function updateSharedCombatState(context, updates = {}) {
         ...(context.combatState || {}),
         ...updates
     };
+
+    // Preserve pending state if it was set by start_combat tool
+    // Don't overwrite 'pending' active state with false from defaults
+    if (context.combatState?.active === 'pending' && (updates.active === false || updates.active === undefined)) {
+        mergedState.active = 'pending';
+        mergedState.pending = true;
+        // Preserve the pending combat data
+        if (context.combatState.enemyInitiatives) mergedState.enemyInitiatives = context.combatState.enemyInitiatives;
+        if (context.combatState.playerCharacters) mergedState.playerCharacters = context.combatState.playerCharacters;
+        if (context.combatState.participants) mergedState.participants = context.combatState.participants;
+        console.log('⚔️ updateSharedCombatState: Preserving pending combat state');
+    }
 
     context.combatState = mergedState;
     if (!context.campaignState) {
@@ -5035,18 +6166,18 @@ app.use(express.json({
 // ==================== CAMPAIGN-SPECIFIC ROUTING (MUST BE BEFORE STATIC FILES) ====================
 
 // Serve the main game interface with campaign routing
-app.get('/dnd/game.html', (req, res) => {
+app.get('/dnd/game.html', async (req, res) => {
     const campaignId = req.query.campaign || 'default';
 
     // Check if campaign has its own HTML file
     const campaignHtmlPath = path.join(__dirname, 'campaigns', campaignId, 'index.html');
-    const fs = require('fs');
 
-    if (fs.existsSync(campaignHtmlPath)) {
+    try {
+        await fs.access(campaignHtmlPath);
         // Serve campaign-specific HTML
         console.log(`📄 Serving campaign-specific HTML for: ${campaignId}`);
         res.sendFile(campaignHtmlPath);
-    } else {
+    } catch {
         // Fall back to default game.html (for Dax/default campaign)
         console.log(`📄 Serving default game.html for: ${campaignId}`);
         res.sendFile(path.join(__dirname, 'game.html'));
@@ -5065,6 +6196,13 @@ app.use('/dnd/shared', express.static(path.join(__dirname, 'shared')));
 // Serve campaign-specific resources at /dnd/campaigns/
 app.use('/dnd/campaigns', express.static(path.join(__dirname, 'campaigns')));
 
+// Serve new Gemini UI at /dnd/play/
+app.use('/dnd/play', express.static(path.join(__dirname, 'dist')));
+// SPA fallback for /dnd/play routes
+app.get('/dnd/play/*', (req, res) => {
+    res.sendFile(path.join(__dirname, 'dist', 'index.html'));
+});
+
 // Serve root-level static files under /dnd/
 app.use('/dnd', express.static(__dirname));
 
@@ -5074,23 +6212,95 @@ app.use('/dnd', express.static(__dirname));
 async function handleActionRequest(req, res) {
     const { action, character, campaignState, sessionId, useRealClaude, mode, campaignId, campaign } = req.body;
 
-    // Get the appropriate campaign context (accept both 'campaign' and 'campaignId')
+    // Validate campaign ID
     const activeCampaignId = campaignId || campaign || 'default';
+    const campaignValidation = validateCampaignId(activeCampaignId);
+    if (!campaignValidation.valid) {
+        return res.status(400).json({ error: campaignValidation.error });
+    }
+
+    // Validate action content
+    const actionValidation = validateActionContent(action);
+    if (!actionValidation.valid) {
+        return res.status(400).json({ error: actionValidation.error });
+    }
+
+    // Validate and sanitize mode
+    const modeValidation = validateMode(mode);
+    const sanitizedMode = modeValidation.sanitized;
+
+    // Alert if stranger is playing the campaign
+    notifyIfStranger(req, `🎲 DungAIn: Action in campaign "${activeCampaignId}"`);
+
+    // Get the appropriate campaign context
     const context = await getCampaignContext(activeCampaignId);
 
     if (!context.isLoaded) {
         return res.status(503).json({ error: 'System still loading...' });
     }
 
+    // Turn order enforcement for active combat
+    // Only applies to IC actions - OOC and DM questions bypass
+    if (sanitizedMode === 'ic' && context.combatState?.active === true) {
+        const initiativeOrder = context.combatState.initiativeOrder;
+        const currentTurn = context.combatState.currentTurn || 0;
+        const currentCombatant = initiativeOrder?.[currentTurn];
+        
+        if (currentCombatant && Array.isArray(initiativeOrder) && initiativeOrder.length > 0) {
+            // Extract character name from action
+            // Formats: "[Kira] I attack" or "Kira attacks the goblin" or just action text
+            const bracketMatch = actionValidation.sanitized.match(/^\[([^\]]+)\]/);
+            const prefixMatch = actionValidation.sanitized.match(/^([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\s+(?:attacks?|casts?|moves?|uses?|throws?|fires?|swings?|strikes?)/i);
+            
+            let actingCharacter = null;
+            if (bracketMatch) {
+                actingCharacter = bracketMatch[1].trim();
+            } else if (prefixMatch) {
+                actingCharacter = prefixMatch[1].trim();
+            } else if (character?.name || character) {
+                // Fall back to character from request body
+                actingCharacter = typeof character === 'string' ? character : character?.name;
+            }
+            
+            if (actingCharacter && currentCombatant.isPlayer) {
+                // Normalize names for comparison
+                const normalize = (name) => (name || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+                const actingNorm = normalize(actingCharacter);
+                const currentNorm = normalize(currentCombatant.name);
+                
+                // Check if it's the right character's turn
+                if (actingNorm !== currentNorm && !currentNorm.includes(actingNorm) && !actingNorm.includes(currentNorm)) {
+                    console.log(`⚠️ [TURN ORDER] Wrong turn! ${actingCharacter} tried to act but it's ${currentCombatant.name}'s turn`);
+                    return res.status(400).json({
+                        error: 'Not Your Turn',
+                        message: `It's ${currentCombatant.name}'s turn, not ${actingCharacter}'s turn.`,
+                        currentTurn: {
+                            combatant: currentCombatant.name,
+                            index: currentTurn,
+                            round: context.combatState.round
+                        }
+                    });
+                }
+            }
+        }
+    }
+
     try {
         // DO NOT accept campaignState from client - server is authoritative
         // The client sending state was causing corruption where Dax data merged into Silverpeak
 
+        // Prepend character name to action for context (especially for dice rolls)
+        const characterName = typeof character === 'string' ? character : character?.name;
+        let actionWithContext = actionValidation.sanitized;
+        if (characterName && !actionValidation.sanitized.toLowerCase().startsWith(characterName.toLowerCase())) {
+            actionWithContext = `${characterName}: ${actionValidation.sanitized}`;
+        }
+
         // Process with intelligent retrieval, passing mode parameter
         const result = await context.processPlayerAction(
-            action,
+            actionWithContext,
             sessionId || 'default',
-            mode || 'ic'  // Default to IC mode if not specified
+            sanitizedMode
         );
 
         // Enqueue all roll requests found in the narrative
@@ -5145,19 +6355,49 @@ async function handleActionRequest(req, res) {
             });
         } else {
             // Traditional complete narrative
+
+            // Sync combatState to campaignState.combat FIRST for response consistency
+            if (context.combatState) {
+                if (!context.campaignState) context.campaignState = {};
+                context.campaignState.combat = JSON.parse(JSON.stringify(context.combatState));
+            }
+
+            const combatState = context.combatState || context.campaignState?.combat;
+            const combatPending = combatState?.active === 'pending';
+
+            console.log('🔍 Combat state check:', {
+                hasCombatState: !!context.combatState,
+                combatStateActive: context.combatState?.active,
+                combatStateActiveType: typeof context.combatState?.active,
+                combatStatePending: context.combatState?.pending,
+                hasCampaignCombat: !!context.campaignState?.combat,
+                campaignCombatActive: context.campaignState?.combat?.active,
+                campaignCombatPending: context.campaignState?.combat?.pending,
+                combatPending
+            });
+
             const responseData = {
                 narrative: result.narrative || result.message,
                 campaignState: result.campaignState || context.campaignState,
                 contextActive: true,
                 contextStats: result.contextStats,
-                combatDetected: result.combatDetected,
-                enemies: result.enemies,
+                combatDetected: result.combatDetected || combatPending,
+                combatPending: combatPending,  // True when awaiting player initiative
+                enemies: result.enemies || (combatPending ? combatState.participants?.enemies : null),
                 handoffData: result.handoffData,  // Include full combat handoff with initiativeOrder
                 rollRequest: result.rollRequest,  // Include roll request if found in narrative
-                rollQueueEntry: rollQueueEntryPayload
+                rollQueueEntry: rollQueueEntryPayload,
+                // New fields for pending combat
+                pendingCombat: combatPending ? {
+                    enemies: combatState.participants?.enemies || [],
+                    playerCharacters: combatState.playerCharacters || [],
+                    surprise: combatState.surprise,
+                    context: combatState.context
+                } : null
             };
             console.log('📤 Sending response to client:', {
                 hasCombatDetected: !!responseData.combatDetected,
+                combatPending: !!responseData.combatPending,
                 hasEnemies: !!responseData.enemies,
                 enemiesCount: responseData.enemies?.length || 0,
                 hasHandoffData: !!responseData.handoffData,
@@ -5179,42 +6419,69 @@ const actionRoutes = [
     '/dnd-api/dnd/action',
     '/dnd/api/dnd/action'
 ];
-actionRoutes.forEach(route => app.post(route, handleActionRequest));
+actionRoutes.forEach(route => app.post(route, checkLockdown('dnd'), handleActionRequest));
 
 // Get current context and state
 app.get('/api/dnd/context', async (req, res) => {
-    const campaignId = req.query.campaign || 'default';
-    const context = await getCampaignContext(campaignId);
+    try {
+        const campaignId = req.query.campaign || 'default';
+        const context = await getCampaignContext(campaignId);
 
-    res.json({
-        initialized: context.isLoaded,
-        campaignState: context.campaignState,
-        historyLength: context.indexedEvents.length,
-        npcsTracked: Object.keys(context.completeMemory.npcInteractions).length,
-        locationsTracked: Object.keys(context.completeMemory.locationMemories).length
-    });
+        res.json({
+            initialized: context.isLoaded,
+            campaignState: context.campaignState,
+            historyLength: context.indexedEvents.length,
+            npcsTracked: Object.keys(context.completeMemory.npcInteractions).length,
+            locationsTracked: Object.keys(context.completeMemory.locationMemories).length
+        });
+    } catch (error) {
+        console.error('Error getting context:', error);
+        res.status(500).json({ error: 'Failed to get context' });
+    }
 });
 
 // Get campaign state
-app.get('/api/dnd/state', async (req, res) => {
-    const campaignId = req.query.campaign || 'default';
-    const context = await getCampaignContext(campaignId);
-
-    res.json(context.campaignState || {});
-});
+const stateRoutes = ['/api/dnd/state', '/dnd-api/dnd/state'];
+stateRoutes.forEach(route => app.get(route, async (req, res) => {
+    try {
+        const campaignId = req.query.campaign || 'default';
+        const validation = validateCampaignId(campaignId);
+        if (!validation.valid) {
+            return res.status(400).json({ error: validation.error });
+        }
+        const context = await getCampaignContext(campaignId);
+        
+        // Sync combat state from combatManager (source of truth) to ensure fresh data
+        const freshCombatState = await combatManager.loadCombatState(campaignId);
+        if (freshCombatState && freshCombatState.active !== undefined) {
+            context.campaignState.combat = freshCombatState;
+            context.combatState = freshCombatState;
+        }
+        
+        res.json(context.campaignState || {});
+    } catch (error) {
+        console.error('Error getting state:', error);
+        res.status(500).json({ error: 'Failed to get state' });
+    }
+}));
 
 // Update campaign state
 app.post('/api/dnd/state', async (req, res) => {
     const campaignId = req.body.campaignId || req.query.campaign || 'default';
-    const context = await getCampaignContext(campaignId);
+    const validation = validateCampaignId(campaignId);
+    if (!validation.valid) {
+        return res.status(400).json({ error: validation.error });
+    }
 
     try {
+        const context = await getCampaignContext(campaignId);
         await context.updateCampaignState(req.body);
         res.json({
             success: true,
             campaignState: context.campaignState
         });
     } catch (error) {
+        console.error('Error updating state:', error);
         res.status(500).json({ error: 'Failed to update state' });
     }
 });
@@ -5224,7 +6491,13 @@ app.post('/api/dnd/state', async (req, res) => {
 // Roll dice
 app.post('/api/dnd/roll', (req, res) => {
     const { dice, reason } = req.body;
-    
+
+    // Validate dice notation
+    const diceValidation = validateDiceNotation(dice);
+    if (!diceValidation.valid) {
+        return res.status(400).json({ error: diceValidation.error });
+    }
+
     try {
         const result = DiceRollManager.rollDice(dice);
         
@@ -5287,7 +6560,7 @@ const rollQueueRoutes = [
 rollQueueRoutes.forEach(route => {
     app.get(route, async (req, res) => {
         try {
-            const campaignId = req.query.campaign || req.query.campaignId || 'test-silverpeak';
+            const campaignId = req.query.campaign || req.query.campaignId || 'default';
             const context = await getCampaignContext(campaignId);
             const combatState = await getSharedCombatStateWithQueue(context, campaignId);
             let rollQueue = ensureRollQueueArray(combatState);
@@ -5317,7 +6590,7 @@ rollQueueRoutes.forEach(route => {
     app.post(route, async (req, res) => {
         try {
             const payload = req.body || {};
-            const campaignId = payload.campaignId || payload.campaign || req.query.campaign || 'test-silverpeak';
+            const campaignId = payload.campaignId || payload.campaign || req.query.campaign || 'default';
             const context = await getCampaignContext(campaignId);
             const combatState = await getSharedCombatStateWithQueue(context, campaignId);
 
@@ -5394,7 +6667,7 @@ rollQueueRoutes.forEach(route => {
     app.post(`${route}/:queueId/resolve`, async (req, res) => {
         try {
             const payload = req.body || {};
-            const campaignId = payload.campaignId || payload.campaign || req.query.campaign || 'test-silverpeak';
+            const campaignId = payload.campaignId || payload.campaign || req.query.campaign || 'default';
             const context = await getCampaignContext(campaignId);
             const combatState = await getSharedCombatStateWithQueue(context, campaignId);
 
@@ -5415,7 +6688,7 @@ rollQueueRoutes.forEach(route => {
     app.post(`${route}/:queueId/override`, async (req, res) => {
         try {
             const payload = req.body || {};
-            const campaignId = payload.campaignId || payload.campaign || req.query.campaign || 'test-silverpeak';
+            const campaignId = payload.campaignId || payload.campaign || req.query.campaign || 'default';
             const context = await getCampaignContext(campaignId);
             const combatState = await getSharedCombatStateWithQueue(context, campaignId);
 
@@ -5435,7 +6708,7 @@ rollQueueRoutes.forEach(route => {
 
     app.delete(`${route}/:queueId`, async (req, res) => {
         try {
-            const campaignId = req.body?.campaignId || req.body?.campaign || req.query.campaign || 'test-silverpeak';
+            const campaignId = req.body?.campaignId || req.body?.campaign || req.query.campaign || 'default';
             const context = await getCampaignContext(campaignId);
             const combatState = await getSharedCombatStateWithQueue(context, campaignId);
 
@@ -5458,48 +6731,163 @@ rollQueueRoutes.forEach(route => {
 
 // Search campaign memory
 app.post('/api/dnd/search', async (req, res) => {
-    const { query } = req.body;
-    
-    const keywords = contextManager.extractKeywords(query.toLowerCase());
-    const results = contextManager.searchByKeywords(keywords);
-    
-    res.json({
-        query,
-        keywords,
-        results: results.slice(0, 10).map(event => ({
-            index: event.index,
-            type: event.type,
-            preview: event.content.substring(0, 200) + '...'
-        }))
-    });
+    try {
+        const { query } = req.body;
+        if (!query) {
+            return res.status(400).json({ error: 'Query is required' });
+        }
+
+        const keywords = contextManager.extractKeywords(query.toLowerCase());
+        const results = contextManager.searchByKeywords(keywords);
+
+        res.json({
+            query,
+            keywords,
+            results: results.slice(0, 10).map(event => ({
+                index: event.index,
+                type: event.type,
+                preview: event.content.substring(0, 200) + '...'
+            }))
+        });
+    } catch (error) {
+        console.error('Error in search:', error);
+        res.status(500).json({ error: 'Search failed' });
+    }
 });
 
 // Debug: See what context would be retrieved
 app.post('/api/dnd/debug-context', async (req, res) => {
-    const { action } = req.body;
-    
-    const relevantContext = await contextManager.retrieveRelevantContext(action);
-    
-    res.json({
-        action: action.substring(0, 100),
-        contextRetrieved: {
-            immediateCount: relevantContext.immediate.length,
-            specificItems: relevantContext.specific.map(item => ({
-                type: item.type,
-                size: JSON.stringify(item).length
-            })),
-            historicalCount: (relevantContext.historical || []).length,
-            worldState: relevantContext.worldState,
-            needsDiceRoll: relevantContext.needsDiceRoll
+    try {
+        const { action } = req.body;
+        if (!action) {
+            return res.status(400).json({ error: 'Action is required' });
         }
-    });
+
+        const relevantContext = await contextManager.retrieveRelevantContext(action);
+
+        res.json({
+            action: action.substring(0, 100),
+            contextRetrieved: {
+                immediateCount: relevantContext.immediate.length,
+                specificItems: relevantContext.specific.map(item => ({
+                    type: item.type,
+                    size: JSON.stringify(item).length
+                })),
+                historicalCount: (relevantContext.historical || []).length,
+                worldState: relevantContext.worldState,
+                needsDiceRoll: relevantContext.needsDiceRoll
+            }
+        });
+    } catch (error) {
+        console.error('Error in debug-context:', error);
+        res.status(500).json({ error: 'Context retrieval failed' });
+    }
+});
+
+// Get conversation history for a campaign
+app.get('/api/dnd/history', async (req, res) => {
+    try {
+        const campaignId = req.query.campaign || 'default';
+        const validation = validateCampaignId(campaignId);
+        if (!validation.valid) {
+            return res.status(400).json({ error: validation.error });
+        }
+
+        // Read directly from conversation history file
+        const historyPath = path.join(__dirname, 'campaigns', campaignId, 'conversation-history.json');
+        try {
+            const data = await fs.readFile(historyPath, 'utf8');
+            const history = JSON.parse(data);
+            res.json({ history });
+        } catch (fileErr) {
+            // File doesn't exist or parse error - return empty
+            console.log(`No conversation history found for ${campaignId}:`, fileErr.message);
+            res.json({ history: [] });
+        }
+    } catch (error) {
+        console.error('Error getting history:', error);
+        res.status(500).json({ error: 'Failed to get history', history: [] });
+    }
+});
+
+// Debug: Verify state consistency between JSON and DB
+app.get('/api/dnd/verify-state', async (req, res) => {
+    try {
+        const campaignId = req.query.campaign || 'default';
+        const validation = validateCampaignId(campaignId);
+        if (!validation.valid) {
+            return res.status(400).json({ error: validation.error });
+        }
+
+        const context = await getCampaignContext(campaignId);
+        const consistency = await context.verifyStateConsistency();
+
+        res.json({
+            campaignId,
+            ...consistency
+        });
+    } catch (error) {
+        console.error('Error verifying state:', error);
+        res.status(500).json({ error: 'State verification failed' });
+    }
+});
+
+// Sync state from DB to JSON (for DB-enabled campaigns)
+app.post('/api/dnd/sync-state', async (req, res) => {
+    try {
+        const campaignId = req.body.campaign || req.query.campaign || 'default';
+        const validation = validateCampaignId(campaignId);
+        if (!validation.valid) {
+            return res.status(400).json({ error: validation.error });
+        }
+
+        if (!hasFeature(campaignId, 'usesDatabase')) {
+            return res.status(400).json({
+                error: 'State sync only available for DB-enabled campaigns'
+            });
+        }
+
+        const context = await getCampaignContext(campaignId);
+        if (!context.db) {
+            return res.status(503).json({ error: 'Database not initialized' });
+        }
+
+        // Export full state from DB
+        const dbState = await context.db.exportFullState();
+
+        // Merge DB state into JSON (preserving JSON-only fields)
+        const mergedState = {
+            ...context.campaignState,
+            party: {
+                ...context.campaignState?.party,
+                credits: dbState.party?.credits || context.campaignState?.party?.credits || 0
+            },
+            characters: dbState.characters || context.campaignState?.characters || {}
+        };
+
+        // Save merged state
+        await context.updateCampaignState(mergedState);
+
+        // Verify after sync
+        const postSyncCheck = await context.verifyStateConsistency();
+
+        res.json({
+            success: true,
+            campaignId,
+            synced: true,
+            postSyncConsistency: postSyncCheck
+        });
+    } catch (error) {
+        console.error('Error syncing state:', error);
+        res.status(500).json({ error: 'State sync failed', details: error.message });
+    }
 });
 
 // ==================== COMBAT SYSTEM ====================
 
 async function handleCombatStateRequest(req, res) {
     try {
-        const campaignId = req.query.campaign || 'test-silverpeak';
+        const campaignId = req.query.campaign || 'default';
         const context = await getCampaignContext(campaignId);
 
         if (!context) {
@@ -5584,11 +6972,59 @@ const combatActionRoutes = [
     '/dnd-api/dnd/combat/action',
     '/dnd/api/dnd/combat/action'
 ];
+const combatInitiativeRoutes = [
+    '/api/dnd/combat/initiative',
+    '/dnd-api/dnd/combat/initiative',
+    '/dnd/api/dnd/combat/initiative'
+];
+
+// Player initiative submission endpoint
+// Called when players roll initiative after AI calls start_combat
+combatInitiativeRoutes.forEach(route => app.post(route, async (req, res) => {
+    try {
+        const { campaignId, campaign, roll, rollResult } = req.body;
+        const activeCampaignId = campaignId || campaign || 'default';
+        const context = await getCampaignContext(activeCampaignId);
+
+        if (!context) {
+            return res.status(503).json({ error: 'Context manager not initialized' });
+        }
+
+        // Check if we have pending combat
+        if (!context.combatState || context.combatState.active !== 'pending') {
+            return res.status(400).json({
+                error: 'No pending combat awaiting initiative rolls',
+                combatState: context.combatState?.active
+            });
+        }
+
+        console.log(`🎲 Received player initiative roll for campaign: ${activeCampaignId}`);
+        console.log(`   Roll result: ${roll || rollResult}`);
+
+        // Complete initiative rolls with the player's roll
+        const completedCombat = await context.completeInitiativeRolls(roll || rollResult);
+
+        if (!completedCombat) {
+            return res.status(500).json({ error: 'Failed to complete initiative rolls' });
+        }
+
+        res.json({
+            success: true,
+            message: 'Combat fully initiated',
+            combat: completedCombat,
+            initiativeOrder: completedCombat.initiativeOrder,
+            firstUp: completedCombat.initiativeOrder[0]?.name
+        });
+    } catch (error) {
+        console.error('❌ Error in combat initiative endpoint:', error);
+        res.status(500).json({ error: error.message });
+    }
+}));
 
 startCombatRoutes.forEach(route => app.post(route, async (req, res) => {
     try {
         const { campaignId, campaign, handoffData, initiativeOrder, enemies } = req.body;
-        const activeCampaignId = campaignId || campaign || 'test-silverpeak';
+        const activeCampaignId = campaignId || campaign || 'default';
         const context = await getCampaignContext(activeCampaignId);
 
         if (!context) {
@@ -5724,7 +7160,7 @@ startCombatRoutes.forEach(route => app.post(route, async (req, res) => {
         console.log(`⚔️ Combat mode activated for ${activeCampaignId} (initiative payload)`);
         console.log(`   Initiative order contains ${normalizedOrder.length} entries`);
 
-        if (context.db && activeCampaignId === 'test-silverpeak') {
+        if (context.db && hasFeature(activeCampaignId, 'usesDatabase')) {
             await context.db.recordEvent(
                 'combat',
                 `Combat began! Initiative: ${normalizedOrder.map(c => `${c.name} (${c.initiative ?? '??'})`).join(', ')}`,
@@ -5746,7 +7182,7 @@ startCombatRoutes.forEach(route => app.post(route, async (req, res) => {
 combatNextTurnRoutes.forEach(route => app.post(route, async (req, res) => {
     try {
         const { campaignId, campaign } = req.body;
-        const activeCampaignId = campaignId || campaign || 'test-silverpeak';
+        const activeCampaignId = campaignId || campaign || 'default';
         const context = await getCampaignContext(activeCampaignId);
 
         if (!context) {
@@ -5773,7 +7209,7 @@ combatNextTurnRoutes.forEach(route => app.post(route, async (req, res) => {
 combatActionEconomyRoutes.forEach(route => app.post(route, async (req, res) => {
     try {
         const { campaignId, campaign, combatantName, updates } = req.body;
-        const activeCampaignId = campaignId || campaign || 'test-silverpeak';
+        const activeCampaignId = campaignId || campaign || 'default';
         const context = await getCampaignContext(activeCampaignId);
 
         if (!context) {
@@ -5797,7 +7233,7 @@ combatActionEconomyRoutes.forEach(route => app.post(route, async (req, res) => {
 combatHpRoutes.forEach(route => app.post(route, async (req, res) => {
     try {
         const { campaignId, campaign, combatantName, damage, isHealing } = req.body;
-        const activeCampaignId = campaignId || campaign || 'test-silverpeak';
+        const activeCampaignId = campaignId || campaign || 'default';
         const context = await getCampaignContext(activeCampaignId);
 
         if (!context) {
@@ -5823,7 +7259,7 @@ combatHpRoutes.forEach(route => app.post(route, async (req, res) => {
 combatConditionRoutes.forEach(route => app.post(route, async (req, res) => {
     try {
         const { campaignId, campaign, combatantName, condition, add } = req.body;
-        const activeCampaignId = campaignId || campaign || 'test-silverpeak';
+        const activeCampaignId = campaignId || campaign || 'default';
         const context = await getCampaignContext(activeCampaignId);
 
         if (!context) {
@@ -5849,7 +7285,7 @@ combatConditionRoutes.forEach(route => app.post(route, async (req, res) => {
 combatEndRoutes.forEach(route => app.post(route, async (req, res) => {
     try {
         const { campaignId, campaign } = req.body;
-        const activeCampaignId = campaignId || campaign || 'test-silverpeak';
+        const activeCampaignId = campaignId || campaign || 'default';
         const context = await getCampaignContext(activeCampaignId);
 
         if (!context) {
@@ -5864,7 +7300,7 @@ combatEndRoutes.forEach(route => app.post(route, async (req, res) => {
         console.log(`  Player casualties: ${summary.casualties.players.length}`);
         console.log(`  Enemy casualties: ${summary.casualties.enemies.length}`);
 
-        if (context.db && activeCampaignId === 'test-silverpeak') {
+        if (context.db && hasFeature(activeCampaignId, 'usesDatabase')) {
             await context.db.recordEvent(
                 'combat',
                 `Combat ended after ${summary.rounds} rounds`,
@@ -5895,7 +7331,7 @@ combatEndRoutes.forEach(route => app.post(route, async (req, res) => {
 combatActionRoutes.forEach(route => app.post(route, async (req, res) => {
     try {
         const { campaignId, campaign, action, sessionId } = req.body;
-        const activeCampaignId = campaignId || campaign || 'test-silverpeak';
+        const activeCampaignId = campaignId || campaign || 'default';
         const context = await getCampaignContext(activeCampaignId);
 
         if (!context) {
@@ -6064,41 +7500,49 @@ app.get('/api/dnd/stats', (req, res) => {
 });
 
 // Rollback Management Endpoint
-// AI Provider endpoints
-app.get('/api/dnd/ai-provider', async (req, res) => {
-    const campaignId = req.query.campaign || 'default';
-    const context = await getCampaignContext(campaignId);
+// AI Provider endpoints - multi-alias support
+const aiProviderRoutes = [
+    '/api/dnd/ai-provider',
+    '/dnd-api/dnd/ai-provider',
+    '/dnd/api/dnd/ai-provider'
+];
 
-    const currentProvider = context.aiProvider.getCurrentProvider();
-    const capabilities = {
-        claude: { available: true },
-        deepseek: { available: !!process.env.DEEPSEEK_API_KEY },
-        gpt4: { available: !!process.env.OPENAI_API_KEY }
-    };
+aiProviderRoutes.forEach(route => {
+    app.get(route, async (req, res) => {
+        const campaignId = req.query.campaign || 'default';
+        const context = await getCampaignContext(campaignId);
 
-    res.json({
-        current: currentProvider,
-        capabilities: capabilities
-    });
-});
+        const currentProvider = context.aiProvider.getCurrentProvider();
+        const capabilities = {
+            claude: { available: true },
+            deepseek: { available: !!process.env.DEEPSEEK_API_KEY },
+            gpt4: { available: !!process.env.OPENAI_API_KEY }
+        };
 
-app.post('/api/dnd/ai-provider', async (req, res) => {
-    const { provider, campaign } = req.body;
-    const campaignId = campaign || 'default';
-    const context = await getCampaignContext(campaignId);
-
-    if (context.aiProvider.setProvider(provider)) {
         res.json({
-            success: true,
-            provider: context.aiProvider.getCurrentProvider()
+            current: currentProvider,
+            capabilities: capabilities
         });
-    } else {
-        res.status(400).json({
-            success: false,
-            error: 'Invalid provider',
-            availableProviders: context.aiProvider.getAvailableProviders()
-        });
-    }
+    });
+
+    app.post(route, async (req, res) => {
+        const { provider, campaign } = req.body;
+        const campaignId = campaign || 'default';
+        const context = await getCampaignContext(campaignId);
+
+        if (context.aiProvider.setProvider(provider)) {
+            res.json({
+                success: true,
+                provider: context.aiProvider.getCurrentProvider()
+            });
+        } else {
+            res.status(400).json({
+                success: false,
+                error: 'Invalid provider',
+                availableProviders: context.aiProvider.getAvailableProviders()
+            });
+        }
+    });
 });
 
 app.post('/api/dnd/rollback', async (req, res) => {
@@ -6255,9 +7699,23 @@ app.post('/api/dnd/campaigns/:id/auth', async (req, res) => {
 
 // ==================== SCENE GENERATION ====================
 
-app.post('/api/dnd/generate-scene', async (req, res) => {
+const sceneGenRoutes = [
+    '/api/dnd/generate-scene',
+    '/dnd-api/dnd/generate-scene',
+    '/dnd/api/dnd/generate-scene'
+];
+
+sceneGenRoutes.forEach(route => app.post(route, async (req, res) => {
     try {
         const campaignId = req.body.campaign || 'default';
+
+        // Check feature flag
+        if (!hasFeature(campaignId, 'hasSceneGenerator')) {
+            return res.status(403).json({
+                error: 'Scene generation not available for this campaign'
+            });
+        }
+
         console.log(`🎨 Scene generation requested for campaign: ${campaignId}`);
 
         // Get campaign-specific context
@@ -6372,7 +7830,7 @@ Extract scene description:`;
         console.log(`🎨 Scene description extracted: "${cleanDescription.substring(0, 100)}..."`);
 
         // Step 3: Send to Stability AI API
-        const STABILITY_API_KEY = 'ASK_CHRIS_FOR_NEW_STABILITY_KEY';
+        const STABILITY_API_KEY = process.env.STABILITY_API_KEY;
 
         // Enhance prompt with genre-appropriate style keywords
         let enhancedPrompt;
@@ -6452,59 +7910,86 @@ Extract scene description:`;
             details: error.message
         });
     }
-});
+}));
 
 
 // ==================== EQUIPMENT MANAGEMENT API (Silverpeak only) ====================
 
 // Get all equipment for a character
-app.get('/api/dnd/equipment/:character', async (req, res) => {
+const equipmentGetRoutes = ['/api/dnd/equipment/:character', '/dnd-api/dnd/equipment/:character'];
+equipmentGetRoutes.forEach(route => app.get(route, async (req, res) => {
     try {
-        const { character } = req.params;
-        const { campaign } = req.query;
+        const characterName = decodeURIComponent(req.params.character);
+        const campaignId = req.query.campaign || 'default';
 
-        if (campaign !== 'test-silverpeak') {
-            return res.status(400).json({
-                error: 'Equipment API only available for Silverpeak campaign'
+        // Check feature flag
+        if (!hasFeature(campaignId, 'hasEquipmentAPI')) {
+            return res.status(403).json({
+                error: 'Equipment API not available for this campaign'
             });
         }
 
-        if (!contextManager.db) {
-            return res.status(503).json({
-                error: 'Database not initialized for this campaign'
-            });
+        const context = await getCampaignContext(campaignId);
+
+        // Try database first (for campaigns with DB support)
+        if (context.db) {
+            try {
+                const char = await context.db.getCharacter(characterName);
+                if (char) {
+                    const equipment = await context.db.getEquipment(char.id);
+                    const inventory = await context.db.getInventory(char.id);
+                    const spells = await context.db.getSpells(char.id);
+                    return res.json({
+                        success: true,
+                        character: characterName,
+                        equipment: equipment || [],
+                        inventory: inventory || [],
+                        spells: spells || []
+                    });
+                }
+            } catch (dbError) {
+                console.log('DB lookup failed, falling back to campaign state:', dbError.message);
+            }
         }
 
-        const char = await contextManager.db.getCharacter(character);
-        if (!char) {
-            return res.status(404).json({ error: 'Character not found' });
+        // Fall back to campaign state for any campaign
+        const state = context.campaignState || {};
+        const characters = state.characters || {};
+
+        // Find character by name (case-insensitive)
+        let characterData = null;
+        for (const [id, char] of Object.entries(characters)) {
+            if (char.name && char.name.toLowerCase() === characterName.toLowerCase()) {
+                characterData = char;
+                break;
+            }
         }
 
-        const equipment = await contextManager.db.getEquipment(char.id);
-        const inventory = await contextManager.db.getInventory(char.id);
-        const spells = await contextManager.db.getSpells(char.id);
+        if (!characterData) {
+            return res.status(404).json({ error: `Character "${characterName}" not found` });
+        }
 
         res.json({
             success: true,
-            character: character,
-            equipment: equipment,
-            inventory: inventory,
-            spells: spells
+            character: characterName,
+            equipment: characterData.equipment || [],
+            inventory: characterData.inventory || [],
+            spells: characterData.spells || []
         });
     } catch (error) {
         console.error('Equipment API error:', error);
         res.status(500).json({ error: error.message });
     }
-});
+}));
 
 // Add equipment to a character
 app.post('/api/dnd/equipment/add', async (req, res) => {
     try {
         const { campaign, character, itemName, itemType, properties } = req.body;
 
-        if (campaign !== 'test-silverpeak') {
+        if (!hasFeature(campaign, 'hasEquipmentAPI')) {
             return res.status(400).json({
-                error: 'Equipment API only available for Silverpeak campaign'
+                error: 'Equipment API not enabled for this campaign'
             });
         }
 
@@ -6531,7 +8016,7 @@ app.post('/api/dnd/equipment/add', async (req, res) => {
         // Also update JSON state for backwards compatibility
         // Extract first name (e.g., "Thorne Ironheart" -> "thorne")
         const firstName = character.split(' ')[0].toLowerCase();
-        if (contextManager.campaignState.characters[firstName]) {
+        if (contextManager.campaignState.characters && contextManager.campaignState.characters[firstName]) {
             if (!contextManager.campaignState.characters[firstName].equipment) {
                 contextManager.campaignState.characters[firstName].equipment = [];
             }
@@ -6556,9 +8041,9 @@ app.delete('/api/dnd/equipment/:equipmentId', async (req, res) => {
         const { equipmentId } = req.params;
         const { campaign } = req.query;
 
-        if (campaign !== 'test-silverpeak') {
+        if (!hasFeature(campaign, 'hasEquipmentAPI')) {
             return res.status(400).json({
-                error: 'Equipment API only available for Silverpeak campaign'
+                error: 'Equipment API only available for fantasy campaigns (uses characters structure)'
             });
         }
 
@@ -6582,7 +8067,7 @@ app.delete('/api/dnd/equipment/:equipmentId', async (req, res) => {
         // Also update JSON state for backwards compatibility (so DM sees the change)
         if (equipment) {
             const firstName = equipment.character_name.split(' ')[0].toLowerCase();
-            if (contextManager.campaignState.characters[firstName]) {
+            if (contextManager.campaignState.characters && contextManager.campaignState.characters[firstName]) {
                 const equipList = contextManager.campaignState.characters[firstName].equipment || [];
                 const index = equipList.indexOf(equipment.item_name);
                 if (index > -1) {
@@ -6609,8 +8094,8 @@ app.post('/api/dnd/character/hp', async (req, res) => {
     try {
         const { campaign, character, hpCurrent, hpMax } = req.body;
 
-        if (campaign !== 'test-silverpeak') {
-            return res.status(400).json({ error: 'Only available for Silverpeak' });
+        if (!hasFeature(campaign, 'hasHpAPI')) {
+            return res.status(400).json({ error: 'Only available for fantasy campaigns (uses characters structure)' });
         }
 
         if (!contextManager.db) {
@@ -6622,20 +8107,23 @@ app.post('/api/dnd/character/hp', async (req, res) => {
             return res.status(404).json({ error: 'Character not found' });
         }
 
-        await contextManager.db.updateCharacterHP(char.id, hpCurrent, hpMax);
+        // Wrap DB operations in transaction for atomicity
+        await contextManager.db.transaction(async () => {
+            await contextManager.db.updateCharacterHP(char.id, hpCurrent, hpMax);
 
-        // Log event
-        const change = hpCurrent - char.hp_current;
-        const eventType = change < 0 ? 'damage' : 'healing';
-        await contextManager.db.recordEvent(
-            eventType,
-            `${character} ${change < 0 ? 'took' : 'healed'} ${Math.abs(change)} HP`,
-            { character: character, hp_change: change }
-        );
+            // Log event
+            const change = hpCurrent - char.hp_current;
+            const eventType = change < 0 ? 'damage' : 'healing';
+            await contextManager.db.recordEvent(
+                eventType,
+                `${character} ${change < 0 ? 'took' : 'healed'} ${Math.abs(change)} HP`,
+                { character: character, hp_change: change }
+            );
+        });
 
-        // Sync JSON state
+        // Sync JSON state (outside transaction - non-critical)
         const firstName = character.split(' ')[0].toLowerCase();
-        if (contextManager.campaignState.characters[firstName]) {
+        if (contextManager.campaignState.characters && contextManager.campaignState.characters[firstName]) {
             contextManager.campaignState.characters[firstName].hp = {
                 current: hpCurrent,
                 max: hpMax || char.hp_max
@@ -6655,8 +8143,8 @@ app.post('/api/dnd/character/credits', async (req, res) => {
     try {
         const { campaign, character, credits, reason } = req.body;
 
-        if (campaign !== 'test-silverpeak') {
-            return res.status(400).json({ error: 'Only available for Silverpeak' });
+        if (!hasFeature(campaign, 'hasCreditsAPI')) {
+            return res.status(400).json({ error: 'Only available for fantasy campaigns (uses characters structure)' });
         }
 
         if (!contextManager.db) {
@@ -6668,19 +8156,22 @@ app.post('/api/dnd/character/credits', async (req, res) => {
             return res.status(404).json({ error: 'Character not found' });
         }
 
-        await contextManager.db.updateCharacterCredits(char.id, credits);
+        // Wrap DB operations in transaction for atomicity
+        await contextManager.db.transaction(async () => {
+            await contextManager.db.updateCharacterCredits(char.id, credits);
 
-        // Log event
-        const change = credits - char.credits;
-        await contextManager.db.recordEvent(
-            'transaction',
-            `${character} ${change < 0 ? 'spent' : 'gained'} ${Math.abs(change)} GP${reason ? `: ${reason}` : ''}`,
-            { character: character, credit_change: change, reason: reason }
-        );
+            // Log event
+            const change = credits - char.credits;
+            await contextManager.db.recordEvent(
+                'transaction',
+                `${character} ${change < 0 ? 'spent' : 'gained'} ${Math.abs(change)} GP${reason ? `: ${reason}` : ''}`,
+                { character: character, credit_change: change, reason: reason }
+            );
+        });
 
-        // Sync JSON state
+        // Sync JSON state (outside transaction - non-critical)
         const firstName = character.split(' ')[0].toLowerCase();
-        if (contextManager.campaignState.characters[firstName]) {
+        if (contextManager.campaignState.characters && contextManager.campaignState.characters[firstName]) {
             contextManager.campaignState.characters[firstName].credits = credits;
             await contextManager.updateCampaignState(contextManager.campaignState);
         }
@@ -6697,8 +8188,8 @@ app.post('/api/dnd/character/condition/add', async (req, res) => {
     try {
         const { campaign, character, condition, duration } = req.body;
 
-        if (campaign !== 'test-silverpeak') {
-            return res.status(400).json({ error: 'Only available for Silverpeak' });
+        if (!hasFeature(campaign, 'hasConditionsAPI')) {
+            return res.status(400).json({ error: 'Only available for fantasy campaigns (uses characters structure)' });
         }
 
         if (!contextManager.db) {
@@ -6721,7 +8212,7 @@ app.post('/api/dnd/character/condition/add', async (req, res) => {
 
         // Sync JSON state
         const firstName = character.split(' ')[0].toLowerCase();
-        if (contextManager.campaignState.characters[firstName]) {
+        if (contextManager.campaignState.characters && contextManager.campaignState.characters[firstName]) {
             if (!contextManager.campaignState.characters[firstName].conditions) {
                 contextManager.campaignState.characters[firstName].conditions = [];
             }
@@ -6742,8 +8233,8 @@ app.delete('/api/dnd/character/condition/:conditionId', async (req, res) => {
         const { conditionId } = req.params;
         const { campaign } = req.query;
 
-        if (campaign !== 'test-silverpeak') {
-            return res.status(400).json({ error: 'Only available for Silverpeak' });
+        if (!hasFeature(campaign, 'hasConditionsAPI')) {
+            return res.status(400).json({ error: 'Only available for fantasy campaigns (uses characters structure)' });
         }
 
         if (!contextManager.db) {
@@ -6771,7 +8262,7 @@ app.delete('/api/dnd/character/condition/:conditionId', async (req, res) => {
 
             // Sync JSON state
             const firstName = condition.character_name.split(' ')[0].toLowerCase();
-            if (contextManager.campaignState.characters[firstName]) {
+            if (contextManager.campaignState.characters && contextManager.campaignState.characters[firstName]) {
                 const condList = contextManager.campaignState.characters[firstName].conditions || [];
                 const index = condList.indexOf(condition.condition_name);
                 if (index > -1) {
@@ -6794,8 +8285,8 @@ app.get('/api/dnd/events/recent', async (req, res) => {
     try {
         const { campaign, limit } = req.query;
 
-        if (campaign !== 'test-silverpeak') {
-            return res.status(400).json({ error: 'Only available for Silverpeak' });
+        if (!hasFeature(campaign, 'hasEventsAPI')) {
+            return res.status(400).json({ error: 'Only available for fantasy campaigns (uses characters structure)' });
         }
 
         if (!contextManager.db) {
@@ -6819,8 +8310,8 @@ app.get('/api/dnd/quests', async (req, res) => {
     try {
         const { campaign, status } = req.query;
 
-        if (campaign !== 'test-silverpeak') {
-            return res.status(400).json({ error: 'Only available for Silverpeak' });
+        if (!hasFeature(campaign, 'hasQuestsAPI')) {
+            return res.status(400).json({ error: 'Only available for fantasy campaigns (uses characters structure)' });
         }
 
         if (!contextManager.db) {
@@ -6849,6 +8340,22 @@ app.get('/api/health', (req, res) => {
         eventsIndexed: contextManager.indexedEvents.length,
         timestamp: new Date().toISOString()
     });
+});
+
+// ==================== GLOBAL ERROR HANDLER ====================
+// Must be registered after all routes
+
+app.use((err, req, res, next) => {
+    console.error('❌ Unhandled error:', err.stack || err);
+    res.status(500).json({
+        error: 'Internal server error',
+        message: process.env.NODE_ENV === 'development' ? err.message : undefined
+    });
+});
+
+// Handle 404 for API routes
+app.use('/api/*', (req, res) => {
+    res.status(404).json({ error: 'API endpoint not found' });
 });
 
 // ==================== SERVER INITIALIZATION ====================
@@ -6883,13 +8390,32 @@ async function start() {
 }
 
 // Handle graceful shutdown
-process.on('SIGINT', async () => {
-    console.log('\n📝 Saving final state...');
-    await contextManager.saveIndices();
-    await contextManager.saveConversationHistory('', '');
-    console.log('✅ State saved. Goodbye!');
+async function gracefulShutdown(signal) {
+    console.log(`\n📝 ${signal} received - saving state and closing connections...`);
+
+    try {
+        // Save state for all loaded campaigns
+        await contextManager.saveIndices();
+        await contextManager.saveConversationHistory('', '');
+
+        // Close database connections for all campaigns
+        for (const [campaignId, context] of campaignContexts) {
+            if (context.db) {
+                console.log(`  📊 Closing DB for campaign: ${campaignId}`);
+                await context.db.close();
+            }
+        }
+
+        console.log('✅ State saved, connections closed. Goodbye!');
+    } catch (error) {
+        console.error('⚠️ Error during shutdown:', error);
+    }
+
     process.exit(0);
-});
+}
+
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 
 // Start the server
 start().catch(console.error);
