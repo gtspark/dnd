@@ -13,6 +13,15 @@ class MemoryClient {
         this.actionBuffer = [];  // Buffer to collect actions before storing
         this.actionBufferSize = 4;  // Store memory every 4 actions
         this.turnCounter = 0;
+        this.currentSceneId = null;  // For anti-timewarp scene filtering
+    }
+
+    /**
+     * Set current scene ID for anti-timewarp filtering
+     * @param {number} sceneId - Current scene ID
+     */
+    setCurrentSceneId(sceneId) {
+        this.currentSceneId = sceneId;
     }
 
     /**
@@ -76,7 +85,9 @@ class MemoryClient {
                 body: JSON.stringify({
                     actions: this.actionBuffer,
                     campaign: this.campaign,
-                    session: 1  // TODO: Track session number
+                    session: 1,  // TODO: Track session number
+                    scene_id: this.currentSceneId,
+                    memory_type: 'episode'  // Time-bound narrative events
                 }),
                 timeout: 10000
             });
@@ -117,7 +128,9 @@ class MemoryClient {
                 body: JSON.stringify({
                     query: query,
                     campaign: this.campaign,
-                    n_results: nResults
+                    n_results: nResults,
+                    current_scene_id: this.currentSceneId,
+                    exclude_recent_scenes: 5  // Don't retrieve memories from last 5 scenes
                 }),
                 timeout: 10000
             });

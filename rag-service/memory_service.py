@@ -170,7 +170,7 @@ Focus on information that would be important to remember later. Be specific abou
             logger.error(f"Error generating embedding: {e}")
             raise
 
-    def store_memory(self, actions: List[Dict[str, Any]], campaign: str = "test-silverpeak", session: int = 1) -> Dict[str, Any]:
+    def store_memory(self, actions: List[Dict[str, Any]], campaign: str = "test-silverpeak", session: int = 1, scene_id: int = None, memory_type: str = "episode") -> Dict[str, Any]:
         """
         Store a new memory in the vector database
 
@@ -178,6 +178,8 @@ Focus on information that would be important to remember later. Be specific abou
             actions: List of 4 conversation turns to summarize
             campaign: Campaign ID
             session: Session number
+            scene_id: Current scene ID for temporal filtering (anti-timewarp)
+            memory_type: "episode" (time-bound events) or "world" (timeless facts)
 
         Returns:
             Created memory metadata
@@ -203,7 +205,9 @@ Focus on information that would be important to remember later. Be specific abou
                 "turn_range": f"{actions[0].get('turn', 0)}-{actions[-1].get('turn', 0)}",
                 "entities": json.dumps(entities),
                 "timestamp": datetime.utcnow().isoformat(),
-                "action_count": len(actions)
+                "action_count": len(actions),
+                "scene_id": scene_id if scene_id is not None else -1,
+                "memory_type": memory_type  # "episode" or "world"
             }
 
             # Store in ChromaDB
@@ -214,7 +218,7 @@ Focus on information that would be important to remember later. Be specific abou
                 metadatas=[metadata]
             )
 
-            logger.info(f"Stored memory {memory_id}: {summary[:50]}...")
+            logger.info(f"Stored memory {memory_id} (scene={scene_id}, type={memory_type}): {summary[:50]}...")
 
             return {
                 "id": memory_id,
@@ -227,7 +231,7 @@ Focus on information that would be important to remember later. Be specific abou
             logger.error(f"Error storing memory: {e}")
             raise
 
-    def retrieve_memories(self, query: str, campaign: str = "test-silverpeak", n_results: int = 5) -> List[Dict[str, Any]]:
+    def retrieve_memories(self, query: str, campaign: str = "test-silverpeak", n_results: int = 5, current_scene_id: int = None, exclude_recent_scenes: int = 5) -> List[Dict[str, Any]]:
         """
         Retrieve relevant memories based on current action
 
@@ -235,6 +239,8 @@ Focus on information that would be important to remember later. Be specific abou
             query: Current player action or context
             campaign: Campaign ID
             n_results: Number of memories to retrieve
+            current_scene_id: Current scene ID to filter old episode memories
+            exclude_recent_scenes: Don't retrieve episode memories from last N scenes (they're in context)
 
         Returns:
             List of relevant memories with metadata
@@ -243,27 +249,51 @@ Focus on information that would be important to remember later. Be specific abou
             # Generate embedding for query
             query_embedding = self.get_embedding(query)
 
-            # Query ChromaDB
+            # Build where clause - always filter by campaign
+            where_clause = {"campaign": campaign}
+            
+            # Query ChromaDB - get more results than needed so we can filter
             results = self.collection.query(
                 query_embeddings=[query_embedding],
-                n_results=n_results,
-                where={"campaign": campaign}
+                n_results=n_results * 3,  # Get extra to allow filtering
+                where=where_clause
             )
 
-            # Format results
+            # Format and filter results
             memories = []
             if results['ids'] and results['ids'][0]:
                 for i in range(len(results['ids'][0])):
+                    metadata = results['metadatas'][0][i] if 'metadatas' in results else {}
+                    memory_scene_id = metadata.get('scene_id', -1)
+                    memory_type = metadata.get('memory_type', 'episode')
+                    
+                    # ANTI-TIMEWARP FILTERING:
+                    # - Always include "world" type memories (timeless facts)
+                    # - For "episode" memories, exclude those from recent scenes 
+                    #   (they're already in the direct context window)
+                    if current_scene_id is not None and memory_type == 'episode':
+                        if memory_scene_id >= 0:  # Has valid scene_id
+                            scene_distance = current_scene_id - memory_scene_id
+                            if scene_distance < exclude_recent_scenes:
+                                logger.debug(f"Skipping recent episode memory from scene {memory_scene_id} (current={current_scene_id})")
+                                continue
+                    
                     memory = {
                         "id": results['ids'][0][i],
                         "text": results['documents'][0][i],
                         "distance": results['distances'][0][i] if 'distances' in results else None,
-                        "metadata": results['metadatas'][0][i] if 'metadatas' in results else {},
-                        "entities": json.loads(results['metadatas'][0][i].get('entities', '[]'))
+                        "metadata": metadata,
+                        "entities": json.loads(metadata.get('entities', '[]')),
+                        "scene_id": memory_scene_id,
+                        "memory_type": memory_type
                     }
                     memories.append(memory)
+                    
+                    # Stop once we have enough
+                    if len(memories) >= n_results:
+                        break
 
-            logger.info(f"Retrieved {len(memories)} memories for query: {query[:50]}...")
+            logger.info(f"Retrieved {len(memories)} memories for query (scene={current_scene_id}): {query[:50]}...")
             return memories
 
         except Exception as e:
@@ -320,7 +350,9 @@ def store_memory():
             ...
         ],
         "campaign": "test-silverpeak",
-        "session": 1
+        "session": 1,
+        "scene_id": 47,  // Current scene for anti-timewarp filtering
+        "memory_type": "episode"  // "episode" (time-bound) or "world" (timeless facts)
     }
     """
     try:
@@ -328,12 +360,14 @@ def store_memory():
         actions = data.get('actions', [])
         campaign = data.get('campaign', 'test-silverpeak')
         session = data.get('session', 1)
+        scene_id = data.get('scene_id', None)
+        memory_type = data.get('memory_type', 'episode')
 
         if not actions:
             return jsonify({"error": "No actions provided"}), 400
 
         # Store memory
-        result = memory_service.store_memory(actions, campaign, session)
+        result = memory_service.store_memory(actions, campaign, session, scene_id, memory_type)
 
         return jsonify({
             "success": True,
@@ -353,7 +387,9 @@ def retrieve_memories():
     {
         "query": "current player action or context",
         "campaign": "test-silverpeak",
-        "n_results": 5
+        "n_results": 5,
+        "current_scene_id": 47,  // Filter out recent episode memories
+        "exclude_recent_scenes": 5  // How many recent scenes to exclude
     }
     """
     try:
@@ -361,12 +397,14 @@ def retrieve_memories():
         query = data.get('query', '')
         campaign = data.get('campaign', 'test-silverpeak')
         n_results = data.get('n_results', 5)
+        current_scene_id = data.get('current_scene_id', None)
+        exclude_recent_scenes = data.get('exclude_recent_scenes', 5)
 
         if not query:
             return jsonify({"error": "No query provided"}), 400
 
-        # Retrieve memories
-        memories = memory_service.retrieve_memories(query, campaign, n_results)
+        # Retrieve memories with scene filtering
+        memories = memory_service.retrieve_memories(query, campaign, n_results, current_scene_id, exclude_recent_scenes)
 
         return jsonify({
             "success": True,

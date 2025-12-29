@@ -1550,6 +1550,11 @@ class IntelligentContextManager {
                 const health = await this.memoryClient.checkHealth();
                 if (health) {
                     console.log('✅ RAG memory service connected');
+                    // Sync current scene_id with memory client for anti-timewarp filtering
+                    if (this.campaignState?.current_scene?.scene_id) {
+                        this.memoryClient.setCurrentSceneId(this.campaignState.current_scene.scene_id);
+                        console.log(`📍 RAG scene_id synced: ${this.campaignState.current_scene.scene_id}`);
+                    }
                 } else {
                     console.warn('⚠️  RAG memory service not responding');
                     this.memoryClient = null;
@@ -3220,40 +3225,83 @@ Any response that doesn't match scene #${scene.scene_id} will be rejected and re
                 console.log(`📉 Compression: ${(prompt.length / this.totalMemorySize * 100).toFixed(3)}%`);
             }
 
-            // Send to AI for Phase 1 (with retry on scene mismatch)
-            let response = await this.sendToAI(prompt, playerAction);
+            // ANTI-TIMEWARP: Two-pass generation system
+            // Pass A: Quick scene verification (if scene tracking is enabled)
+            // Pass B: Full narrative generation (with scene context injected)
+            let response;
             
-            // ANTI-TIMEWARP: Validate scene check
-            if (this.campaignState?.current_scene && response) {
+            if (this.campaignState?.current_scene) {
+                const scene = this.campaignState.current_scene;
+                
+                // Pass A: Verify scene understanding (fast, cheap)
+                const passAResult = await this.verifySceneUnderstanding(playerAction, scene);
+                
+                if (!passAResult.valid) {
+                    console.log(`⚠️ [PASS A] Scene verification FAILED`);
+                    console.log(`   Expected: #${scene.scene_id} | ${scene.location}`);
+                    console.log(`   AI understood: ${passAResult.aiUnderstood || 'unknown'}`);
+                    console.log(`   Injecting strong correction into Pass B...`);
+                    
+                    // Inject strong scene correction into the main prompt
+                    const correctionBlock = `
+⚠️ SCENE VERIFICATION FAILED - STRONG CORRECTION REQUIRED ⚠️
+You incorrectly identified the scene as: ${passAResult.aiUnderstood || 'unknown'}
+This is WRONG. The ACTUAL current scene is:
+- Scene #${scene.scene_id}
+- Location: ${scene.location}
+- NPCs Present: ${(scene.npcs_present || []).join(', ') || 'none'}
+- Situation: ${scene.situation}
+
+You MUST continue from scene #${scene.scene_id}. Any reference to other scenes/locations is an ERROR.
+`;
+                    response = await this.sendToAI(prompt + correctionBlock, playerAction);
+                } else {
+                    console.log(`✅ [PASS A] Scene verified: #${passAResult.sceneId} | ${passAResult.location}`);
+                    // Pass B: Normal generation
+                    response = await this.sendToAI(prompt, playerAction);
+                }
+                
+                // Post-generation validation
                 const validationResult = this.validateSceneCheck(response);
                 
                 if (!validationResult.valid) {
-                    console.log(`⚠️ TIMEWARP DETECTED: ${validationResult.reason}`);
-                    console.log(`   Expected scene #${this.campaignState.current_scene.scene_id} at ${this.campaignState.current_scene.location}`);
-                    console.log(`   Got: ${validationResult.detected || 'no scene check found'}`);
+                    console.log(`⚠️ [POST-GEN] TIMEWARP DETECTED: ${validationResult.reason}`);
+                    console.log(`   Retrying with maximum correction...`);
                     
-                    // Retry once with correction
-                    const correctionPrompt = prompt + `\n\n⚠️ CORRECTION REQUIRED: Your previous response was for the wrong scene. You MUST continue from scene #${this.campaignState.current_scene.scene_id} (${this.campaignState.current_scene.location}). Start with: SceneCheck: #${this.campaignState.current_scene.scene_id} | ${this.campaignState.current_scene.location}`;
+                    // Final retry with extremely strong correction
+                    const nuclearCorrection = prompt + `
+
+════════════════════════════════════════════════════════════════
+⛔ CRITICAL ERROR CORRECTION - YOUR PREVIOUS RESPONSE WAS REJECTED ⛔
+════════════════════════════════════════════════════════════════
+You generated content for the WRONG SCENE. This is unacceptable.
+
+MANDATORY: Scene #${scene.scene_id} | ${scene.location}
+DO NOT mention: corridors, sealed areas, or any previous locations
+ONLY continue from the Security Command Center with current NPCs
+
+Start your response with: SceneCheck: #${scene.scene_id} | ${scene.location}
+════════════════════════════════════════════════════════════════
+`;
+                    response = await this.sendToAI(nuclearCorrection, playerAction);
                     
-                    console.log(`🔄 Retrying with scene correction...`);
-                    response = await this.sendToAI(correctionPrompt, playerAction);
-                    
-                    // Validate retry
-                    const retryValidation = this.validateSceneCheck(response);
-                    if (!retryValidation.valid) {
-                        console.log(`❌ TIMEWARP PERSISTS after retry: ${retryValidation.reason}`);
-                        // Log for analysis but continue with response (don't infinite loop)
+                    const finalValidation = this.validateSceneCheck(response);
+                    if (!finalValidation.valid) {
+                        console.log(`❌ TIMEWARP PERSISTS after nuclear correction - logging for analysis`);
                     } else {
-                        console.log(`✅ Scene correction successful on retry`);
+                        console.log(`✅ Scene correction successful after nuclear retry`);
                     }
                 } else {
-                    console.log(`✅ SceneCheck valid: #${validationResult.sceneId} | ${validationResult.location}`);
+                    console.log(`✅ [POST-GEN] SceneCheck valid: #${validationResult.sceneId} | ${validationResult.location}`);
                 }
                 
                 // Strip the SceneCheck line from the response before returning to user
                 if (response) {
                     response = response.replace(/^SceneCheck:\s*#\d+\s*\|\s*[^\n]+\n*/i, '').trim();
                 }
+            } else {
+                // No scene tracking - just send normally
+                response = await this.sendToAI(prompt, playerAction);
             }
 
             console.log(`🔍 After sendToAI - combatState.active:`, this.combatState?.active);
@@ -4126,6 +4174,74 @@ Any response that doesn't match scene #${scene.scene_id} will be rejected and re
     }
 
     // ==================== ANTI-TIMEWARP VALIDATION ====================
+    
+    /**
+     * Pass A: Quick scene verification before main generation
+     * Uses a cheap/fast check to verify the AI understands current scene
+     */
+    async verifySceneUnderstanding(playerAction, scene) {
+        try {
+            const verificationPrompt = `You are a scene tracker. Based on the context, identify the current scene.
+
+CONTEXT (last 3 events):
+${this.indexedEvents.slice(-3).map(e => `- ${e.content?.substring(0, 150) || 'No content'}...`).join('\n')}
+
+Current player action: ${playerAction.substring(0, 100)}
+
+Expected scene: #${scene.scene_id} at ${scene.location}
+
+Respond with ONLY a JSON object (no markdown, no explanation):
+{"scene_id": <number>, "location": "<location>", "confidence": "<high/medium/low>"}`;
+
+            // Use a quick call - could be a smaller model in future
+            const messages = [{ role: "user", content: verificationPrompt }];
+            const verifyResponse = await this.aiProvider.generateResponse(
+                "You are a JSON-only scene verification system. Output only valid JSON.",
+                messages,
+                this.campaignId
+            );
+            
+            // Handle response format
+            let responseText = verifyResponse;
+            if (typeof verifyResponse === 'object' && verifyResponse.text) {
+                responseText = verifyResponse.text;
+            }
+            
+            // Parse JSON response
+            const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+            if (jsonMatch) {
+                const parsed = JSON.parse(jsonMatch[0]);
+                const sceneIdMatch = parsed.scene_id === scene.scene_id;
+                const locationMatch = parsed.location?.toLowerCase().includes(scene.location.toLowerCase().split(',')[0]) ||
+                                     scene.location.toLowerCase().includes(parsed.location?.toLowerCase().split(',')[0] || '');
+                
+                if (sceneIdMatch || locationMatch) {
+                    return {
+                        valid: true,
+                        sceneId: parsed.scene_id,
+                        location: parsed.location,
+                        confidence: parsed.confidence
+                    };
+                } else {
+                    return {
+                        valid: false,
+                        aiUnderstood: `#${parsed.scene_id} | ${parsed.location}`,
+                        confidence: parsed.confidence
+                    };
+                }
+            }
+            
+            // Couldn't parse - assume valid to avoid blocking
+            console.log('⚠️ [PASS A] Could not parse verification response, proceeding with generation');
+            return { valid: true, reason: 'Parse failed, assuming valid' };
+            
+        } catch (error) {
+            console.error('⚠️ [PASS A] Verification error:', error.message);
+            // On error, proceed with generation (don't block on verification failure)
+            return { valid: true, reason: 'Verification error, assuming valid' };
+        }
+    }
+    
     validateSceneCheck(response) {
         if (!this.campaignState?.current_scene) {
             return { valid: true, reason: 'No scene tracking configured' };
@@ -4681,6 +4797,10 @@ What do you do?`;
             // Record in RAG memory (for campaigns that support it)
             if (hasFeature(this.campaignId, 'usesRAG') && this.memoryClient) {
                 try {
+                    // Keep memory client synced with current scene_id
+                    if (this.campaignState?.current_scene?.scene_id) {
+                        this.memoryClient.setCurrentSceneId(this.campaignState.current_scene.scene_id);
+                    }
                     await this.memoryClient.addAction('player', playerAction);
                     await this.memoryClient.addAction('assistant', dmResponse);
                     console.log('🧠 Actions recorded in RAG memory');
