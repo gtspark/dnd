@@ -231,7 +231,7 @@ Focus on information that would be important to remember later. Be specific abou
             logger.error(f"Error storing memory: {e}")
             raise
 
-    def retrieve_memories(self, query: str, campaign: str = "test-silverpeak", n_results: int = 5, current_scene_id: int = None, exclude_recent_scenes: int = 5) -> List[Dict[str, Any]]:
+    def retrieve_memories(self, query: str, campaign: str = "test-silverpeak", n_results: int = 5, current_scene_id: int = None, exclude_recent_scenes: int = 5, max_episode_age: int = 20) -> List[Dict[str, Any]]:
         """
         Retrieve relevant memories based on current action
 
@@ -241,6 +241,7 @@ Focus on information that would be important to remember later. Be specific abou
             n_results: Number of memories to retrieve
             current_scene_id: Current scene ID to filter old episode memories
             exclude_recent_scenes: Don't retrieve episode memories from last N scenes (they're in context)
+            max_episode_age: Maximum scene age for episode memories (older requires explicit callback intent)
 
         Returns:
             List of relevant memories with metadata
@@ -252,48 +253,68 @@ Focus on information that would be important to remember later. Be specific abou
             # Build where clause - always filter by campaign
             where_clause = {"campaign": campaign}
             
-            # Query ChromaDB - get more results than needed so we can filter
+            # Query ChromaDB - get more results than needed so we can filter and re-rank
             results = self.collection.query(
                 query_embeddings=[query_embedding],
-                n_results=n_results * 3,  # Get extra to allow filtering
+                n_results=n_results * 5,  # Get extra for filtering + re-ranking
                 where=where_clause
             )
 
-            # Format and filter results
-            memories = []
+            # Format, filter, and prepare for re-ranking
+            candidates = []
             if results['ids'] and results['ids'][0]:
                 for i in range(len(results['ids'][0])):
                     metadata = results['metadatas'][0][i] if 'metadatas' in results else {}
                     memory_scene_id = metadata.get('scene_id', -1)
                     memory_type = metadata.get('memory_type', 'episode')
+                    semantic_distance = results['distances'][0][i] if 'distances' in results else 0.5
                     
                     # ANTI-TIMEWARP FILTERING:
                     # - Always include "world" type memories (timeless facts)
-                    # - For "episode" memories, exclude those from recent scenes 
-                    #   (they're already in the direct context window)
-                    if current_scene_id is not None and memory_type == 'episode':
-                        if memory_scene_id >= 0:  # Has valid scene_id
-                            scene_distance = current_scene_id - memory_scene_id
-                            if scene_distance < exclude_recent_scenes:
-                                logger.debug(f"Skipping recent episode memory from scene {memory_scene_id} (current={current_scene_id})")
-                                continue
+                    # - For "episode" memories, apply bounded window filtering
+                    if current_scene_id is not None and memory_type == 'episode' and memory_scene_id >= 0:
+                        scene_distance = current_scene_id - memory_scene_id
+                        
+                        # Skip too-recent (already in context window)
+                        if scene_distance < exclude_recent_scenes:
+                            logger.debug(f"Skipping recent episode memory from scene {memory_scene_id} (current={current_scene_id})")
+                            continue
+                        
+                        # Skip too-old episode memories (beyond bounded window)
+                        # These would require explicit "flashback/recall" intent to retrieve
+                        if scene_distance > max_episode_age:
+                            logger.debug(f"Skipping old episode memory from scene {memory_scene_id} (age={scene_distance} > max={max_episode_age})")
+                            continue
                     
-                    memory = {
+                    # Calculate re-ranked score:
+                    # - Lower distance = better semantic match
+                    # - Add recency bonus for episode memories
+                    base_score = 1.0 - semantic_distance  # Convert distance to similarity
+                    recency_bonus = 0.0
+                    
+                    if memory_type == 'episode' and current_scene_id is not None and memory_scene_id >= 0:
+                        scene_distance = current_scene_id - memory_scene_id
+                        # Recency bonus: 0.2 for adjacent scenes, tapering to 0 at max_episode_age
+                        recency_bonus = max(0, 0.2 * (1 - scene_distance / max_episode_age))
+                    
+                    final_score = base_score + recency_bonus
+                    
+                    candidates.append({
                         "id": results['ids'][0][i],
                         "text": results['documents'][0][i],
-                        "distance": results['distances'][0][i] if 'distances' in results else None,
+                        "distance": semantic_distance,
+                        "score": final_score,
                         "metadata": metadata,
                         "entities": json.loads(metadata.get('entities', '[]')),
                         "scene_id": memory_scene_id,
                         "memory_type": memory_type
-                    }
-                    memories.append(memory)
-                    
-                    # Stop once we have enough
-                    if len(memories) >= n_results:
-                        break
+                    })
+            
+            # Re-rank by combined score and take top n_results
+            candidates.sort(key=lambda x: x['score'], reverse=True)
+            memories = candidates[:n_results]
 
-            logger.info(f"Retrieved {len(memories)} memories for query (scene={current_scene_id}): {query[:50]}...")
+            logger.info(f"Retrieved {len(memories)} memories for query (scene={current_scene_id}, filtered from {len(candidates)} candidates): {query[:50]}...")
             return memories
 
         except Exception as e:

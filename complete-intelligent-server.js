@@ -3130,19 +3130,24 @@ ${this.combatState.initiativeOrder.map((c, i) => {
         // ANTI-TIMEWARP: Add canonical current scene block at the very end (recency bias)
         if (this.campaignState?.current_scene) {
             const scene = this.campaignState.current_scene;
+            // Use proper JSON.stringify to avoid escaping issues
+            const sceneJson = JSON.stringify({
+                scene_id: scene.scene_id,
+                location: scene.location,
+                npcs_present: scene.npcs_present || [],
+                npcs_departed: scene.npcs_departed || [],
+                situation: scene.situation || '',
+                last_action: scene.last_action || '',
+                pending: scene.pending || 'none'
+            }, null, 2);
+            
             prompt += `
 ═══════════════════════════════════════════════════════════════════
 CANONICAL_CURRENT_SCENE (AUTHORITATIVE - THIS IS WHERE WE ARE NOW)
 ═══════════════════════════════════════════════════════════════════
-{
-  "scene_id": ${scene.scene_id},
-  "location": "${scene.location}",
-  "npcs_present": ${JSON.stringify(scene.npcs_present || [])},
-  "npcs_departed": ${JSON.stringify(scene.npcs_departed || [])},
-  "situation": "${scene.situation || ''}",
-  "last_action": "${scene.last_action || ''}",
-  "pending": "${scene.pending || 'none'}"
-}
+\`\`\`json
+${sceneJson}
+\`\`\`
 
 YOUR RESPONSE MUST:
 1. Begin with: SceneCheck: #${scene.scene_id} | ${scene.location}
@@ -3152,11 +3157,11 @@ YOUR RESPONSE MUST:
 SCENE TRANSITIONS:
 - You may ONLY change locations if the narrative naturally leads there
 - To change scenes, you MUST include at END of your response:
-  [SCENE_TRANSITION: new_location="<location>" reason="<why>"]
+  [SCENE_TRANSITION: new_location="<location>" npcs_present=["..."] reason="<why>"]
 - Silent location changes are FORBIDDEN - always use SCENE_TRANSITION
 - The system will update scene_id automatically when you emit SCENE_TRANSITION
 
-Any response that doesn't match scene #${scene.scene_id} will be rejected and regenerated.
+Any response without SceneCheck header will be REJECTED and regenerated.
 ═══════════════════════════════════════════════════════════════════
 `;
         }
@@ -3232,27 +3237,35 @@ Any response that doesn't match scene #${scene.scene_id} will be rejected and re
                 console.log(`📉 Compression: ${(prompt.length / this.totalMemorySize * 100).toFixed(3)}%`);
             }
 
-            // ANTI-TIMEWARP: Two-pass generation system
+            // ANTI-TIMEWARP: Two-pass generation system with hard-fail policy
             // Pass A: Quick scene verification (if scene tracking is enabled)
             // Pass B: Full narrative generation (with scene context injected)
+            // Max retries: 2 (nuclear correction), then hard-fail
             let response;
+            const MAX_RETRIES = 2;
+            
+            // Initialize metrics tracking
+            this.timewarpMetrics = this.timewarpMetrics || { passAFails: 0, postGenFails: 0, retries: 0, transitions: 0, hardFails: 0 };
             
             if (this.campaignState?.current_scene) {
                 const scene = this.campaignState.current_scene;
+                let retryCount = 0;
+                let validResponse = false;
                 
-                // Pass A: Verify scene understanding (fast, cheap)
+                // Pass A: Verify scene understanding (inference-only, no hints)
                 const passAResult = await this.verifySceneUnderstanding(playerAction, scene);
                 
+                let currentPrompt = prompt;
                 if (!passAResult.valid) {
                     console.log(`⚠️ [PASS A] Scene verification FAILED`);
-                    console.log(`   Expected: #${scene.scene_id} | ${scene.location}`);
-                    console.log(`   AI understood: ${passAResult.aiUnderstood || 'unknown'}`);
+                    console.log(`   Expected: ${scene.location}`);
+                    console.log(`   AI inferred: ${passAResult.aiUnderstood || 'unknown'}`);
                     console.log(`   Injecting strong correction into Pass B...`);
                     
                     // Inject strong scene correction into the main prompt
-                    const correctionBlock = `
+                    currentPrompt = prompt + `
 ⚠️ SCENE VERIFICATION FAILED - STRONG CORRECTION REQUIRED ⚠️
-You incorrectly identified the scene as: ${passAResult.aiUnderstood || 'unknown'}
+Pre-check inferred you were at: ${passAResult.aiUnderstood || 'unknown'}
 This is WRONG. The ACTUAL current scene is:
 - Scene #${scene.scene_id}
 - Location: ${scene.location}
@@ -3261,45 +3274,79 @@ This is WRONG. The ACTUAL current scene is:
 
 You MUST continue from scene #${scene.scene_id}. Any reference to other scenes/locations is an ERROR.
 `;
-                    response = await this.sendToAI(prompt + correctionBlock, playerAction);
                 } else {
-                    console.log(`✅ [PASS A] Scene verified: #${passAResult.sceneId} | ${passAResult.location}`);
-                    // Pass B: Normal generation
-                    response = await this.sendToAI(prompt, playerAction);
+                    console.log(`✅ [PASS A] Scene verified: ${passAResult.location} (confidence: ${passAResult.confidence})`);
                 }
                 
-                // Post-generation validation
-                const validationResult = this.validateSceneCheck(response);
-                
-                if (!validationResult.valid) {
-                    console.log(`⚠️ [POST-GEN] TIMEWARP DETECTED: ${validationResult.reason}`);
-                    console.log(`   Retrying with maximum correction...`);
-                    
-                    // Final retry with extremely strong correction
-                    const nuclearCorrection = prompt + `
-
+                // Generation loop with bounded retries
+                while (!validResponse && retryCount <= MAX_RETRIES) {
+                    if (retryCount > 0) {
+                        this.timewarpMetrics.retries++;
+                        console.log(`🔄 [RETRY ${retryCount}/${MAX_RETRIES}] Regenerating with stronger correction...`);
+                        
+                        // Escalating corrections
+                        if (retryCount === 1) {
+                            currentPrompt = prompt + `
 ════════════════════════════════════════════════════════════════
-⛔ CRITICAL ERROR CORRECTION - YOUR PREVIOUS RESPONSE WAS REJECTED ⛔
+⛔ CRITICAL: YOUR PREVIOUS RESPONSE WAS REJECTED (wrong scene) ⛔
 ════════════════════════════════════════════════════════════════
-You generated content for the WRONG SCENE. This is unacceptable.
-
 MANDATORY: Scene #${scene.scene_id} | ${scene.location}
-DO NOT mention: corridors, sealed areas, or any previous locations
-ONLY continue from the Security Command Center with current NPCs
+NPCs HERE: ${(scene.npcs_present || []).join(', ') || 'none'}
+NOT HERE (departed): ${(scene.npcs_departed || []).join(', ') || 'none'}
 
-Start your response with: SceneCheck: #${scene.scene_id} | ${scene.location}
-════════════════════════════════════════════════════════════════
-`;
-                    response = await this.sendToAI(nuclearCorrection, playerAction);
-                    
-                    const finalValidation = this.validateSceneCheck(response);
-                    if (!finalValidation.valid) {
-                        console.log(`❌ TIMEWARP PERSISTS after nuclear correction - logging for analysis`);
-                    } else {
-                        console.log(`✅ Scene correction successful after nuclear retry`);
+Start with: SceneCheck: #${scene.scene_id} | ${scene.location}
+════════════════════════════════════════════════════════════════`;
+                        } else {
+                            // Nuclear - final attempt
+                            currentPrompt = prompt + `
+⛔⛔⛔ FINAL ATTEMPT - PREVIOUS 2 RESPONSES REJECTED ⛔⛔⛔
+You have TWICE generated content for the wrong scene.
+This is your LAST CHANCE before the system returns an error to the user.
+
+THE ONLY VALID SCENE IS:
+Scene #${scene.scene_id}
+Location: ${scene.location}
+You are NOT in any corridor, NOT at any dock, NOT anywhere else.
+
+YOUR RESPONSE MUST START WITH EXACTLY:
+SceneCheck: #${scene.scene_id} | ${scene.location}
+
+FAILURE TO COMPLY WILL RESULT IN AN ERROR BEING SHOWN TO THE USER.
+⛔⛔⛔⛔⛔⛔⛔⛔⛔⛔⛔⛔⛔⛔⛔⛔⛔⛔⛔⛔⛔⛔⛔⛔⛔⛔⛔⛔⛔⛔⛔`;
+                        }
                     }
-                } else {
-                    console.log(`✅ [POST-GEN] SceneCheck valid: #${validationResult.sceneId} | ${validationResult.location}`);
+                    
+                    response = await this.sendToAI(currentPrompt, playerAction);
+                    
+                    // Validate
+                    const validationResult = this.validateSceneCheck(response);
+                    
+                    if (validationResult.valid) {
+                        validResponse = true;
+                        if (retryCount > 0) {
+                            console.log(`✅ Scene correction successful on retry ${retryCount}`);
+                        } else {
+                            console.log(`✅ [POST-GEN] SceneCheck valid: #${validationResult.sceneId} | ${validationResult.location}`);
+                        }
+                    } else {
+                        console.log(`⚠️ [POST-GEN] Validation failed: ${validationResult.reason}`);
+                        retryCount++;
+                    }
+                }
+                
+                // Hard-fail if still invalid after all retries
+                if (!validResponse) {
+                    this.timewarpMetrics.hardFails++;
+                    console.log(`❌ HARD FAIL: Timewarp persists after ${MAX_RETRIES} retries`);
+                    console.log(`📊 Timewarp metrics:`, this.timewarpMetrics);
+                    
+                    // Return error response to user instead of broken narrative
+                    return {
+                        success: false,
+                        error: 'SCENE_CONTINUITY_ERROR',
+                        message: `The DM got confused about the current scene after ${MAX_RETRIES + 1} attempts. Current scene is #${scene.scene_id} at ${scene.location}. Please try again or use /scene to verify/fix the scene state.`,
+                        narrative: `*[System: Scene continuity error - the AI repeatedly generated content for the wrong scene. Current scene should be #${scene.scene_id} at ${scene.location}. Try rephrasing your action or checking the scene state.]*`
+                    };
                 }
                 
                 // Strip the SceneCheck line from the response before returning to user
@@ -3308,35 +3355,67 @@ Start your response with: SceneCheck: #${scene.scene_id} | ${scene.location}
                 }
                 
                 // Check for SCENE_TRANSITION and handle it
-                const sceneTransitionMatch = response.match(/\[SCENE_TRANSITION:\s*new_location="([^"]+)"\s*reason="([^"]+)"\]/i);
+                // Format: [SCENE_TRANSITION: new_location="..." npcs_present=["..."] reason="..."]
+                const sceneTransitionMatch = response.match(/\[SCENE_TRANSITION:\s*new_location="([^"]+)"(?:\s*npcs_present=(\[[^\]]*\]))?\s*reason="([^"]+)"\]/i);
                 if (sceneTransitionMatch) {
                     const newLocation = sceneTransitionMatch[1];
-                    const reason = sceneTransitionMatch[2];
+                    const npcsJson = sceneTransitionMatch[2];
+                    const reason = sceneTransitionMatch[3];
                     
-                    console.log(`📍 [SCENE_TRANSITION] Detected!`);
-                    console.log(`   From: ${this.campaignState.current_scene.location}`);
-                    console.log(`   To: ${newLocation}`);
-                    console.log(`   Reason: ${reason}`);
+                    // Check if transition is authorized (player action implies travel/exit)
+                    const travelIntent = /\b(go|leave|exit|head|walk|run|move|travel|proceed|return|enter)\b/i.test(playerAction);
                     
-                    // Update the scene
-                    this.campaignState.current_scene.scene_id += 1;
-                    this.campaignState.current_scene.location = newLocation;
-                    this.campaignState.current_scene.situation = reason;
-                    this.campaignState.current_scene.last_action = `Transitioned from previous location: ${reason}`;
-                    this.campaignState.current_scene.pending = null;
-                    
-                    // Sync with memory client
-                    if (this.memoryClient) {
-                        this.memoryClient.setCurrentSceneId(this.campaignState.current_scene.scene_id);
+                    if (!travelIntent) {
+                        console.log(`⚠️ [SCENE_TRANSITION] Detected but NOT AUTHORIZED (no travel intent in player action)`);
+                        console.log(`   Player action: ${playerAction.substring(0, 100)}`);
+                        console.log(`   Stripping transition marker but keeping narrative`);
+                        // Strip the marker but don't update state
+                        response = response.replace(/\[SCENE_TRANSITION:[^\]]+\]/gi, '').trim();
+                    } else {
+                        console.log(`📍 [SCENE_TRANSITION] Detected and AUTHORIZED`);
+                        console.log(`   From: ${this.campaignState.current_scene.location}`);
+                        console.log(`   To: ${newLocation}`);
+                        console.log(`   Reason: ${reason}`);
+                        
+                        this.timewarpMetrics.transitions++;
+                        
+                        // Parse NPCs if provided
+                        let newNpcs = [];
+                        if (npcsJson) {
+                            try {
+                                newNpcs = JSON.parse(npcsJson);
+                            } catch (e) {
+                                console.log(`⚠️ Could not parse npcs_present: ${npcsJson}`);
+                            }
+                        }
+                        
+                        // Move current NPCs to departed
+                        const previousLocation = this.campaignState.current_scene.location;
+                        const previousNpcs = this.campaignState.current_scene.npcs_present || [];
+                        
+                        // Update the scene
+                        this.campaignState.current_scene.scene_id += 1;
+                        this.campaignState.current_scene.location = newLocation;
+                        this.campaignState.current_scene.situation = reason;
+                        this.campaignState.current_scene.last_action = `Transitioned from ${previousLocation}: ${reason}`;
+                        this.campaignState.current_scene.pending = null;
+                        this.campaignState.current_scene.npcs_departed = previousNpcs;
+                        this.campaignState.current_scene.npcs_present = newNpcs;
+                        
+                        // Sync with memory client
+                        if (this.memoryClient) {
+                            this.memoryClient.setCurrentSceneId(this.campaignState.current_scene.scene_id);
+                        }
+                        
+                        // Save updated state
+                        await this.saveCampaignState();
+                        
+                        console.log(`✅ Scene updated to #${this.campaignState.current_scene.scene_id} | ${newLocation}`);
+                        console.log(`📊 Timewarp metrics:`, this.timewarpMetrics);
+                        
+                        // Strip the transition marker from the response
+                        response = response.replace(/\[SCENE_TRANSITION:[^\]]+\]/gi, '').trim();
                     }
-                    
-                    // Save updated state
-                    await this.saveCampaignState();
-                    
-                    console.log(`✅ Scene updated to #${this.campaignState.current_scene.scene_id} | ${newLocation}`);
-                    
-                    // Strip the transition marker from the response
-                    response = response.replace(/\[SCENE_TRANSITION:[^\]]+\]/gi, '').trim();
                 }
             } else {
                 // No scene tracking - just send normally
@@ -4216,75 +4295,165 @@ Start your response with: SceneCheck: #${scene.scene_id} | ${scene.location}
     
     /**
      * Pass A: Quick scene verification before main generation
-     * Uses a cheap/fast check to verify the AI understands current scene
+     * Uses inference-only check (doesn't reveal expected answer)
      */
     async verifySceneUnderstanding(playerAction, scene) {
+        // Metrics tracking
+        this.timewarpMetrics = this.timewarpMetrics || { passAFails: 0, postGenFails: 0, retries: 0, transitions: 0 };
+        
         try {
-            const verificationPrompt = `You are a scene tracker. Based on the context, identify the current scene.
+            // DON'T include expected scene - make the model infer from context
+            const verificationPrompt = `You are a scene tracker for a campaign. Based ONLY on the recent events below, identify where the party currently is.
 
-CONTEXT (last 3 events):
-${this.indexedEvents.slice(-3).map(e => `- ${e.content?.substring(0, 150) || 'No content'}...`).join('\n')}
+RECENT EVENTS (most recent last):
+${this.indexedEvents.slice(-5).map(e => `- ${e.content?.substring(0, 200) || 'No content'}`).join('\n')}
 
-Current player action: ${playerAction.substring(0, 100)}
+Current player action: ${playerAction.substring(0, 150)}
 
-Expected scene: #${scene.scene_id} at ${scene.location}
-
+Based on these events, where is the party RIGHT NOW?
 Respond with ONLY a JSON object (no markdown, no explanation):
-{"scene_id": <number>, "location": "<location>", "confidence": "<high/medium/low>"}`;
+{"location": "<current location>", "confidence": "high|medium|low", "evidence": "<brief quote from events>"}`;
 
-            // Use a quick call - could be a smaller model in future
+            // TODO: Route to cheaper model (gpt-4o-mini, haiku) for cost savings
             const messages = [{ role: "user", content: verificationPrompt }];
             const verifyResponse = await this.aiProvider.generateResponse(
-                "You are a JSON-only scene verification system. Output only valid JSON.",
+                "You are a JSON-only scene verification system. Output only valid JSON, nothing else.",
                 messages,
                 this.campaignId
             );
             
-            // Handle response format
             let responseText = verifyResponse;
             if (typeof verifyResponse === 'object' && verifyResponse.text) {
                 responseText = verifyResponse.text;
             }
             
             // Parse JSON response
-            const jsonMatch = responseText.match(/\{[\s\S]*\}/);
-            if (jsonMatch) {
-                const parsed = JSON.parse(jsonMatch[0]);
-                const sceneIdMatch = parsed.scene_id === scene.scene_id;
-                const locationMatch = parsed.location?.toLowerCase().includes(scene.location.toLowerCase().split(',')[0]) ||
-                                     scene.location.toLowerCase().includes(parsed.location?.toLowerCase().split(',')[0] || '');
-                
-                if (sceneIdMatch || locationMatch) {
-                    return {
-                        valid: true,
-                        sceneId: parsed.scene_id,
-                        location: parsed.location,
-                        confidence: parsed.confidence
-                    };
-                } else {
-                    return {
-                        valid: false,
-                        aiUnderstood: `#${parsed.scene_id} | ${parsed.location}`,
-                        confidence: parsed.confidence
-                    };
-                }
+            const jsonMatch = responseText.match(/\{[\s\S]*?\}/);
+            if (!jsonMatch) {
+                // Parse failure = treat as INVALID (not valid!)
+                console.log('⚠️ [PASS A] Could not parse verification response - treating as INVALID');
+                this.timewarpMetrics.passAFails++;
+                return { valid: false, reason: 'Parse failed', aiUnderstood: 'unparseable response' };
             }
             
-            // Couldn't parse - assume valid to avoid blocking
-            console.log('⚠️ [PASS A] Could not parse verification response, proceeding with generation');
-            return { valid: true, reason: 'Parse failed, assuming valid' };
+            const parsed = JSON.parse(jsonMatch[0]);
+            const inferredLocation = (parsed.location || '').toLowerCase();
+            const expectedLocation = scene.location.toLowerCase();
+            
+            // Check if inferred location matches expected (fuzzy match on key terms)
+            const expectedTerms = expectedLocation.split(/[\s,]+/).filter(t => t.length > 3);
+            const inferredTerms = inferredLocation.split(/[\s,]+/).filter(t => t.length > 3);
+            const matchCount = expectedTerms.filter(t => inferredLocation.includes(t)).length;
+            const reverseMatch = inferredTerms.filter(t => expectedLocation.includes(t)).length;
+            
+            const isMatch = matchCount >= Math.min(2, expectedTerms.length) || 
+                           reverseMatch >= Math.min(2, inferredTerms.length) ||
+                           inferredLocation.includes(expectedTerms[0]) ||
+                           expectedLocation.includes(inferredTerms[0]);
+            
+            if (isMatch) {
+                return {
+                    valid: true,
+                    location: parsed.location,
+                    confidence: parsed.confidence,
+                    evidence: parsed.evidence
+                };
+            } else {
+                this.timewarpMetrics.passAFails++;
+                return {
+                    valid: false,
+                    aiUnderstood: parsed.location,
+                    confidence: parsed.confidence,
+                    evidence: parsed.evidence
+                };
+            }
             
         } catch (error) {
             console.error('⚠️ [PASS A] Verification error:', error.message);
-            // On error, proceed with generation (don't block on verification failure)
-            return { valid: true, reason: 'Verification error, assuming valid' };
+            this.timewarpMetrics.passAFails++;
+            // On error, treat as INVALID to be safe
+            return { valid: false, reason: `Verification error: ${error.message}` };
         }
+    }
+    
+    /**
+     * Get dynamically forbidden locations based on recent scene history
+     */
+    getForbiddenLocations() {
+        const forbidden = new Set();
+        const currentLocation = this.campaignState?.current_scene?.location?.toLowerCase() || '';
+        
+        // Extract locations from recent history (last 50 events)
+        const recentEvents = this.indexedEvents.slice(-50);
+        const locationPatterns = [
+            /(?:in|at|to|from|enters?|exits?|leaves?|arrives?)\s+(?:the\s+)?([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,3})/g,
+            /(?:corridor|room|chamber|deck|bay|center|station|bridge|quarters)/gi
+        ];
+        
+        for (const event of recentEvents) {
+            const content = event.content || '';
+            for (const pattern of locationPatterns) {
+                const matches = content.matchAll(pattern);
+                for (const match of matches) {
+                    const loc = (match[1] || match[0]).toLowerCase().trim();
+                    if (loc.length > 3 && !currentLocation.includes(loc)) {
+                        forbidden.add(loc);
+                    }
+                }
+            }
+        }
+        
+        // Remove current location terms from forbidden list
+        const currentTerms = currentLocation.split(/[\s,]+/);
+        for (const term of currentTerms) {
+            forbidden.delete(term.toLowerCase());
+        }
+        
+        return Array.from(forbidden).slice(0, 20); // Limit to 20 most recent
+    }
+    
+    /**
+     * Scan response body for contradictions with current scene state
+     */
+    scanForContradictions(response) {
+        const contradictions = [];
+        const scene = this.campaignState?.current_scene;
+        if (!scene) return contradictions;
+        
+        const responseLower = response.toLowerCase();
+        
+        // Check for departed NPCs reappearing
+        const departedNpcs = scene.npcs_departed || [];
+        for (const npc of departedNpcs) {
+            const npcLower = npc.toLowerCase();
+            // Look for NPC speaking or acting (not just being mentioned in past tense)
+            const speakingPattern = new RegExp(`${npcLower}\\s+(says?|asks?|replies?|nods?|turns?|looks?)`, 'i');
+            if (speakingPattern.test(response)) {
+                contradictions.push(`Departed NPC "${npc}" appears to be active in scene`);
+            }
+        }
+        
+        // Check for forbidden location references
+        const forbiddenLocs = this.getForbiddenLocations();
+        for (const loc of forbiddenLocs) {
+            if (responseLower.includes(loc) && loc.length > 5) {
+                // Make sure it's not a reference to the past
+                const contextPattern = new RegExp(`(earlier|before|previously|back in|from the)\\s+.*${loc}`, 'i');
+                if (!contextPattern.test(response)) {
+                    contradictions.push(`References old location "${loc}"`);
+                }
+            }
+        }
+        
+        return contradictions;
     }
     
     validateSceneCheck(response) {
         if (!this.campaignState?.current_scene) {
             return { valid: true, reason: 'No scene tracking configured' };
         }
+        
+        this.timewarpMetrics = this.timewarpMetrics || { passAFails: 0, postGenFails: 0, retries: 0, transitions: 0 };
         
         const expectedSceneId = this.campaignState.current_scene.scene_id;
         const expectedLocation = this.campaignState.current_scene.location;
@@ -4299,27 +4468,17 @@ Respond with ONLY a JSON object (no markdown, no explanation):
             };
         }
         
-        // Look for SceneCheck header
+        // Look for SceneCheck header - NOW MANDATORY
         const sceneCheckMatch = response.match(/^SceneCheck:\s*#(\d+)\s*\|\s*([^\n]+)/im);
         
         if (!sceneCheckMatch) {
-            // No SceneCheck found - check if response mentions old locations
-            const oldLocations = ['sealed corridor', 'corridor approach', 'dock 7 corridor'];
-            const currentLocationLower = expectedLocation.toLowerCase();
-            
-            for (const oldLoc of oldLocations) {
-                if (response.toLowerCase().includes(oldLoc) && !currentLocationLower.includes(oldLoc)) {
-                    return {
-                        valid: false,
-                        reason: `Response mentions old location "${oldLoc}" but current scene is "${expectedLocation}"`,
-                        detected: `Old location reference: ${oldLoc}`
-                    };
-                }
-            }
-            
-            // No SceneCheck but also no obvious timewarp - warn but allow
-            console.log(`⚠️ No SceneCheck header in response (expected #${expectedSceneId})`);
-            return { valid: true, reason: 'No SceneCheck header but no obvious timewarp detected' };
+            // No SceneCheck = INVALID (was previously allowed)
+            this.timewarpMetrics.postGenFails++;
+            return {
+                valid: false,
+                reason: `Missing required SceneCheck header (expected #${expectedSceneId})`,
+                detected: 'No SceneCheck header found'
+            };
         }
         
         const responseSceneId = parseInt(sceneCheckMatch[1], 10);
@@ -4327,6 +4486,7 @@ Respond with ONLY a JSON object (no markdown, no explanation):
         
         // Validate scene ID
         if (responseSceneId !== expectedSceneId) {
+            this.timewarpMetrics.postGenFails++;
             return {
                 valid: false,
                 reason: `Scene ID mismatch: expected #${expectedSceneId}, got #${responseSceneId}`,
@@ -4336,7 +4496,15 @@ Respond with ONLY a JSON object (no markdown, no explanation):
             };
         }
         
-        // Scene ID matches - location check is softer (allow minor variations)
+        // Scene ID matches - now check body for contradictions
+        const contradictions = this.scanForContradictions(response);
+        if (contradictions.length > 0) {
+            console.log(`⚠️ Body contradictions detected: ${contradictions.join(', ')}`);
+            // Log but don't fail on body contradictions (yet) - just warn
+            // Could make this stricter in future
+        }
+        
+        // Location check (soft - allow minor variations)
         const locationMatch = responseLocation.toLowerCase().includes(expectedLocation.toLowerCase().split(',')[0]) ||
                               expectedLocation.toLowerCase().includes(responseLocation.toLowerCase().split(',')[0]);
         
@@ -7340,6 +7508,12 @@ app.post('/api/dnd/scene', async (req, res) => {
         
         // Save the updated state
         await context.saveCampaignState();
+        
+        // Sync with MemoryClient if available
+        if (context.memoryClient) {
+            context.memoryClient.setCurrentSceneId(scene.scene_id);
+            console.log(`📍 MemoryClient synced to scene #${scene.scene_id}`);
+        }
         
         console.log(`📍 Scene updated: #${scene.scene_id} | ${scene.location}`);
         

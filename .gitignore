@@ -84,3 +84,5 @@ campaigns/*/combat-state.json
 # Built UI assets (regenerated on build)
 ui/dist/
 campaigns/*/svelte-dist/assets/
+__pycache__/
+*.pyc
