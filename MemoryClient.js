@@ -152,7 +152,13 @@ class MemoryClient {
             return `[Memory ${idx + 1} - Relevance: ${relevance}]\n${mem.text}`;
         });
 
-        return `\n\n=== CAMPAIGN MEMORIES (Long-term context) ===\n${memoryTexts.join('\n\n')}\n=== END MEMORIES ===\n\n`;
+        return `\n\n=== BACKGROUND MEMORIES (Reference ONLY) ===
+**CRITICAL: These are PAST events. DO NOT replay or return to these scenes.**
+Use ONLY for character knowledge, callbacks, and continuity details.
+The CURRENT scene is in RECENT HISTORY above. Stay there.
+
+${memoryTexts.join('\n\n')}
+=== END BACKGROUND MEMORIES ===\n\n`;
     }
 
     /**

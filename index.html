@@ -331,13 +331,13 @@
             const grid = document.getElementById('campaigns-grid');
             grid.innerHTML = '';
 
-            // Add Dax tile first (hardcoded - separate server)
+            // Add Dax tile first
             const daxCampaign = {
-                id: 'default',
+                id: 'dax',
                 name: 'Titan Station Adventure',
-                description: 'Investigation on Titan Station - ongoing adventure (Narrative)',
-                characters: ['Dax', 'Chen', 'Dr. Yuen'],
-                lastPlayed: '2025-10-03T10:53:37',
+                description: 'Single-player sci-fi investigation with DM-controlled companions',
+                characters: ['Dax (You)', 'Chen (Companion)', 'Dr. Yuen (Companion)'],
+                lastPlayed: '2025-12-22T13:53:15',
                 requiresPassword: false
             };
             const daxTile = createCampaignTile(daxCampaign);
@@ -366,18 +366,13 @@
             tile.style.setProperty('--tile-border', themeColors.border);
 
             tile.onclick = () => {
-                // Dax is a separate standalone server with direct link
-                if (campaign.id === 'default') {
-                    window.location.href = '/dax/';
-                    return;
-                }
-
-                // Other campaigns check for password
+                // Check for password requirement
                 if (campaign.requiresPassword) {
                     openPasswordModal(campaign.id, campaign.name);
                 } else {
                     // No password required, go directly to campaign
-                    window.location.href = `/dnd/game.html?campaign=${campaign.id}`;
+                    // Use React UI at /dnd/play/ for all campaigns
+                    window.location.href = `/dnd/play/?campaign=${campaign.id}`;
                 }
             };
 
@@ -400,23 +395,23 @@
 
         function getCampaignTheme(campaignId) {
             const themes = {
-                'default': {
-                    // Dax - Sci-fi blue/gold
-                    accent: '#3498db',
-                    accentGlow: 'rgba(52, 152, 219, 0.3)',
-                    bg: '#1a1f2e',
-                    border: '#2c3e50'
+                'dax': {
+                    // Dax - Sci-fi blue/cyan
+                    accent: '#06b6d4',
+                    accentGlow: 'rgba(6, 182, 212, 0.3)',
+                    bg: '#0f172a',
+                    border: '#1e3a5f'
                 },
                 'test-silverpeak': {
-                    // Silverpeak - Forest green/silver
-                    accent: '#2ecc71',
-                    accentGlow: 'rgba(46, 204, 113, 0.4)',
-                    bg: '#0f1f18',
-                    border: '#1a4d2e'
+                    // Silverpeak - Fantasy gold/amber
+                    accent: '#f59e0b',
+                    accentGlow: 'rgba(245, 158, 11, 0.3)',
+                    bg: '#1c1917',
+                    border: '#44403c'
                 }
             };
 
-            return themes[campaignId] || themes['default'];
+            return themes[campaignId] || themes['test-silverpeak'];
         }
 
         function createNewCampaignTile() {
@@ -481,8 +476,8 @@
                     // Store auth token in cookie
                     document.cookie = `dnd_campaign_${selectedCampaignId}_auth=${data.token}; path=/; max-age=2592000`; // 30 days
 
-                    // Redirect to game
-                    window.location.href = `/dnd/game.html?campaign=${selectedCampaignId}`;
+                    // Redirect to game - use React UI at /dnd/play/
+                    window.location.href = `/dnd/play/?campaign=${selectedCampaignId}`;
                 } else {
                     errorEl.textContent = data.error || 'Invalid password';
                     errorEl.style.display = 'block';

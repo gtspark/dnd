@@ -9,6 +9,8 @@ export type ItemCondition = 'pristine' | 'good' | 'worn' | 'damaged' | 'broken';
 
 export interface InventoryItem {
   name: string;
+  baseItem?: string;       // SRD equipment slug for API lookups (e.g., "scimitar" for "Rusty Scimitar")
+  custom?: boolean;        // True for quest/lore items with no SRD equivalent
   equipped: boolean;
   category: ItemCategory;
   value: number;           // GP value
@@ -18,16 +20,26 @@ export interface InventoryItem {
   treasure: boolean;       // True for gems, art objects, trade goods
 }
 
+export interface CharacterSkill {
+  ability: 'str' | 'dex' | 'con' | 'int' | 'wis' | 'cha';
+  proficient: boolean;
+  notes?: string;
+}
+
 export interface Character {
   id: string;
   name: string;
   class: string;
-  avatar: string; // URL
+  race?: string;              // e.g., "Vexian" for Dax
+  avatar: string;             // URL
   hp: number;
   maxHp: number;
-  resource: number; // Gold or Credits
+  resource: number;           // Gold or Credits
   resourceName: string;
   conditions: string[];
+  controlledBy?: 'player' | 'dm';  // Who controls this character
+  companion?: boolean;             // True for DM-controlled party members
+  proficiencyBonus?: number;       // Proficiency bonus (default 2)
   stats: {
     str: number;
     dex: number;
@@ -36,7 +48,8 @@ export interface Character {
     wis: number;
     cha: number;
   };
-  inventory: InventoryItem[];  // Changed from string[]
+  skills?: Record<string, CharacterSkill>;  // e.g., { technology: { ability: 'int', proficient: true } }
+  inventory: InventoryItem[];
   heldSpells: string[];
 }
 
@@ -48,6 +61,9 @@ export interface DiceResult {
   faces: number;
   modifier: number;
   customNotation?: string; // For custom multi-dice rolls like "1d4+2d6"
+  advantageMode?: 'advantage' | 'disadvantage'; // For advantage/disadvantage rolls
+  chosenRoll?: number;    // The roll that was kept
+  discardedRoll?: number; // The roll that was dropped
 }
 
 export interface InitiativeRoll {
@@ -161,3 +177,69 @@ export interface LootDistributionMessage {
 
 // Union type for all message types
 export type AnyMessage = Message | LootDistributionMessage;
+
+// ==================== D&D 5e RULES TYPES ====================
+
+export interface SpellDetails {
+  name: string;
+  level: number;  // 0 = cantrip
+  school: string;  // "Evocation"
+  casting_time: string;  // "1 action"
+  range: string;  // "120 feet"
+  components: string[];  // ["V", "S"]
+  material?: string;  // Material component description
+  duration: string;  // "Instantaneous"
+  concentration: boolean;
+  ritual: boolean;
+  damage?: {
+    type: string;  // "Fire"
+    formula: string;  // "1d10"
+    at_level: number;
+  };
+  dc?: {
+    type: string;  // "Dexterity"
+    success: string;  // "half"
+  };
+  area?: {
+    type: string;  // "sphere"
+    size: number;
+  };
+  description: string;
+  higher_level?: string;  // Scaling info
+  classes: string[];
+  
+  // Derived stealth info
+  isVisible?: boolean;  // Has S component (somatic)
+  isAudible?: boolean;  // Has V component (verbal)
+  
+  error?: string;  // If API failed
+}
+
+export interface ItemDetails {
+  name: string;
+  equipment_category?: string;  // "Weapon", "Armor"
+  damage?: {
+    dice: string;  // "1d4"
+    type: string;  // "Piercing"
+  };
+  range?: {
+    normal: number;
+    long?: number;
+  };
+  properties?: string[];  // ["Finesse", "Light", "Thrown"]
+  armor_class?: {
+    base: number;
+    dex_bonus?: boolean;
+    max_bonus?: number;
+  };
+  armor_category?: string;  // "Light", "Medium", "Heavy"
+  weight?: number;
+  cost?: {
+    quantity: number;
+    unit: string;  // "gp"
+  };
+  rarity?: string;  // "Common", "Rare"
+  requires_attunement?: boolean;
+  description?: string;
+  error?: string;
+}

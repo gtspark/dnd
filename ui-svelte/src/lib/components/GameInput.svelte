@@ -1,8 +1,11 @@
 <script>
   import { scale, fly } from 'svelte/transition';
   import { quintOut, elasticOut } from 'svelte/easing';
+  import { getCampaignContext } from '../../stores/campaignContext.js';
 
-  export const campaign = "test-silverpeak";
+  // Get campaign from context (set by App.svelte)
+  const campaignStore = getCampaignContext();
+  $: campaign = $campaignStore;
 
   let playerInput = '';
   let activeMode = 'ic';

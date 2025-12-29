@@ -30,11 +30,12 @@ app = Flask(__name__)
 # Initialize OpenAI client
 openai_client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
 
-# Initialize ChromaDB
-chroma_client = chromadb.Client(Settings(
-    persist_directory="/opt/vodbase/dnd-5e/rag-service/chroma_db",
-    anonymized_telemetry=False
-))
+# Initialize ChromaDB with persistent storage
+# ChromaDB 0.4.x uses PersistentClient for disk-backed storage
+chroma_client = chromadb.PersistentClient(
+    path="/opt/dnd/rag-service/chroma_db",
+    settings=Settings(anonymized_telemetry=False)
+)
 
 # Get or create collection for Silverpeak campaign
 collection = chroma_client.get_or_create_collection(

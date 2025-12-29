@@ -1,29 +1,32 @@
-/* D&D Campaign Manager Styles */
+/* D&D Campaign Manager Styles - Dark Grimoire Theme */
 :root {
-    /* Color Palette - Fantasy Themed */
-    --primary-bg: #1a1a1a;
-    --secondary-bg: #2a2a2a;
-    --card-bg: #3a3a3a;
-    --accent-gold: #d4af37;
-    --accent-red: #dc2626;
-    --accent-blue: #3b82f6;
-    --accent-green: #16a34a;
-    --text-primary: #f8fafc;
-    --text-secondary: #cbd5e1;
-    --text-muted: #94a3b8;
-    --border-color: #555555;
-    --border-active: var(--accent-gold);
+    /* Color Palette - Dark Grimoire Fantasy */
+    --primary-bg: #0f1912;
+    --secondary-bg: #1a1f1e;
+    --card-bg: #19231e;
+    --accent-mystical: #64b478;
+    --accent-gold: #b8956a;
+    --accent-red: #d46464;
+    --accent-blue: #6b8ea8;
+    --accent-green: #64b478;
+    --text-primary: #e8e4d9;
+    --text-secondary: #b8b4a9;
+    --text-muted: #7a7870;
+    --border-color: #3d5a4a;
+    --border-active: var(--accent-mystical);
 
-    /* Typography */
-    --font-display: 'Orbitron', monospace;  /* For headers/menus */
-    --font-serif: 'Georgia', serif;         /* For readable body text */
-    --font-sans: 'Inter', sans-serif;
+    /* Typography - Medieval Fantasy */
+    --font-display: 'Cinzel', serif;
+    --font-serif: 'IM Fell English', serif;
+    --font-mono: 'Courier Prime', monospace;
+    --font-sans: 'IM Fell English', serif;
 
-    /* Shadows */
-    --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.3);
-    --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.4);
-    --shadow-lg: 0 8px 25px rgba(0, 0, 0, 0.5);
-    --shadow-glow: 0 0 20px rgba(212, 175, 55, 0.3);
+    /* Shadows - Mystical Glows */
+    --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.6);
+    --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.7);
+    --shadow-lg: 0 16px 48px rgba(0, 0, 0, 0.8);
+    --shadow-glow: 0 0 30px rgba(100, 180, 120, 0.3);
+    --shadow-glow-strong: 0 0 40px rgba(100, 180, 120, 0.5);
 }
 
 * {

@@ -834,9 +834,10 @@ Action Economy:
   - Reaction: ${economy.reaction ? 'Available' : 'Used'}
 
 INITIATIVE ORDER:
-${combatState.initiativeOrder.map((c, i) =>
-  `${i === combatState.currentTurn ? '→ ' : '  '}${c.initiative}: ${c.name} ${c.isPlayer ? '(PC)' : '(Enemy)'} - ${c.hp ? `${c.hp.current}/${c.hp.max} HP` : 'HP unknown'}`
-).join('\n')}
+${combatState.initiativeOrder.map((c, i) => {
+  const condStr = c.conditions?.length ? ` [${c.conditions.join(', ')}]` : '';
+  return `${i === combatState.currentTurn ? '→ ' : '  '}${c.initiative}: ${c.name} ${c.isPlayer ? '(PC)' : '(Enemy)'} - ${c.hp ? `${c.hp.current}/${c.hp.max} HP` : 'HP unknown'}${condStr}`;
+}).join('\n')}
 
 YOUR ROLE:
 1. For PLAYER turns (Kira, Thorne, Riven):

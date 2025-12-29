@@ -93,6 +93,47 @@ class CampaignDatabase {
         });
     }
 
+    // ==================== TRANSACTION SUPPORT ====================
+
+    /**
+     * Begin a transaction
+     */
+    async beginTransaction() {
+        return this.run('BEGIN TRANSACTION');
+    }
+
+    /**
+     * Commit the current transaction
+     */
+    async commit() {
+        return this.run('COMMIT');
+    }
+
+    /**
+     * Rollback the current transaction
+     */
+    async rollback() {
+        return this.run('ROLLBACK');
+    }
+
+    /**
+     * Execute a callback within a transaction
+     * Automatically commits on success, rolls back on error
+     * @param {Function} callback - Async function to execute within transaction
+     * @returns {Promise<any>} - Result of the callback
+     */
+    async transaction(callback) {
+        await this.beginTransaction();
+        try {
+            const result = await callback();
+            await this.commit();
+            return result;
+        } catch (error) {
+            await this.rollback();
+            throw error;
+        }
+    }
+
     // ==================== CAMPAIGN OPERATIONS ====================
 
     async createCampaign(name, genre) {
@@ -477,6 +518,21 @@ class CampaignDatabase {
     }
 
     /**
+     * Check if database connection is healthy
+     * @returns {Promise<boolean>}
+     */
+    async isHealthy() {
+        if (!this.db) return false;
+        try {
+            await this.get('SELECT 1');
+            return true;
+        } catch (error) {
+            console.error('Database health check failed:', error);
+            return false;
+        }
+    }
+
+    /**
      * Close database connection
      */
     close() {
@@ -485,6 +541,7 @@ class CampaignDatabase {
                 this.db.close((err) => {
                     if (err) reject(err);
                     else {
+                        this.db = null;
                         console.log('📊 Database closed');
                         resolve();
                     }

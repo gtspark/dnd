@@ -134,7 +134,7 @@ $: summaryItems = $rollSummaryList;
     return Math.max(0, Math.min(100, (current / max) * 100));
   }
 
-  function getHPClass(percent) {
+   function getHPClass(percent) {
     if (percent > 75) return 'hp-healthy';
     if (percent > 50) return 'hp-wounded';
     if (percent > 25) return 'hp-bloodied';
@@ -462,15 +462,35 @@ function handleSummaryClick(item) {
             </div>
           {/if}
 
-          {#if combatant.conditions && combatant.conditions.length > 0}
-            <div class="conditions">
-              {#each combatant.conditions as condition}
-                <span class="condition-badge">{condition}</span>
-              {/each}
+            {#if combatant.conditions && combatant.conditions.length > 0}
+              <div class="conditions">
+                {#each combatant.conditions as condition}
+                  <span class="condition-badge">{condition}</span>
+                {/each}
+          </div>
+        {/if}
+
+        {#if combatant.deathSaves && typeof combatant.deathSaves === 'object'}
+          {@const deathSavesDisplay = {
+            icon: combatant.deathSaves.isStabilized ? '✨' : '💀',
+            text: combatant.deathSaves.isStabilized ? 'Stabilized' : `${combatant.deathSaves.successes + combatant.deathSaves.failures}/3`,
+            class: combatant.deathSaves.isStabilized ? 'stabilized' : 'active'
+          }}
+          {#if deathSavesDisplay.text !== '0/3'}
+            <div class="death-saves">
+              <span class="death-icon">{deathSavesDisplay.icon}</span>
+              <span class="death-label">Death Saves:</span>
+              <span class="death-count {deathSavesDisplay.class}">{deathSavesDisplay.text}</span>
+              {#if deathSavesDisplay.class === 'active'}
+                <span class="death-stats">
+                  ✓{combatant.deathSaves.successes} ✗{combatant.deathSaves.failures}
+                </span>
+              {/if}
             </div>
           {/if}
+        {/if}
 
-          {#if combatant.isPlayer && expandedCombatant === combatant.name}
+        {#if combatant.isPlayer && expandedCombatant === combatant.name}
             <div class="character-details" transition:fade={{ duration: 200 }}>
               <EquipmentManager {campaign} character={combatant.name} />
             </div>
@@ -1022,6 +1042,49 @@ function handleSummaryClick(item) {
     color: rgba(221, 214, 254, 0.85);
   }
 
+  .death-saves {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.35rem 0.7rem;
+    background: rgba(239, 68, 68, 0.1);
+    border: 1px solid rgba(239, 68, 68, 0.3);
+    border-radius: 8px;
+    font-size: 0.78rem;
+    margin-top: 0.5rem;
+  }
+
+  .death-icon {
+    font-size: 0.95rem;
+  }
+
+  .death-label {
+    color: rgba(236, 248, 243, 0.8);
+    font-weight: 600;
+  }
+
+  .death-count {
+    font-weight: 700;
+    padding: 0.15rem 0.5rem;
+    border-radius: 4px;
+  }
+
+  .death-count.stabilized {
+    background: rgba(52, 211, 153, 0.2);
+    color: #34d399;
+  }
+
+  .death-count.active {
+    background: rgba(239, 68, 68, 0.2);
+    color: #f87171;
+  }
+
+  .death-stats {
+    margin-left: 0.25rem;
+    font-size: 0.75rem;
+    color: rgba(236, 248, 243, 0.7);
+  }
+
   .character-details {
     background: rgba(0, 0, 0, 0.35);
     border: 1px solid rgba(255, 255, 255, 0.08);
@@ -1033,6 +1096,29 @@ function handleSummaryClick(item) {
     padding: 2rem;
     text-align: center;
     color: rgba(236, 248, 243, 0.75);
+  }
+
+  .combat-summary-box {
+    background: rgba(46, 204, 113, 0.15);
+    border: 2px solid rgba(46, 204, 113, 0.4);
+    border-radius: 12px;
+    padding: 1rem;
+    margin: 1rem 0;
+  }
+
+  .combat-summary-box h4 {
+    margin: 0 0 0.75rem 0;
+    color: #2ecc71;
+    font-size: 1.1rem;
+  }
+
+  .combat-summary-box p {
+    margin: 0.5rem 0;
+    color: rgba(236, 248, 243, 0.9);
+  }
+
+  .combat-summary-box strong {
+    color: #f9ca24;
   }
 
   .help-text {

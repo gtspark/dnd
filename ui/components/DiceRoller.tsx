@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { createPortal } from 'react-dom';
 import { Icons } from './Icons';
 import { ThemeMode } from '../types';
 
@@ -12,6 +13,7 @@ export const DiceRoller: React.FC<DiceRollerProps> = ({ theme, onRoll, onCustomR
   const [isRolling, setIsRolling] = useState(false);
   const [showCustomModal, setShowCustomModal] = useState(false);
   const [customDice, setCustomDice] = useState<{ qty: number; faces: number }[]>([{ qty: 1, faces: 6 }]);
+  const [rollMode, setRollMode] = useState<'normal' | 'advantage' | 'disadvantage'>('normal');
 
   const handleRoll = (faces: number) => {
     setIsRolling(true);
@@ -26,7 +28,17 @@ export const DiceRoller: React.FC<DiceRollerProps> = ({ theme, onRoll, onCustomR
     setShowCustomModal(false);
     setTimeout(() => {
       setIsRolling(false);
-      onCustomRoll(customDice);
+      // For advantage/disadvantage, roll 2d20 and pick high/low
+      if (rollMode !== 'normal' && customDice.length === 1 && customDice[0].faces === 20 && customDice[0].qty === 1) {
+        const roll1 = Math.floor(Math.random() * 20) + 1;
+        const roll2 = Math.floor(Math.random() * 20) + 1;
+        const chosen = rollMode === 'advantage' ? Math.max(roll1, roll2) : Math.min(roll1, roll2);
+        // Pass as special notation that handleCustomDiceRoll can interpret
+        onCustomRoll([{ qty: 2, faces: 20, rolls: [roll1, roll2], chosen, mode: rollMode } as any]);
+      } else {
+        onCustomRoll(customDice);
+      }
+      setRollMode('normal'); // Reset after roll
     }, 800);
   };
 
@@ -86,9 +98,9 @@ export const DiceRoller: React.FC<DiceRollerProps> = ({ theme, onRoll, onCustomR
         <div className={`absolute inset-0 opacity-0 group-hover:opacity-10 transition-opacity pointer-events-none ${theme === 'fantasy' ? 'bg-fantasy-gold' : 'bg-scifi-accent'}`} />
       </button>
 
-      {/* Custom Dice Modal */}
-      {showCustomModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm" onClick={() => setShowCustomModal(false)}>
+      {/* Custom Dice Modal - rendered via portal to escape overflow:hidden */}
+      {showCustomModal && createPortal(
+        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/80 backdrop-blur-sm" onClick={() => setShowCustomModal(false)}>
           <div className={`w-full max-w-md p-6 rounded-3xl border-2 shadow-2xl ${theme === 'fantasy' ? 'bg-stone-900 border-fantasy-gold/30' : 'bg-slate-900 border-scifi-accent/30'}`} onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between mb-6">
               <h3 className={`text-xl font-black uppercase tracking-widest ${theme === 'fantasy' ? 'text-fantasy-gold' : 'text-scifi-accent'}`}>Custom Roll</h3>
@@ -142,6 +154,30 @@ export const DiceRoller: React.FC<DiceRollerProps> = ({ theme, onRoll, onCustomR
               </button>
             )}
 
+            {/* Advantage/Disadvantage for d20 rolls */}
+            {customDice.length === 1 && customDice[0].faces === 20 && customDice[0].qty === 1 && (
+              <div className="flex gap-2 mb-4">
+                <button
+                  onClick={() => setRollMode('normal')}
+                  className={`flex-1 py-2 rounded-lg font-bold text-xs uppercase transition-all ${rollMode === 'normal' ? (theme === 'fantasy' ? 'bg-fantasy-gold text-black' : 'bg-scifi-accent text-black') : (theme === 'fantasy' ? 'bg-stone-800 text-fantasy-gold/60 border border-stone-700' : 'bg-slate-800 text-scifi-accent/60 border border-slate-700')}`}
+                >
+                  Normal
+                </button>
+                <button
+                  onClick={() => setRollMode('advantage')}
+                  className={`flex-1 py-2 rounded-lg font-bold text-xs uppercase transition-all ${rollMode === 'advantage' ? 'bg-green-600 text-white' : (theme === 'fantasy' ? 'bg-stone-800 text-green-400/60 border border-stone-700' : 'bg-slate-800 text-green-400/60 border border-slate-700')}`}
+                >
+                  Advantage
+                </button>
+                <button
+                  onClick={() => setRollMode('disadvantage')}
+                  className={`flex-1 py-2 rounded-lg font-bold text-xs uppercase transition-all ${rollMode === 'disadvantage' ? 'bg-red-600 text-white' : (theme === 'fantasy' ? 'bg-stone-800 text-red-400/60 border border-stone-700' : 'bg-slate-800 text-red-400/60 border border-slate-700')}`}
+                >
+                  Disadvantage
+                </button>
+              </div>
+            )}
+
             <button
               onClick={handleCustomRoll}
               className={`w-full py-4 rounded-xl font-black uppercase tracking-widest text-sm transition-all hover:scale-105 active:scale-95 ${theme === 'fantasy' ? 'bg-fantasy-gold text-black hover:bg-fantasy-gold/90' : 'bg-scifi-accent text-black hover:bg-scifi-accent/90'}`}
@@ -149,7 +185,8 @@ export const DiceRoller: React.FC<DiceRollerProps> = ({ theme, onRoll, onCustomR
               🎲 Roll Dice
             </button>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );

@@ -1,0 +1,186 @@
+/* Dax Campaign - Sci-Fi Theme */
+:root {
+    --primary-color: #1e40af;
+    --accent-color: #fbbf24;
+    --bg-dark: #0a0e27;
+    --bg-medium: #1a1f3a;
+    --bg-light: #2a3050;
+    --text-primary: #e8f0f8;
+    --text-secondary: #94a3b8;
+    --border-color: #334155;
+    --success-color: #22c55e;
+    --warning-color: #f59e0b;
+    --danger-color: #ef4444;
+}
+
+/* Sci-fi specific overrides */
+body {
+    background: var(--bg-dark);
+    background-image:
+        radial-gradient(circle at 20% 80%, rgba(30, 64, 175, 0.1) 0%, transparent 50%),
+        radial-gradient(circle at 80% 20%, rgba(251, 191, 36, 0.05) 0%, transparent 50%);
+}
+
+.app-header {
+    background: linear-gradient(135deg, var(--bg-medium) 0%, var(--bg-dark) 100%);
+    border-bottom: 1px solid var(--primary-color);
+}
+
+.logo-text {
+    color: var(--accent-color);
+    text-shadow: 0 0 10px rgba(251, 191, 36, 0.3);
+}
+
+.ai-highlight {
+    color: var(--primary-color);
+}
+
+/* Character panel sci-fi style */
+.character-panel {
+    background: var(--bg-medium);
+    border: 1px solid var(--border-color);
+}
+
+/* Chat bubbles */
+.dm-message {
+    background: linear-gradient(135deg, var(--bg-medium) 0%, var(--bg-light) 100%);
+    border-left: 3px solid var(--primary-color);
+}
+
+.player-message {
+    background: linear-gradient(135deg, rgba(30, 64, 175, 0.2) 0%, rgba(30, 64, 175, 0.1) 100%);
+    border-left: 3px solid var(--accent-color);
+}
+
+/* Buttons */
+.btn-primary {
+    background: var(--primary-color);
+    color: white;
+}
+
+.btn-primary:hover {
+    background: #2563eb;
+    box-shadow: 0 0 15px rgba(30, 64, 175, 0.4);
+}
+
+/* Credits display */
+.credits-display {
+    color: var(--accent-color);
+    font-family: 'Courier New', monospace;
+}
+
+/* Sidebar panels - override fantasy brown/tan */
+.character-panel,
+.tools-panel,
+.sidebar,
+.left-sidebar,
+.right-sidebar {
+    background: var(--bg-medium) !important;
+    border-color: var(--border-color) !important;
+}
+
+/* Section headers */
+.character-panel h3,
+.character-panel h4,
+.character-panel h5,
+.tools-panel h3,
+.tools-panel h4,
+.tools-panel h5,
+.section-header,
+.panel-header {
+    background: linear-gradient(135deg, var(--bg-light) 0%, var(--bg-medium) 100%) !important;
+    color: var(--accent-color) !important;
+    border-bottom: 1px solid var(--primary-color) !important;
+    font-family: 'Orbitron', sans-serif;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
+
+/* Party section */
+.party-section h3,
+.party-header {
+    color: var(--accent-color) !important;
+    background: var(--bg-light) !important;
+}
+
+/* Adventure tools header */
+.adventure-tools h3,
+.tools-header {
+    color: var(--accent-color) !important;
+}
+
+/* Game log area */
+.game-log {
+    background: var(--bg-dark);
+    border: 1px solid var(--border-color);
+}
+
+/* DM message styling */
+.dm-entry,
+.log-entry.dm-entry {
+    background: linear-gradient(135deg, var(--bg-medium) 0%, var(--bg-light) 100%);
+    border-left: 3px solid var(--primary-color);
+}
+
+.dm-author {
+    color: var(--accent-color) !important;
+}
+
+/* Player message styling */
+.player-entry,
+.log-entry.player-entry {
+    background: linear-gradient(135deg, rgba(30, 64, 175, 0.15) 0%, rgba(30, 64, 175, 0.05) 100%);
+    border-left: 3px solid var(--accent-color);
+}
+
+/* Input area */
+.input-area,
+.message-input-container {
+    background: var(--bg-medium);
+    border-top: 1px solid var(--border-color);
+}
+
+textarea,
+input[type="text"] {
+    background: var(--bg-dark) !important;
+    border: 1px solid var(--border-color) !important;
+    color: var(--text-primary) !important;
+}
+
+/* Ability scores */
+.ability-score,
+.stat-box {
+    background: var(--bg-light);
+    border: 1px solid var(--border-color);
+}
+
+/* Character cards */
+.character-card,
+.party-member {
+    background: var(--bg-light);
+    border: 1px solid var(--border-color);
+}
+
+.character-card:hover,
+.party-member:hover {
+    border-color: var(--primary-color);
+    box-shadow: 0 0 10px rgba(30, 64, 175, 0.3);
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+    width: 8px;
+}
+
+::-webkit-scrollbar-track {
+    background: var(--bg-dark);
+}
+
+::-webkit-scrollbar-thumb {
+    background: var(--bg-light);
+    border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: var(--primary-color);
+}

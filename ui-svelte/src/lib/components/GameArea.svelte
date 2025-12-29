@@ -43,7 +43,7 @@
   const normalizeName = (value) => (value || '').toString().trim().toLowerCase();
 
   function findCombatantByName(name) {
-    if (!combatState?.initiativeOrder) {
+    if (!combatState?.initiativeOrder || combatState.active === true) {
       return null;
     }
 

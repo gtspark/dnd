@@ -739,8 +739,9 @@ class DNDCampaign {
 
         let logEntries = [];
         try {
-            // First try to load from enhanced server
-            const response = await fetch('./conversation-history.json');
+            // First try to load from enhanced server - use campaign-specific path if available
+            const campaignPath = window.campaignId ? `/dnd/campaigns/${window.campaignId}/conversation-history.json` : './conversation-history.json';
+            const response = await fetch(campaignPath);
             if (response.ok) {
                 const serverConversation = await response.json();
                 // Convert enhanced server format to game log format

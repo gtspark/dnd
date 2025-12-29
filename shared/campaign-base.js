@@ -34,6 +34,7 @@ class CampaignBase {
         this.rollQueue = []; // Track pending roll requests
         this.isCombatActive = false;
         this.pendingCombatHandoff = null;
+        this.syncInProgress = false; // Mutex to prevent concurrent syncs
         this.init();
 
         if (typeof window !== 'undefined') {
@@ -604,12 +605,17 @@ class CampaignBase {
                 return true;
             }
             const amount = this.extractNumericToken(workingTokens);
-            if (!Number.isFinite(amount)) {
-                this.addLogEntry('system', '⚠️ Movement command requires a distance (e.g., "/move 20").', false, this.currentMode);
+            if (!Number.isFinite(amount) || amount <= 0) {
+                this.addLogEntry('system', '⚠️ Movement command requires a positive distance (e.g., "/move 20").', false, this.currentMode);
                 return true;
             }
             const currentMovement = this.getCombatantMovement(target.name);
-            const spendAmount = Math.min(Math.abs(amount), currentMovement);
+            const maxMovement = currentMovement;
+            const spendAmount = Math.min(Math.abs(amount), maxMovement);
+            if (spendAmount > currentMovement) {
+                this.addLogEntry('system', `⚠️ You only have ${currentMovement} movement available.`, false, this.currentMode);
+                return true;
+            }
             const next = Math.max(0, currentMovement - spendAmount);
             return spendEconomy(target, { movement: next }, `🛤️ ${target.name}: marked ${spendAmount} ft of movement as spent (${next} ft remaining).`);
         }
@@ -2864,6 +2870,15 @@ The weight of what you're facing settles over the room. This isn't just corporat
     }
 
     async syncWithDM(silent = false) {
+        // Mutex: prevent concurrent sync calls
+        if (this.syncInProgress) {
+            if (!silent) {
+                console.log('⏳ Sync already in progress, skipping...');
+            }
+            return false;
+        }
+        this.syncInProgress = true;
+
         try {
             if (!silent) {
                 console.log('🔄 Starting DM sync...');
@@ -2931,6 +2946,8 @@ The weight of what you're facing settles over the room. This isn't just corporat
                 this.addLogEntry('system', '⚠️ Sync failed - using cached data');
             }
             return false;
+        } finally {
+            this.syncInProgress = false; // Release mutex
         }
     }
 

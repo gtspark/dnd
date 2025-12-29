@@ -2,7 +2,11 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Icons } from './components/Icons';
 import { DiceRoller } from './components/DiceRoller';
 import { LootDistributionCard } from './components/LootDistributionCard';
+import { SpellCard } from './components/SpellCard';
+import { ItemCard } from './components/ItemCard';
+import { CompanionRoster } from './components/CompanionRoster';
 import { initChat, sendMessageToDM, loadCampaign, getHistory, transformCharacters, transformCombatState, distributeLoot, skipLoot, submitInitiative } from './services/geminiService';
+import { preloadPartySpells, preloadPartyItems, continueStory } from './services/apiService';
 import { Character, Message, ThemeMode, AIProvider, CombatState, Combatant, CombatEconomy, LootDistribution, LootDistributionMessage, AnyMessage } from './types';
 
 // Get campaign ID from URL
@@ -109,7 +113,9 @@ export default function App() {
   useEffect(() => { charactersRef.current = characters; }, [characters]);
   useEffect(() => { themeRef.current = theme; }, [theme]);
 
-  const activeChar = characters.find(c => c.id === activeCharId) || characters[0];
+  // activeChar should always be a player-controlled character, not a companion
+  const playerChars = characters.filter(c => c.controlledBy !== 'dm');
+  const activeChar = characters.find(c => c.id === activeCharId) || playerChars[0] || characters[0];
   const isFantasy = theme === 'fantasy';
 
   // Load campaign data from backend on mount
@@ -137,7 +143,9 @@ export default function App() {
             loadedCharacters = transformCharacters(backendChars, detectedTheme, campaignId);
             console.log('[App] Transformed characters:', loadedCharacters);
             setCharacters(loadedCharacters);
-            setActiveCharId(loadedCharacters[0]?.id || 'c1');
+            // Set active character to first player-controlled character (not companion)
+            const playerChars = loadedCharacters.filter(c => c.controlledBy !== 'dm');
+            setActiveCharId(playerChars[0]?.id || loadedCharacters[0]?.id || 'c1');
           }
 
           // Load combat state if active or pending - use loadedCharacters instead of stale state
@@ -204,6 +212,26 @@ What do you do?`;
   useEffect(() => {
     initChat(theme, characters, provider);
   }, [theme, provider]);
+
+  // Preload spell and item data for all party members
+  useEffect(() => {
+    if (characters.length > 0 && !isLoading) {
+      const allSpells = characters.flatMap(c => c.heldSpells);
+      // Only preload items that have baseItem mapping (SRD equipment)
+      const baseItems = characters.flatMap(c => 
+        c.inventory
+          .filter(item => (item.category === 'weapon' || item.category === 'armor') && item.baseItem && !item.custom)
+          .map(item => item.baseItem!)
+      );
+      
+      if (allSpells.length > 0) {
+        preloadPartySpells([...new Set(allSpells)]);
+      }
+      if (baseItems.length > 0) {
+        preloadPartyItems([...new Set(baseItems)]);
+      }
+    }
+  }, [characters, isLoading]);
 
   useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, isThinking]);
 
@@ -486,6 +514,25 @@ What do you do?`;
     });
   };
 
+  // Continue story button for narrative campaigns (Dax) - uses dedicated endpoint
+  // No player message is logged, just the DM's continuation
+  const handleContinueStory = async () => {
+    if (isThinking) return;
+    setIsThinking(true);
+    
+    try {
+      // Use dedicated continue endpoint - no player message logged
+      const narrative = await continueStory(campaignId, handleFunctionCall);
+      // Add the DM response directly (no intermediate "thinking" message needed - global indicator handles that)
+      const aiMsgId = Date.now().toString() + 'continue';
+      setMessages(prev => [...prev, { id: aiMsgId, type: 'ai', sender: 'Dungeon Master', text: narrative, timestamp: new Date() }]);
+    } catch (e) {
+      console.error('Continue story error:', e);
+    } finally {
+      setIsThinking(false);
+    }
+  };
+
   const handleSendMessage = async () => {
     if (!inputValue.trim() || isThinking || !activeChar) return;
     const userMsg: Message = { id: Date.now().toString(), type: 'user', sender: activeChar.name, text: inputValue, timestamp: new Date() };
@@ -524,10 +571,58 @@ What do you do?`;
   // Parse modifier from the last DM message requesting a roll
   const parseModifierFromContext = (faces: number): number => {
     const lastDmMsg = [...messages].reverse().find(m => m.type === 'ai' && m.text);
-    if (!lastDmMsg) return 0;
+    if (!lastDmMsg || !activeChar) return 0;
     
     if (faces === 20) {
-      // Attack rolls: match "+5 to hit", "(+6 to hit)", etc.
+      // Ability name to stat key mapping
+      const abilityMap: Record<string, keyof typeof activeChar.stats> = {
+        'strength': 'str', 'str': 'str',
+        'dexterity': 'dex', 'dex': 'dex',
+        'constitution': 'con', 'con': 'con',
+        'intelligence': 'int', 'int': 'int',
+        'wisdom': 'wis', 'wis': 'wis',
+        'charisma': 'cha', 'cha': 'cha'
+      };
+      
+      // First, try to extract skill name and ability from patterns like:
+      // "Roll Technology (Intelligence)", "Perception (Wisdom) DC 14", etc.
+      const skillMatch = lastDmMsg.text.match(/roll\s+(\w+)\s*\((\w+)\)|\b(\w+)\s*\((\w+)\)\s*(?:\(DC|\(dc|DC|dc|\s+to)/i);
+      
+      if (skillMatch) {
+        const skillName = (skillMatch[1] || skillMatch[3] || '').toLowerCase();
+        const abilityName = (skillMatch[2] || skillMatch[4] || '').toLowerCase();
+        const statKey = abilityMap[abilityName];
+        
+        if (statKey && activeChar.stats[statKey] !== undefined) {
+          // Calculate ability modifier: (score - 10) / 2, rounded down
+          const abilityMod = Math.floor((activeChar.stats[statKey] - 10) / 2);
+          
+          // Check if character has this skill and is proficient
+          let profBonus = 0;
+          if (activeChar.skills && activeChar.skills[skillName]) {
+            if (activeChar.skills[skillName].proficient) {
+              profBonus = activeChar.proficiencyBonus || 2;
+            }
+          }
+          
+          console.log(`[Roll] Skill: ${skillName}, Ability: ${abilityName} (${statKey}), AbilityMod: ${abilityMod}, ProfBonus: ${profBonus}`);
+          return abilityMod + profBonus;
+        }
+      }
+      
+      // Fallback: just ability check like "Roll Intelligence", "Wisdom check"
+      const abilityOnlyMatch = lastDmMsg.text.match(/roll\s+(\w+)(?:\s+check)?|(\w+)\s+(?:check|saving throw)/i);
+      if (abilityOnlyMatch) {
+        const abilityName = (abilityOnlyMatch[1] || abilityOnlyMatch[2] || '').toLowerCase();
+        const statKey = abilityMap[abilityName];
+        if (statKey && activeChar.stats[statKey] !== undefined) {
+          const abilityMod = Math.floor((activeChar.stats[statKey] - 10) / 2);
+          console.log(`[Roll] Ability only: ${abilityName} (${statKey}), Mod: ${abilityMod}`);
+          return abilityMod;
+        }
+      }
+      
+      // Fallback: Attack rolls - match "+5 to hit", "(+6 to hit)", etc.
       const modMatch = lastDmMsg.text.match(/\+(\d+)\s*(?:to hit|modifier|bonus)/i);
       return modMatch ? parseInt(modMatch[1], 10) : 0;
     } else {
@@ -574,8 +669,8 @@ What do you do?`;
     setMessages(prev => [...prev, rollMsg]);
     setIsThinking(true);
     try {
-        // Send natural roll to backend - it will calculate total with proper modifier
-        const stream = await sendMessageToDM(`${activeChar.name}: rolled D${faces} with a natural ${roll}.`, handleFunctionCall);
+        // Send roll with natural, modifier, and total for AI context
+        const stream = await sendMessageToDM(`${activeChar.name}: rolled D${faces} with a natural ${roll}, modifier +${modifier}, for a total of ${total}.`, handleFunctionCall);
         if (stream) {
             const aiMsgId = Date.now().toString() + 'ai-roll';
             setMessages(prev => [...prev, { id: aiMsgId, type: 'ai', sender: 'Dungeon Master', text: '', timestamp: new Date(), isThinking: true }]);
@@ -602,10 +697,70 @@ What do you do?`;
     } finally { setIsThinking(false); }
   };
 
-  const handleCustomDiceRoll = async (dice: { qty: number; faces: number }[]) => {
+  const handleCustomDiceRoll = async (dice: { qty: number; faces: number; rolls?: number[]; chosen?: number; mode?: 'advantage' | 'disadvantage' }[]) => {
     if (!activeChar) return;
     
-    // Roll all dice
+    // Check for advantage/disadvantage roll (special format from DiceRoller)
+    const advDisDice = dice[0] as any;
+    if (advDisDice?.mode && advDisDice?.rolls && advDisDice?.chosen !== undefined) {
+      // This is an advantage/disadvantage roll
+      const { rolls, chosen, mode } = advDisDice;
+      const modifier = parseModifierFromContext(20);
+      const total = chosen + modifier;
+      const discarded = rolls.find((r: number) => r !== chosen) ?? rolls[0];
+      
+      const rollMsg: Message = { 
+        id: Date.now().toString(), 
+        type: 'roll', 
+        sender: activeChar.name, 
+        text: `rolled D20 with ${mode}`, 
+        timestamp: new Date(), 
+        diceResult: { 
+          faces: 20,
+          rolls: rolls, 
+          total, 
+          modifier,
+          advantageMode: mode,
+          chosenRoll: chosen,
+          discardedRoll: discarded
+        } 
+      };
+      setMessages(prev => [...prev, rollMsg]);
+      setIsThinking(true);
+      
+      try {
+        const stream = await sendMessageToDM(
+          `${activeChar.name}: rolled D20 with ${mode} - rolled ${rolls[0]} and ${rolls[1]}, ${mode === 'advantage' ? 'taking the higher' : 'taking the lower'} (${chosen}), modifier +${modifier}, for a total of ${total}.`, 
+          handleFunctionCall
+        );
+        if (stream) {
+          const aiMsgId = Date.now().toString() + 'ai-roll';
+          setMessages(prev => [...prev, { id: aiMsgId, type: 'ai', sender: 'Dungeon Master', text: '', timestamp: new Date(), isThinking: true }]);
+          let fullText = '';
+          for await (const chunk of stream) {
+            fullText += chunk;
+            setMessages(prev => prev.map(m => m.id === aiMsgId ? { ...m, text: fullText, isThinking: false } : m));
+          }
+        }
+      } catch (e: any) { 
+        console.error(e);
+        if (e?.message?.includes('Not Your Turn') || e?.message?.includes("'s turn")) {
+          const match = e.message.match(/It's ([^']+)'s turn/);
+          const currentTurnName = match ? match[1] : 'another character';
+          const errorMsg: Message = { 
+            id: Date.now().toString() + 'error', 
+            type: 'system', 
+            sender: 'System', 
+            text: `It's **${currentTurnName}**'s turn in combat. Select them from the party panel to act.`, 
+            timestamp: new Date() 
+          };
+          setMessages(prev => [...prev, errorMsg]);
+        }
+      } finally { setIsThinking(false); }
+      return;
+    }
+    
+    // Standard custom dice roll (no advantage/disadvantage)
     const allRolls: number[] = [];
     const diceBreakdown: string[] = [];
     
@@ -743,6 +898,9 @@ What do you do?`;
   };
 
   const activeCombatant = combat.isActive ? combat.order[combat.currentTurnIndex] : null;
+  
+  // Narrative combat campaigns (like Dax) don't use tactical combat system
+  const isNarrativeCombat = campaignId.includes('dax');
 
   return (
     <div className={`flex h-screen w-full overflow-hidden ${themeColors.bg} ${themeColors.text} ${themeColors.fontBody} transition-all duration-700`} style={{ filter: `brightness(${brightness})` }}>
@@ -752,7 +910,8 @@ What do you do?`;
       {/* --- SIDEBAR --- */}
       <aside className={`flex-col w-24 items-center py-8 gap-6 border-r ${isSidebarOpen ? 'flex fixed inset-y-0 left-0 z-50 shadow-2xl' : 'hidden'} sm:flex z-30 flex-shrink-0 relative ${themeColors.panel} ${themeColors.border}`}>
         <div className="mb-6 relative group cursor-pointer">{isFantasy ? <Icons.Ghost className="w-10 h-10 text-fantasy-gold" /> : <Icons.Cpu className="w-10 h-10 text-scifi-accent" />}</div>
-        {characters.map(char => (
+        {/* Only show player-controlled characters in sidebar (not companions) */}
+        {characters.filter(c => c.controlledBy !== 'dm').map(char => (
           <button key={char.id} onClick={() => { setActiveCharId(char.id); setIsSidebarOpen(false); }} title={`${char.name} - ${char.class}`} className={`relative w-16 h-16 rounded-full border-2 transition-all duration-500 shrink-0 ${activeCharId === char.id ? (isFantasy ? 'border-fantasy-gold scale-110 shadow-lg shadow-fantasy-gold/30' : 'border-scifi-accent scale-110 shadow-lg shadow-scifi-accent/30') : 'border-white/10 opacity-50 hover:opacity-100 hover:border-white/30'}`}>
             <img src={char.avatar} className="w-full h-full rounded-full object-cover" />
             {combat.isActive && activeCombatant?.id === char.id && <div className={`absolute inset-0 animate-pulse border-4 rounded-full ${isFantasy ? 'border-red-500' : 'border-cyan-400'}`} />}
@@ -786,8 +945,8 @@ What do you do?`;
 
       {/* --- MAIN --- */}
       <main className="flex-1 flex flex-col relative overflow-hidden z-20">
-        {/* Pending Combat Banner - waiting for initiative rolls */}
-        {combat.isPending && !combat.isActive && (
+        {/* Pending Combat Banner - waiting for initiative rolls (not shown for narrative combat campaigns) */}
+        {!isNarrativeCombat && combat.isPending && !combat.isActive && (
           <div className={`mx-6 mt-6 p-4 rounded-2xl border-2 flex items-center justify-between gap-6 animate-pop-in z-50 ${themeColors.glass} ${isFantasy ? 'border-amber-900/50 bg-amber-950/20' : 'border-yellow-900/50 bg-yellow-950/20'}`}>
             <div className="flex items-center gap-4">
               <Icons.Swords className={`w-8 h-8 ${isFantasy ? 'text-amber-500' : 'text-yellow-500'} animate-pulse`} />
@@ -806,8 +965,8 @@ What do you do?`;
           </div>
         )}
 
-        {/* Active Combat Tracker - full turn order established */}
-        {combat.isActive && (
+        {/* Active Combat Tracker - full turn order established (not shown for narrative combat campaigns) */}
+        {!isNarrativeCombat && combat.isActive && (
           <div className={`mx-6 mt-6 p-4 rounded-2xl border-2 flex items-center gap-6 animate-pop-in z-50 ${themeColors.glass} ${isFantasy ? 'border-red-900/50' : 'border-cyan-900/50'} ${themeColors.combatGlow}`}>
              <div className="flex flex-col border-r pr-6 border-white/10"><span className="text-xs opacity-50 uppercase tracking-widest font-bold">Round</span><span className="text-3xl font-black">{combat.round}</span></div>
              <div className="flex-1 flex gap-3 overflow-x-auto no-scrollbar py-1 pl-2">
@@ -883,8 +1042,10 @@ What do you do?`;
               const isDistributed = lootId ? distributedLoot.has(lootId) : false;
               const distMessage = lootId ? distributedLoot.get(lootId) : undefined;
 
+              // Only animate recent messages (last 2) to prevent re-animation on state updates
+              const isRecent = idx >= messages.length - 2;
               return (
-                <div key={msg.id} className="flex w-full justify-start animate-pop-in" style={{ animationDelay: `${idx * 0.05}s` }}>
+                <div key={msg.id} className={`flex w-full justify-start ${isRecent ? 'animate-pop-in' : ''}`}>
                   <div className="max-w-[90%] w-full">
                     <LootDistributionCard
                       lootData={lootMsg.lootData}
@@ -901,8 +1062,10 @@ What do you do?`;
             }
 
             // Regular message rendering
+            // Only animate recent messages (last 2) to prevent re-animation on state updates
+            const isRecent = idx >= messages.length - 2;
             return (
-              <div key={msg.id} className={`flex w-full ${msg.type === 'user' ? 'justify-end' : 'justify-start'} animate-pop-in`} style={{ animationDelay: `${idx * 0.05}s` }}>
+              <div key={msg.id} className={`flex w-full ${msg.type === 'user' ? 'justify-end' : 'justify-start'} ${isRecent ? 'animate-pop-in' : ''}`}>
                 <div className={`max-w-[80%] p-6 rounded-2xl border shadow-xl ${msg.type === 'user' ? `${themeColors.panel} border-white/10 rounded-tr-none` : msg.type === 'combat' ? 'w-full text-center border-red-900/20 bg-red-950/5 font-black uppercase text-[10px] tracking-[0.4em] opacity-60 py-2' : `${themeColors.panel} ${themeColors.border} border-l-4 ${isFantasy ? 'border-fantasy-gold' : 'border-scifi-accent'}`}`}>
                   {msg.type !== 'combat' && <div className={`text-[10px] mb-2 opacity-40 uppercase font-black tracking-widest ${msg.type === 'user' ? 'text-right' : 'text-left'}`}>{msg.sender}</div>}
                   <div className={msg.type === 'roll' || msg.type === 'initiative' ? 'flex flex-col items-center' : ''}>
@@ -910,7 +1073,26 @@ What do you do?`;
                        <div className="flex flex-col items-center p-6 bg-white/5 rounded-2xl border border-white/10 shadow-inner">
                           <Icons.Dices className={`w-12 h-12 mb-3 ${isFantasy ? 'text-fantasy-gold' : 'text-scifi-accent'}`} />
                           <div className="text-6xl font-black mb-2 animate-bounce">{msg.diceResult?.total}</div>
-                          {msg.diceResult?.customNotation ? (
+                          {msg.diceResult?.advantageMode ? (
+                            // Advantage/Disadvantage roll display
+                            <div className="flex flex-col items-center gap-2">
+                              <div className={`text-xs font-black uppercase tracking-widest px-3 py-1 rounded-full ${msg.diceResult.advantageMode === 'advantage' ? 'bg-green-600/30 text-green-400 border border-green-500/50' : 'bg-red-600/30 text-red-400 border border-red-500/50'}`}>
+                                {msg.diceResult.advantageMode}
+                              </div>
+                              <div className="flex gap-3 text-xl font-bold mt-1">
+                                <span className={msg.diceResult.chosenRoll === msg.diceResult.rolls[0] ? (isFantasy ? 'text-fantasy-gold' : 'text-scifi-accent') : 'opacity-30 line-through'}>
+                                  {msg.diceResult.rolls[0]}
+                                </span>
+                                <span className="opacity-30">/</span>
+                                <span className={msg.diceResult.chosenRoll === msg.diceResult.rolls[1] ? (isFantasy ? 'text-fantasy-gold' : 'text-scifi-accent') : 'opacity-30 line-through'}>
+                                  {msg.diceResult.rolls[1]}
+                                </span>
+                              </div>
+                              <div className="text-[10px] opacity-40 font-mono uppercase tracking-widest">
+                                D20 | KEPT: {msg.diceResult.chosenRoll} | MOD: +{msg.diceResult.modifier}
+                              </div>
+                            </div>
+                          ) : msg.diceResult?.customNotation ? (
                             <div className="text-[10px] opacity-40 font-mono uppercase tracking-widest">
                               {msg.diceResult.customNotation} | NAT: {msg.diceResult.rolls.join('+')} | TOTAL: {msg.diceResult.total}
                             </div>
@@ -984,11 +1166,22 @@ What do you do?`;
                         🎲 Roll {suggestedDiceLabel}
                       </button>
                     )}
-                    {!combat.isActive && (
-                      <button onClick={combat.lastOrder ? reEnterCombat : startCombat} className={`px-6 rounded-2xl font-black text-[10px] uppercase tracking-[0.2em] border-2 transition-all hover:scale-105 active:scale-95 ${isFantasy ? 'border-red-950 bg-red-950/20 text-red-500 hover:bg-red-900/30' : 'border-cyan-950 bg-cyan-950/20 text-cyan-400 hover:bg-cyan-900/30'}`}>
-                        {combat.lastOrder ? 'Restore Combat' : 'Initiative'}
+                    {/* For narrative campaigns: Continue button. For tactical: Initiative button */}
+                    {isNarrativeCombat ? (
+                      <button 
+                        onClick={handleContinueStory} 
+                        disabled={isThinking}
+                        className={`px-6 py-2 rounded-2xl font-black text-[10px] uppercase tracking-[0.2em] border-2 transition-all hover:scale-105 active:scale-95 ${isThinking ? 'opacity-50 cursor-not-allowed' : ''} ${isFantasy ? 'border-amber-600 bg-amber-950/20 text-amber-500 hover:bg-amber-900/30' : 'border-cyan-600 bg-cyan-950/20 text-cyan-400 hover:bg-cyan-900/30'}`}
+                      >
+                        {isThinking ? '...' : '▶ Continue'}
                       </button>
-                   )}
+                    ) : (
+                      !combat.isActive && (
+                        <button onClick={combat.lastOrder ? reEnterCombat : startCombat} className={`px-6 rounded-2xl font-black text-[10px] uppercase tracking-[0.2em] border-2 transition-all hover:scale-105 active:scale-95 ${isFantasy ? 'border-red-950 bg-red-950/20 text-red-500 hover:bg-red-900/30' : 'border-cyan-950 bg-cyan-950/20 text-cyan-400 hover:bg-cyan-900/30'}`}>
+                          {combat.lastOrder ? 'Restore Combat' : 'Initiative'}
+                        </button>
+                      )
+                    )}
                 </div>
                 <div className="flex flex-col items-end opacity-50"><span className="text-[10px] font-black uppercase tracking-widest">{activeChar.name}</span><span className={`text-xs font-black ${activeChar.hp < 10 ? 'text-red-500 animate-pulse' : ''}`}>HP: {activeChar.hp}/{activeChar.maxHp}</span></div>
              </div>
@@ -998,7 +1191,7 @@ What do you do?`;
                   onChange={e => setInputValue(e.target.value)} 
                   onKeyDown={e => e.key === 'Enter' && !e.shiftKey && (e.preventDefault(), handleSendMessage())} 
                   placeholder={combat.isActive ? `Round ${combat.round}: Narrate your action...` : `Narrate ${activeChar.name}'s action...`} 
-                  className={`w-full p-6 h-20 rounded-2xl border-2 resize-none transition-all duration-300 focus:h-40 focus:outline-none focus:ring-4 focus:ring-opacity-10 shadow-2xl ${themeColors.input} ${isFantasy ? 'focus:ring-fantasy-gold' : 'focus:ring-scifi-accent'} text-base`} 
+                  className={`w-full p-6 pr-20 h-20 rounded-2xl border-2 resize-none transition-all duration-300 focus:h-40 focus:outline-none focus:ring-4 focus:ring-opacity-10 shadow-2xl ${themeColors.input} ${isFantasy ? 'focus:ring-fantasy-gold' : 'focus:ring-scifi-accent'} text-base`} 
                 />
                 <button 
                   onClick={handleSendMessage} 
@@ -1049,38 +1242,29 @@ What do you do?`;
               </div>
             )}
             {activeSidebarTab === 'inventory' && (
-              <ul className="space-y-2 animate-pop-in">
+              <div className="space-y-2 animate-pop-in">
                 {activeChar.inventory.map((item, i) => (
-                  <li 
-                    key={i} 
-                    className={`p-4 bg-black/20 rounded-xl border border-white/5 text-[10px] font-black uppercase tracking-widest opacity-60 hover:opacity-100 transition-opacity border-l-2 hover:border-l-current ${
-                      item.treasure ? (isFantasy ? 'border-l-fantasy-gold' : 'border-l-scifi-accent') : ''
-                    }`}
-                  >
-                    <div className="flex items-center justify-between">
-                      <span className="flex-1">
-                        {item.name}
-                        {item.quantity > 1 && ` (×${item.quantity})`}
-                      </span>
-                      {item.equipped && (
-                        <span className={`ml-2 text-[9px] font-bold ${isFantasy ? 'text-fantasy-gold' : 'text-scifi-accent'}`}>
-                          [E]
-                        </span>
-                      )}
-                    </div>
-                    {item.treasure && (
-                      <div className={`text-[8px] mt-1 ${isFantasy ? 'text-fantasy-gold/60' : 'text-scifi-accent/60'}`}>
-                        {item.value} GP
-                      </div>
-                    )}
-                  </li>
+                  <ItemCard key={i} item={item} theme={theme} />
                 ))}
-              </ul>
+              </div>
             )}
             {activeSidebarTab === 'conditions' && <div className="space-y-2 animate-pop-in">{activeChar.conditions.map(c => <div key={c} className={`p-4 rounded-xl border-2 font-black uppercase text-[10px] tracking-[0.2em] animate-pulse ${isFantasy ? 'border-fantasy-gold/20 text-fantasy-gold bg-fantasy-gold/5' : 'border-scifi-accent/20 text-scifi-accent bg-scifi-accent/5'}`}>{c}</div>)}</div>}
-            {activeSidebarTab === 'spells' && <div className="space-y-2 animate-pop-in">{activeChar.heldSpells.map(s => <div key={s} className={`p-4 rounded-xl border-2 bg-purple-950/10 border-purple-500/30 font-black uppercase text-[10px] tracking-[0.2em] text-purple-300 flex items-center gap-3 transition-transform hover:scale-105`}><Icons.Zap className="w-3 h-3 animate-pulse" /> {s}</div>)}</div>}
+            {activeSidebarTab === 'spells' && (
+              <div className="space-y-2 animate-pop-in">
+                {activeChar.heldSpells.map(s => (
+                  <SpellCard key={s} spellName={s} theme={theme} />
+                ))}
+              </div>
+            )}
             {(activeSidebarTab === 'conditions' && activeChar.conditions.length === 0) && <div className="text-center py-20 opacity-20 text-[10px] uppercase font-black tracking-widest">No active conditions</div>}
             {(activeSidebarTab === 'spells' && activeChar.heldSpells.length === 0) && <div className="text-center py-20 opacity-20 text-[10px] uppercase font-black tracking-widest">No active enchantments</div>}
+            
+            {/* Companion Roster - shows DM-controlled party members */}
+            <CompanionRoster 
+              companions={characters.filter(c => c.companion === true)} 
+              theme={theme}
+              partyCredits={undefined} // TODO: Get from campaign state if available
+            />
          </div>
       </aside>
     </div>

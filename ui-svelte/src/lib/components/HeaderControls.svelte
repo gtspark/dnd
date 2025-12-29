@@ -65,30 +65,45 @@
   .header-controls {
     display: flex;
     align-items: center;
-    gap: 0.5rem;
+    gap: 0.75rem;
     margin-left: auto;
     padding-right: 0;
   }
 
   .btn-icon {
-    background: rgba(255, 255, 255, 0.05);
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    border-radius: 8px;
-    width: 40px;
-    height: 40px;
+    background: linear-gradient(135deg, rgba(30, 40, 35, 0.6), rgba(20, 30, 25, 0.8));
+    border: 2px solid #3d5a4a;
+    border-radius: 6px;
+    width: 42px;
+    height: 42px;
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: 1.25rem;
+    font-size: 1.3rem;
     cursor: pointer;
-    transition: all 0.3s;
+    transition: all 0.3s ease;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .btn-icon::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(135deg, rgba(100, 180, 120, 0.1), transparent);
+    opacity: 0;
+    transition: opacity 0.3s;
   }
 
   .btn-icon:hover {
-    background: rgba(255, 255, 255, 0.1);
-    border-color: var(--accent-primary, #2ecc71);
+    background: linear-gradient(135deg, rgba(40, 50, 45, 0.7), rgba(30, 40, 35, 0.9));
+    border-color: #64b478;
     transform: translateY(-2px);
-    box-shadow: 0 4px 12px rgba(46, 204, 113, 0.3);
+    box-shadow: 0 0 25px rgba(100, 180, 120, 0.3);
+  }
+
+  .btn-icon:hover::before {
+    opacity: 1;
   }
 
   .btn-icon:active {

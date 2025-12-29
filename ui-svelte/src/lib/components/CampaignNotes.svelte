@@ -21,16 +21,8 @@
 
   function handleInput() {
     saving = true;
-
-    // Clear existing timeout
-    if (saveTimeout) {
-      clearTimeout(saveTimeout);
-    }
-
-    // Save after 500ms of no typing
-    saveTimeout = setTimeout(() => {
-      saveNotes();
-    }, 500);
+    if (saveTimeout) clearTimeout(saveTimeout);
+    saveTimeout = setTimeout(() => saveNotes(), 500);
   }
 
   function saveNotes() {
@@ -43,23 +35,15 @@
     if (!lastSaved) return '';
     const now = new Date();
     const diff = now - lastSaved;
-
     if (diff < 3000) return 'Saved just now';
     if (diff < 60000) return `Saved ${Math.floor(diff / 1000)}s ago`;
     if (diff < 3600000) return `Saved ${Math.floor(diff / 60000)}m ago`;
     return `Saved at ${lastSaved.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
   }
 
-  // Update the save time display every few seconds
   let saveTimeInterval;
   onMount(() => {
-    saveTimeInterval = setInterval(() => {
-      // Force re-render by reassigning lastSaved to itself
-      if (lastSaved) {
-        lastSaved = lastSaved;
-      }
-    }, 5000);
-
+    saveTimeInterval = setInterval(() => { if (lastSaved) lastSaved = lastSaved; }, 5000);
     return () => {
       clearInterval(saveTimeInterval);
       if (saveTimeout) clearTimeout(saveTimeout);
@@ -67,82 +51,97 @@
   });
 </script>
 
-<div class="campaign-notes">
+<div class="grimoire-notes">
   <div class="notes-header">
-    <h5>Campaign Notes</h5>
-    <span class="save-status" class:saving>
-      {#if saving}
-        Saving...
-      {:else if lastSaved}
-        {formatSaveTime()}
-      {/if}
+    <h5><span class="icon">📜</span> Chronicle</h5>
+    <span class="save-rune" class:saving>
+      {#if saving}✍️ Inscribing...{:else if lastSaved}✓ {formatSaveTime()}{/if}
     </span>
   </div>
-
   <textarea
     bind:value={notes}
     on:input={handleInput}
-    placeholder="Keep track of important details, NPCs, locations, theories..."
+    placeholder="Record your tales of adventure, encounters with mysterious figures, discoveries of ancient lore..."
   ></textarea>
 </div>
 
 <style>
-  .campaign-notes {
+  @import url('https://fonts.googleapis.com/css2?family=Cinzel:wght@600;700&family=IM+Fell+English&display=swap');
+
+  .grimoire-notes {
     display: flex;
     flex-direction: column;
-    gap: 0.5rem;
-    background: rgba(255, 255, 255, 0.03);
+    gap: 0.75rem;
+    background: linear-gradient(135deg, rgba(30, 40, 35, 0.5), rgba(20, 30, 25, 0.7));
+    border: 2px solid #3d5a4a;
     border-radius: 8px;
-    padding: 1rem;
+    padding: 1.25rem;
     height: 100%;
+    box-shadow: inset 0 0 40px rgba(0, 0, 0, 0.4);
   }
 
   .notes-header {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    margin-bottom: 0.25rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 1px solid #3d5a4a;
   }
 
   h5 {
     margin: 0;
-    color: #fbbf24;
-    font-size: 0.95rem;
-    font-weight: 600;
+    color: #b8956a;
+    font-size: 1rem;
+    font-weight: 700;
+    font-family: 'Cinzel', serif;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    text-shadow: 0 0 15px rgba(184, 149, 106, 0.3);
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
   }
 
-  .save-status {
-    font-size: 0.7rem;
-    color: #10b981;
+  .icon {
+    font-size: 1rem;
+    filter: drop-shadow(0 0 10px rgba(184, 149, 106, 0.3));
+  }
+
+  .save-rune {
+    font-size: 0.75rem;
+    color: #64b478;
     font-style: italic;
+    font-family: 'IM Fell English', serif;
   }
 
-  .save-status.saving {
-    color: #fbbf24;
+  .save-rune.saving {
+    color: #b8956a;
   }
 
   textarea {
     width: 100%;
     flex: 1;
-    padding: 0.75rem;
+    padding: 1rem;
     background: rgba(0, 0, 0, 0.3);
-    border: 1px solid rgba(255, 255, 255, 0.1);
+    border: 1px solid #3d5a4a;
     border-radius: 6px;
-    color: #eee;
-    font-family: 'Inter', system-ui, -apple-system, sans-serif;
-    font-size: 0.85rem;
-    line-height: 1.5;
+    color: #e8e4d9;
+    font-family: 'IM Fell English', serif;
+    font-size: 0.95rem;
+    line-height: 1.7;
     resize: none;
-    transition: border-color 0.2s;
+    transition: all 0.3s;
   }
 
   textarea:focus {
     outline: none;
-    border-color: rgba(251, 191, 36, 0.4);
+    border-color: #64b478;
+    box-shadow: 0 0 20px rgba(100, 180, 120, 0.15);
+    background: rgba(0, 0, 0, 0.4);
   }
 
   textarea::placeholder {
-    color: #666;
+    color: #7a7870;
     font-style: italic;
   }
 </style>

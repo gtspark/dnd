@@ -41,6 +41,7 @@ const defaultCombatState = {
   actionEconomy: {},
   conditions: {},
   conversationHistory: [],
+  rollQueue: [],
   context: {},
   participants: {
     players: [],
@@ -144,6 +145,7 @@ function normalizeCombatState(state) {
     actionEconomy: nextActionEconomy,
     conditions: nextConditions,
     conversationHistory: Array.isArray(state.conversationHistory) ? state.conversationHistory : [],
+    rollQueue: Array.isArray(state.rollQueue) ? state.rollQueue : [],
     context: state.context || {},
     participants
   };
@@ -245,7 +247,9 @@ function createCombatStore() {
     if (campaign) {
       campaignId = campaign;
     } else if (!campaignId) {
-      campaignId = 'test-silverpeak';
+      // Read from URL params, fallback to 'default'
+      const urlParams = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null;
+      campaignId = urlParams?.get('campaign') || 'default';
     }
 
     endpointUnavailable = false;
@@ -290,6 +294,9 @@ function createCombatStore() {
     if (!campaign || campaign === campaignId) {
       return;
     }
+
+    // Stop any existing polling before switching campaigns
+    stop();
 
     campaignId = campaign;
     if (fetch) {

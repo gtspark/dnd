@@ -3,6 +3,7 @@
     {
       "id": "test-silverpeak",
       "name": "Silverpeak Chronicles",
+      "genre": "high-fantasy",
       "created": "2025-10-04T00:00:00",
       "lastPlayed": "2025-10-04T00:00:00",
       "passwordHash": "$2b$10$CCWxSdTKn13uxGe1U6EjqeTwBwA6Sy9FWLDCga0k6XZWoUj0rQZea",
@@ -11,7 +12,22 @@
         "Thorne",
         "Riven"
       ],
-      "description": "Test campaign for shared core architecture - High fantasy world",
+      "description": "High fantasy world with D&D 5e mechanics",
+      "thumbnail": null
+    },
+    {
+      "id": "dax",
+      "name": "Titan Station Crisis",
+      "genre": "sci-fi",
+      "created": "2025-09-20T00:00:00",
+      "lastPlayed": "2025-12-09T00:00:00",
+      "passwordHash": null,
+      "characters": [
+        "Dax",
+        "Chen",
+        "Dr. Yuen"
+      ],
+      "description": "Sci-fi space opera investigation on Titan Station",
       "thumbnail": null
     }
   ]

@@ -274,10 +274,6 @@ export const participantRollStatus = derived(
 
 		($queue || []).forEach((entry) => {
 			(entry.participants || []).forEach((participant) => {
-				const entityType = (participant.entityType || '').toLowerCase();
-				if (participant.isPlayer === false || (entityType && entityType !== 'player')) {
-					return;
-				}
 				const bucket = ensure(participant, entry);
 				if (!bucket) return;
 

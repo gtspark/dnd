@@ -21,11 +21,15 @@ function getCampaignId(): string {
 interface BackendCharacter {
   name: string;
   class?: string;
+  race?: string;
   hp?: { current: number; max: number } | number;
   maxHp?: number;
   credits?: number;
   gold?: number;
   conditions?: string[];
+  controlledBy?: 'player' | 'dm';
+  companion?: boolean;
+  proficiencyBonus?: number;
   abilities?: {
     str?: number;
     dex?: number;
@@ -34,7 +38,8 @@ interface BackendCharacter {
     wis?: number;
     cha?: number;
   };
-  inventory?: string[];
+  skills?: Record<string, { ability: string; proficient: boolean; notes?: string }>;
+  inventory?: any[];  // Can be strings (legacy) or InventoryItem objects
   equipment?: string[];
   spells?: string[];
   portrait?: string;
@@ -137,12 +142,16 @@ export function transformCharacters(
       id: portraitKey,
       name: char.name || key,
       class: char.class || 'Adventurer',
+      race: char.race,
       avatar: char.portrait || `/dnd/campaigns/${campaignId}/portraits/${portraitKey}.png`,
       hp: hp.current,
       maxHp: hp.max,
       resource: char.credits ?? char.gold ?? 0,
       resourceName: theme === 'scifi' ? 'Creds' : 'GP',
       conditions: char.conditions || [],
+      controlledBy: char.controlledBy || 'player',
+      companion: char.companion || false,
+      proficiencyBonus: char.proficiencyBonus ?? 2,
       stats: {
         str: char.abilities?.str ?? 10,
         dex: char.abilities?.dex ?? 10,
@@ -151,7 +160,8 @@ export function transformCharacters(
         wis: char.abilities?.wis ?? 10,
         cha: char.abilities?.cha ?? 10
       },
-      inventory: char.inventory || [],  // Already unified array of item objects
+      skills: char.skills || {},
+      inventory: char.inventory || [],
       heldSpells: char.spells || []
     };
   });
@@ -268,9 +278,9 @@ export const sendMessageToDM = async (
   // Determine mode from message prefix
   let mode: 'ic' | 'ooc' = 'ic';
   let cleanAction = action;
-  if (action.startsWith('[OOC]') || action.startsWith('[ooc]')) {
+  if (action.startsWith('[OOC]') || action.startsWith('[ooc]') || action.startsWith('(ooc)') || action.startsWith('(ooc:') || action.startsWith('(OOC)') || action.startsWith('(OOC:')) {
     mode = 'ooc';
-    cleanAction = action.replace(/^\[OOC\]\s*/i, '');
+    cleanAction = action.replace(/^[\[(]OOC[\]):]\s*/i, '');
   } else if (action.startsWith('[System]')) {
     // Roll results, etc.
     mode = 'ic';
@@ -507,6 +517,40 @@ export async function endCombat(campaignId?: string): Promise<void> {
 }
 
 /**
+ * Continue story - triggers DM to continue without logging a player message
+ * Used for narrative campaigns where player just wants to advance the story
+ */
+export async function continueStory(
+  campaignId?: string,
+  onFunctionCall?: (fc: any) => void
+): Promise<string> {
+  const id = campaignId || currentCampaignId;
+
+  const res = await fetch(`${API_BASE}/continue`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ campaignId: id })
+  });
+
+  if (!res.ok) {
+    const errorText = await res.text();
+    throw new Error(`Continue story failed: ${res.status} - ${errorText}`);
+  }
+
+  const data = await res.json();
+
+  // Handle function calls for state updates
+  if (onFunctionCall && data.campaignState?.characters) {
+    onFunctionCall({
+      name: 'update_characters',
+      args: { characters: data.campaignState.characters }
+    });
+  }
+
+  return data.narrative || 'The story continues...';
+}
+
+/**
  * Get conversation history
  */
 export async function getHistory(campaignId?: string): Promise<Message[]> {
@@ -585,6 +629,134 @@ export async function skipLoot(lootId: string, campaignId?: string): Promise<{ s
   return res.json();
 }
 
+// ==================== RULES LOOKUP API ====================
+
+import type { SpellDetails, ItemDetails } from '../types';
+
+// Client-side caches for spell/item data
+const spellCache = new Map<string, SpellDetails>();
+const itemCache = new Map<string, ItemDetails>();
+
+/**
+ * Get spell details from D&D 5e API (cached)
+ */
+export async function getSpellDetails(spellName: string, level?: number): Promise<SpellDetails> {
+  const cacheKey = `${spellName.toLowerCase()}:${level || 0}`;
+  
+  if (spellCache.has(cacheKey)) {
+    return spellCache.get(cacheKey)!;
+  }
+  
+  try {
+    const url = `${API_BASE}/spell/${encodeURIComponent(spellName)}${level ? `?level=${level}` : ''}`;
+    const res = await fetch(url);
+    
+    if (!res.ok) {
+      throw new Error('Spell not found');
+    }
+    
+    const data = await res.json();
+    
+    // Derive stealth info from components
+    const enhanced: SpellDetails = {
+      ...data,
+      isVisible: data.components?.includes('S'),
+      isAudible: data.components?.includes('V')
+    };
+    
+    spellCache.set(cacheKey, enhanced);
+    return enhanced;
+  } catch (error) {
+    console.error(`[apiService] Spell lookup failed: ${spellName}`, error);
+    
+    const fallback: SpellDetails = {
+      name: spellName,
+      level: 0,
+      school: 'Unknown',
+      casting_time: 'Unknown',
+      range: 'Unknown',
+      components: [],
+      duration: 'Unknown',
+      concentration: false,
+      ritual: false,
+      description: '',
+      classes: [],
+      isVisible: true,
+      isAudible: true,
+      error: 'Details unavailable - ask the DM (OOC) for info!'
+    };
+    
+    // Cache the fallback too so we don't keep retrying
+    spellCache.set(cacheKey, fallback);
+    return fallback;
+  }
+}
+
+/**
+ * Get item details from D&D 5e API (cached)
+ */
+export async function getItemDetails(itemName: string): Promise<ItemDetails> {
+  const cacheKey = itemName.toLowerCase();
+  
+  if (itemCache.has(cacheKey)) {
+    return itemCache.get(cacheKey)!;
+  }
+  
+  try {
+    const url = `${API_BASE}/item/${encodeURIComponent(itemName)}`;
+    const res = await fetch(url);
+    
+    if (!res.ok) {
+      throw new Error('Item not found');
+    }
+    
+    const data = await res.json();
+    itemCache.set(cacheKey, data);
+    return data;
+  } catch (error) {
+    console.error(`[apiService] Item lookup failed: ${itemName}`, error);
+    
+    const fallback: ItemDetails = {
+      name: itemName,
+      equipment_category: 'Unknown',
+      properties: [],
+      weight: 0,
+      description: '',
+      error: 'Details unavailable - ask the DM (OOC) for info!'
+    };
+    
+    itemCache.set(cacheKey, fallback);
+    return fallback;
+  }
+}
+
+/**
+ * Preload spells into cache (call on app mount)
+ */
+export async function preloadPartySpells(spells: string[]): Promise<void> {
+  const uniqueSpells = [...new Set(spells)];
+  
+  console.log(`[apiService] Preloading ${uniqueSpells.length} spells...`);
+  
+  // Fetch all in parallel
+  await Promise.all(uniqueSpells.map(s => getSpellDetails(s)));
+  
+  console.log(`[apiService] Spell cache populated with ${spellCache.size} entries`);
+}
+
+/**
+ * Preload items into cache
+ */
+export async function preloadPartyItems(items: string[]): Promise<void> {
+  const uniqueItems = [...new Set(items)];
+  
+  console.log(`[apiService] Preloading ${uniqueItems.length} items...`);
+  
+  await Promise.all(uniqueItems.map(i => getItemDetails(i)));
+  
+  console.log(`[apiService] Item cache populated with ${itemCache.size} entries`);
+}
+
 // Export for backwards compatibility
 export default {
   initChat,
@@ -595,9 +767,14 @@ export default {
   getCombatState,
   nextTurn,
   endCombat,
+  continueStory,
   getHistory,
   transformCharacters,
   transformCombatState,
   distributeLoot,
-  skipLoot
+  skipLoot,
+  getSpellDetails,
+  getItemDetails,
+  preloadPartySpells,
+  preloadPartyItems
 };

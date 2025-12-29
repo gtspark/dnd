@@ -8,8 +8,11 @@
     stageResultForInjection,
     stagedMapStore
   } from '../../stores/rollQueueStore.js';
+  import { getCampaignContext } from '../../stores/campaignContext.js';
 
-  export let campaign = 'test-silverpeak';
+  // Get campaign from context (set by App.svelte)
+  const campaignStore = getCampaignContext();
+  $: campaign = $campaignStore;
 
   const lastUpdatedStore = writable(null);
 

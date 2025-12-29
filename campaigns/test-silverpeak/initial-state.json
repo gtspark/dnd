@@ -19,9 +19,9 @@
       },
       "ac": 13,
       "credits": 500,
-      "inventory": [],
-      "equipment": [],
-      "spells": [],
+      "inventory": ["Spellbook", "Arcane Focus", "Scholar's Pack"],
+      "equipment": ["Dagger", "Quarterstaff"],
+      "spells": ["Fire Bolt", "Mage Armor", "Magic Missile", "Shield"],
       "conditions": []
     },
     "thorne": {
@@ -43,9 +43,9 @@
       },
       "ac": 16,
       "credits": 500,
-      "inventory": [],
-      "equipment": [],
-      "spells": [],
+      "inventory": ["Holy Symbol of Moradin", "Priest's Pack", "Healing Potion"],
+      "equipment": ["Warhammer", "Shield", "Chain Mail"],
+      "spells": ["Cure Wounds", "Bless", "Guiding Bolt", "Sacred Flame"],
       "conditions": []
     },
     "riven": {
@@ -67,8 +67,8 @@
       },
       "ac": 15,
       "credits": 500,
-      "inventory": [],
-      "equipment": [],
+      "inventory": ["Thieves' Tools", "Burglar's Pack", "Rope (50ft)"],
+      "equipment": ["Shortsword", "Shortbow", "Leather Armor", "Daggers (2)"],
       "spells": [],
       "conditions": []
     }
@@ -86,5 +86,22 @@
     "currentLocation": "Silverpeak",
     "timeOfDay": "Morning",
     "weather": "Clear"
-  }
+  },
+  "key_npcs": {},
+  "combat": {
+    "active": false,
+    "round": 0,
+    "currentTurn": 0,
+    "initiativeOrder": [],
+    "participants": {
+      "players": [],
+      "enemies": []
+    },
+    "context": {},
+    "actionEconomy": {},
+    "conditions": {},
+    "conversationHistory": [],
+    "rollQueue": []
+  },
+  "combatMachineState": "COMBAT_ENDED"
 }

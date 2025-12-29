@@ -18,7 +18,9 @@ let headerControlsApp;
 let combatTrackerApp;
 
 function initApps() {
-  const campaign = 'test-silverpeak';
+  // Read campaign from URL params (supports ?campaign=dax, ?campaign=test-silverpeak, etc.)
+  const urlParams = new URLSearchParams(window.location.search);
+  const campaign = urlParams.get('campaign') || 'test-silverpeak';
 
   // Mount character panel (left side) - includes PartyCredits internally
   const characterTarget = document.getElementById('svelte-character-panel');

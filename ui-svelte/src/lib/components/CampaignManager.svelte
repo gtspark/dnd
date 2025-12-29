@@ -170,32 +170,42 @@
 </div>
 
 <style>
+  @import url('https://fonts.googleapis.com/css2?family=Cinzel:wght@400;600;700&family=IM+Fell+English:ital@0;1&display=swap');
+
   .character-panel-content {
     display: flex;
     flex-direction: column;
     gap: 0.75rem;
     height: 100%;
-    color: #eee;
-    font-family: system-ui, -apple-system, sans-serif;
+    color: #e8e4d9;
+    font-family: 'IM Fell English', serif;
   }
 
   .character-panel-content h3 {
     margin: 0 0 0.5rem 0;
-    color: #fbbf24;
+    color: #b8956a;
     font-size: 1.1rem;
+    font-family: 'Cinzel', serif;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    text-shadow: 0 0 15px rgba(184, 149, 106, 0.3);
   }
 
   .character-panel-content h4 {
     margin: 1rem 0 0.5rem 0;
-    color: #fbbf24;
+    color: #b8956a;
     font-size: 1rem;
+    font-family: 'Cinzel', serif;
+    font-weight: 700;
+    text-shadow: 0 0 10px rgba(184, 149, 106, 0.2);
   }
 
   .party-card {
     width: 100%;
     padding: 0.75rem;
-    background: rgba(255, 255, 255, 0.05);
-    border: 2px solid transparent;
+    background: rgba(100, 180, 120, 0.05);
+    border: 2px solid #3d5a4a;
     border-radius: 6px;
     cursor: pointer;
     text-align: left;
@@ -204,24 +214,27 @@
   }
 
   .party-card:hover {
-    background: rgba(255, 255, 255, 0.08);
+    background: rgba(100, 180, 120, 0.12);
+    border-color: #64b478;
   }
 
   .party-card.selected {
-    background: rgba(251, 191, 36, 0.15);
-    border-color: #fbbf24;
+    background: rgba(100, 180, 120, 0.2);
+    border-color: #64b478;
+    box-shadow: 0 0 15px rgba(100, 180, 120, 0.3);
   }
 
   .party-card-name {
     font-weight: 600;
     font-size: 1rem;
     margin-bottom: 0.25rem;
-    color: #eee;
+    color: #e8e4d9;
+    font-family: 'Cinzel', serif;
   }
 
   .party-card-class {
     font-size: 0.85rem;
-    color: #aaa;
+    color: #b8b4a9;
     margin-bottom: 0.5rem;
   }
 
@@ -256,13 +269,16 @@
 
   .ability-name {
     font-weight: 600;
-    color: #aaa;
+    color: #7a7870;
     min-width: 2.2rem;
+    font-family: 'Cinzel', serif;
+    text-transform: uppercase;
+    font-size: 0.7rem;
   }
 
   .ability-value {
     font-weight: 600;
-    color: #eee;
+    color: #e8e4d9;
   }
 
   .ability-modifier {
@@ -271,11 +287,11 @@
   }
 
   .ability-modifier.positive {
-    color: #10b981;
+    color: #64b478;
   }
 
   .ability-modifier.negative {
-    color: #f87171;
+    color: #d46464;
   }
 
   /* Vitals Row: HP and AC side by side */
@@ -307,13 +323,15 @@
   .vital-label {
     font-size: 0.8rem;
     font-weight: 600;
-    color: #aaa;
+    color: #7a7870;
+    font-family: 'Cinzel', serif;
   }
 
   .vital-value {
     font-size: 1rem;
     font-weight: 700;
-    color: #eee;
+    color: #e8e4d9;
+    font-family: 'Cinzel', serif;
   }
 
   /* RIGHT PANEL: Character Details */

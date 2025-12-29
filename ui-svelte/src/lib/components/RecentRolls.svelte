@@ -96,55 +96,75 @@
 </div>
 
 <style>
+  @import url('https://fonts.googleapis.com/css2?family=Cinzel:wght@600;700&family=IM+Fell+English&family=Courier+Prime:wght@700&display=swap');
+
   .recent-rolls {
     display: flex;
     flex-direction: column;
-    gap: 0.5rem;
-    background: rgba(255, 255, 255, 0.03);
+    gap: 0.75rem;
+    background: linear-gradient(135deg, rgba(30, 40, 35, 0.5), rgba(20, 30, 25, 0.7));
+    border: 2px solid #3d5a4a;
     border-radius: 8px;
-    padding: 1rem;
+    padding: 1.25rem;
     height: 100%;
+    box-shadow: inset 0 0 40px rgba(0, 0, 0, 0.4);
+    font-family: 'IM Fell English', serif;
   }
 
   h5 {
-    margin: 0 0 0.5rem 0;
-    color: #fbbf24;
-    font-size: 0.95rem;
-    font-weight: 600;
+    margin: 0 0 0.75rem 0;
+    color: #b8956a;
+    font-size: 1rem;
+    font-weight: 700;
+    font-family: 'Cinzel', serif;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    text-shadow: 0 0 15px rgba(184, 149, 106, 0.3);
+    padding-bottom: 0.5rem;
+    border-bottom: 1px solid #3d5a4a;
   }
 
   .empty-rolls {
     text-align: center;
-    padding: 1.5rem;
-    color: #666;
-    font-size: 0.85rem;
+    padding: 2rem;
+    color: #7a7870;
+    font-size: 0.9rem;
     font-style: italic;
   }
 
   .rolls-list {
     display: flex;
     flex-direction: column;
-    gap: 0.5rem;
+    gap: 0.6rem;
     flex: 1;
     overflow-y: auto;
   }
 
   .roll-item {
-    background: rgba(255, 255, 255, 0.05);
-    border-left: 3px solid rgba(255, 255, 255, 0.2);
-    padding: 0.5rem 0.75rem;
-    border-radius: 4px;
-    font-size: 0.85rem;
+    background: rgba(100, 180, 120, 0.05);
+    border: 1px solid #3d5a4a;
+    border-left: 3px solid #3d5a4a;
+    padding: 0.65rem 0.85rem;
+    border-radius: 6px;
+    font-size: 0.9rem;
+    transition: all 0.2s;
+  }
+
+  .roll-item:hover {
+    background: rgba(100, 180, 120, 0.08);
+    border-left-color: #64b478;
   }
 
   .roll-item.success {
-    border-left-color: #10b981;
-    background: rgba(16, 185, 129, 0.1);
+    border-left-color: #64b478;
+    background: rgba(100, 180, 120, 0.12);
+    box-shadow: 0 0 10px rgba(100, 180, 120, 0.1);
   }
 
   .roll-item.failure {
-    border-left-color: #ef4444;
-    background: rgba(239, 68, 68, 0.1);
+    border-left-color: #d46464;
+    background: rgba(212, 100, 100, 0.12);
+    box-shadow: 0 0 10px rgba(212, 100, 100, 0.1);
   }
 
   .roll-header {
@@ -156,68 +176,77 @@
 
   .roll-character {
     font-weight: 600;
-    color: #eee;
-    font-size: 0.8rem;
+    color: #e8e4d9;
+    font-size: 0.85rem;
+    font-family: 'Cinzel', serif;
   }
 
   .roll-time {
     font-size: 0.7rem;
-    color: #888;
+    color: #7a7870;
   }
 
   .roll-details {
     display: flex;
-    gap: 0.5rem;
+    gap: 0.6rem;
     align-items: center;
-    margin-bottom: 0.25rem;
+    margin-bottom: 0.35rem;
   }
 
   .roll-skill {
-    color: #fbbf24;
-    font-size: 0.75rem;
-    font-weight: 500;
+    color: #b8956a;
+    font-size: 0.8rem;
+    font-weight: 600;
   }
 
   .roll-dc {
     font-size: 0.7rem;
-    padding: 0.1rem 0.4rem;
-    background: rgba(255, 255, 255, 0.1);
-    border-radius: 3px;
-    color: #aaa;
+    padding: 0.2rem 0.5rem;
+    background: rgba(100, 180, 120, 0.15);
+    border: 1px solid rgba(100, 180, 120, 0.3);
+    border-radius: 4px;
+    color: #b8b4a9;
   }
 
   .roll-result {
     display: flex;
-    gap: 0.5rem;
+    gap: 0.6rem;
     align-items: baseline;
   }
 
   .roll-total {
-    font-size: 1.1rem;
+    font-family: 'Cinzel', serif;
+    font-size: 1.3rem;
     font-weight: 700;
-    color: #fff;
+    color: #e8e4d9;
+    text-shadow: 0 0 10px rgba(232, 228, 217, 0.2);
   }
 
   .roll-breakdown {
-    font-size: 0.7rem;
-    color: #999;
+    font-size: 0.75rem;
+    color: #7a7870;
+    font-family: 'Courier Prime', monospace;
   }
 
   .btn-clear {
     width: 100%;
-    margin-top: 0.5rem;
-    padding: 0.5rem;
-    background: rgba(239, 68, 68, 0.2);
-    border: 1px solid rgba(239, 68, 68, 0.4);
-    border-radius: 4px;
-    color: #fca5a5;
+    margin-top: 0.75rem;
+    padding: 0.65rem;
+    background: rgba(212, 100, 100, 0.15);
+    border: 2px solid rgba(212, 100, 100, 0.3);
+    border-radius: 6px;
+    color: #d46464;
     cursor: pointer;
-    font-size: 0.8rem;
-    transition: all 0.2s;
+    font-size: 0.85rem;
+    font-family: 'Cinzel', serif;
+    font-weight: 600;
+    transition: all 0.3s;
   }
 
   .btn-clear:hover {
-    background: rgba(239, 68, 68, 0.3);
-    border-color: rgba(239, 68, 68, 0.6);
+    background: rgba(212, 100, 100, 0.25);
+    border-color: rgba(212, 100, 100, 0.5);
+    box-shadow: 0 0 15px rgba(212, 100, 100, 0.2);
+    transform: translateY(-1px);
   }
 </style>

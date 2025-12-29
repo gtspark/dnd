@@ -120,7 +120,9 @@ class AIProviderManager {
         this.providers = {
             claude: new ClaudeProvider(),
             deepseek: new DeepSeekProvider(),
-            gpt4: new GPT4Provider()
+            gpt4: new GPT4Provider(),
+            gpt5: new GPT5Provider(),
+            gemini: new GeminiProvider()
         };
 
         // Load saved provider or default to claude
@@ -180,13 +182,13 @@ class AIProviderManager {
         return Object.keys(this.providers);
     }
 
-    async generateResponse(system, messages) {
+    async generateResponse(system, messages, campaignId = 'default') {
         const provider = this.providers[this.currentProvider];
         if (!provider) {
             throw new Error(`Provider ${this.currentProvider} not found`);
         }
 
-        return await provider.generateResponse(system, messages);
+        return await provider.generateResponse(system, messages, campaignId);
     }
 }
 
@@ -200,7 +202,7 @@ class BaseAIProvider {
         return this.modelName;
     }
 
-    async generateResponse(system, messages) {
+    async generateResponse(system, messages, campaignId = 'default') {
         throw new Error('generateResponse must be implemented by subclass');
     }
 }
@@ -215,7 +217,7 @@ class ClaudeProvider extends BaseAIProvider {
         this.rulesService = new DnDRulesService();
     }
 
-    async generateResponse(system, messages) {
+    async generateResponse(system, messages, campaignId = 'default') {
         const startTime = Date.now();
         const fetch = require('node-fetch');
         const apiKey = this.getApiKey();
@@ -223,7 +225,8 @@ class ClaudeProvider extends BaseAIProvider {
         console.log('🤖 [AI] Claude request starting', {
             model: this.modelName,
             messageCount: messages.length,
-            systemPromptLength: system.length
+            systemPromptLength: system.length,
+            campaignId: campaignId
         });
 
         // Define D&D 5e tools - lookup tools + state mutation tools
@@ -306,8 +309,19 @@ class ClaudeProvider extends BaseAIProvider {
                         },
                         "add_items": {
                             "type": "array",
-                            "items": { "type": "string" },
-                            "description": "Items to add to inventory"
+                            "items": { 
+                                "type": "object",
+                                "properties": {
+                                    "name": { "type": "string", "description": "Display name (e.g., 'Rusty Scimitar', 'Healing Potion')" },
+                                    "baseItem": { "type": "string", "description": "SRD equipment slug for stats lookup (e.g., 'scimitar', 'potion-of-healing'). Use lowercase with dashes." },
+                                    "category": { "type": "string", "enum": ["weapon", "armor", "consumable", "treasure", "misc"], "description": "Item category" },
+                                    "quantity": { "type": "integer", "description": "Number of items (default 1)" },
+                                    "value": { "type": "number", "description": "Gold piece value" },
+                                    "custom": { "type": "boolean", "description": "True for quest/lore items with no SRD equivalent" }
+                                },
+                                "required": ["name", "category"]
+                            },
+                            "description": "Items to add. Use baseItem for SRD equipment (e.g., baseItem:'dagger' for 'Silver Dagger'). Mark quest items as custom:true."
                         },
                         "remove_items": {
                             "type": "array",
@@ -406,6 +420,16 @@ class ClaudeProvider extends BaseAIProvider {
             }
         ];
 
+        // Filter tools based on campaign configuration
+        const campaignFeatures = getCampaignFeatures(campaignId);
+        let filteredTools = tools;
+        if (campaignFeatures.disabledTools && Array.isArray(campaignFeatures.disabledTools)) {
+            filteredTools = tools.filter(t => !campaignFeatures.disabledTools.includes(t.name));
+            if (filteredTools.length < tools.length) {
+                console.log(`🔧 Disabled tools for ${campaignId}: ${campaignFeatures.disabledTools.join(', ')}`);
+            }
+        }
+
         // Enhanced system prompt with D&D 5e instructions
         const enhancedSystem = system + `
 
@@ -442,6 +466,12 @@ STATE MUTATION TOOLS - ALWAYS USE THESE:
 ✓ Character loses condition → call update_character with remove_conditions
 ✓ Character gains/loses items → call update_character with add_items/remove_items
 ✓ Character gains/spends gold → call update_character with gold_change
+
+ITEM FORMAT FOR add_items:
+- Standard equipment: {name: "Rusty Scimitar", baseItem: "scimitar", category: "weapon", value: 25}
+- Quest/lore items: {name: "Cultist's Journal", category: "misc", custom: true}
+- Consumables: {name: "Healing Potion", baseItem: "potion-of-healing", category: "consumable", quantity: 2}
+- The baseItem field links to D&D 5e SRD equipment (lowercase, dashes) for tooltips/stats
 
 COMBAT TOOLS - ALWAYS USE THESE:
 ✓ Combat begins → call start_combat with enemy list (REQUIRED)
@@ -820,7 +850,7 @@ END D&D 5E COMBAT MECHANICS
                 messages: messages,
                 max_tokens: 2000,
                 temperature: 0.7,
-                tools: tools
+                tools: filteredTools
             })
         });
 
@@ -851,7 +881,7 @@ END D&D 5E COMBAT MECHANICS
             }];
 
             // Recursive call to get final response (with tools enabled to allow more tool calls)
-            const finalResult = await this.generateResponseWithTools(enhancedSystem, followUpMessages, apiKey, tools);
+            const finalResult = await this.generateResponseWithTools(enhancedSystem, followUpMessages, apiKey, filteredTools);
 
             // Merge state mutations from recursive calls
             if (finalResult.stateMutations) {
@@ -907,7 +937,7 @@ END D&D 5E COMBAT MECHANICS
                 messages: messages,
                 max_tokens: 2000,
                 temperature: 0.7,
-                tools: tools
+                tools: filteredTools
             })
         });
 
@@ -1240,6 +1270,164 @@ SILVERPEAK LORE GUARDRAILS:
             return cleanedContent;
         } else {
             throw new Error('No content in GPT-4 response');
+        }
+    }
+}
+
+class GPT5Provider extends BaseAIProvider {
+    constructor() {
+        super('gpt5', 'gpt-5');
+    }
+
+    async generateResponse(system, messages) {
+        const startTime = Date.now();
+        const fetch = require('node-fetch');
+        const apiKey = process.env.OPENAI_API_KEY;
+
+        if (!apiKey) {
+            throw new Error('OpenAI API key not found in environment variables');
+        }
+
+        console.log('🤖 [AI] GPT-5 request starting', {
+            model: this.modelName,
+            messageCount: messages.length,
+            systemPromptLength: system.length,
+            systemPromptPreview: system.substring(0, 300),
+            userMessagePreview: messages[0]?.content?.substring(0, 200)
+        });
+
+        const response = await fetch('https://api.openai.com/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${apiKey}`
+            },
+            body: JSON.stringify({
+                model: this.modelName,
+                messages: [
+                    { role: 'system', content: system },
+                    ...messages
+                ],
+                max_completion_tokens: 16000  // Increased - GPT-5 may use tokens for reasoning
+            })
+        });
+
+        if (!response.ok) {
+            const errorText = await response.text();
+            throw new Error(`GPT-5 API error: ${response.status} ${response.statusText} - ${errorText}`);
+        }
+
+        const data = await response.json();
+        const duration = Date.now() - startTime;
+        
+        // Debug: log the full response structure
+        const message = data.choices?.[0]?.message;
+        console.log('🔍 [AI] GPT-5 raw response structure:', {
+            hasChoices: !!data.choices,
+            choicesLength: data.choices?.length,
+            hasMessage: !!message,
+            messageKeys: message ? Object.keys(message) : [],
+            finishReason: data.choices?.[0]?.finish_reason,
+            contentType: typeof message?.content,
+            contentLength: message?.content?.length ?? 'null',
+            contentPreview: message?.content?.substring?.(0, 100) || 'N/A',
+            // Check for reasoning model fields
+            hasReasoning: !!message?.reasoning,
+            reasoningLength: message?.reasoning?.length,
+            // Full message dump if content is empty
+            fullMessage: (!message?.content || message?.content?.length === 0) ? JSON.stringify(message).substring(0, 500) : 'content exists'
+        });
+        
+        if (data.choices && data.choices[0] && data.choices[0].message) {
+            const content = data.choices[0].message.content || '';
+            const tokens = data.usage?.total_tokens || 'unknown';
+
+            console.log(`✅ [AI] GPT-5 response received (${duration}ms)`, {
+                tokens,
+                responseLength: content.length,
+                promptTokens: data.usage?.prompt_tokens,
+                completionTokens: data.usage?.completion_tokens
+            });
+
+            if (!content || content.length === 0) {
+                console.error('❌ [AI] GPT-5 returned empty content. Full message object:', JSON.stringify(data.choices[0].message, null, 2));
+                throw new Error('GPT-5 returned empty content');
+            }
+
+            let cleanedContent = content.replace(/\*\*DM \([^)]+\)\*\*/g, '').trim();
+            return cleanedContent;
+        } else {
+            console.error('❌ [AI] GPT-5 response missing expected structure:', JSON.stringify(data, null, 2).substring(0, 500));
+            throw new Error('No content in GPT-5 response');
+        }
+    }
+}
+
+class GeminiProvider extends BaseAIProvider {
+    constructor() {
+        super('gemini', 'gemini-3-pro-preview');
+    }
+
+    async generateResponse(system, messages) {
+        const startTime = Date.now();
+        const fetch = require('node-fetch');
+        const apiKey = process.env.GOOGLE_API_KEY;
+
+        if (!apiKey) {
+            throw new Error('Google API key not found in environment variables');
+        }
+
+        console.log('🤖 [AI] Gemini request starting', {
+            model: this.modelName,
+            messageCount: messages.length,
+            systemPromptLength: system.length
+        });
+
+        // Convert messages to Gemini format
+        const contents = messages.map(msg => ({
+            role: msg.role === 'assistant' ? 'model' : 'user',
+            parts: [{ text: msg.content }]
+        }));
+
+        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${this.modelName}:generateContent?key=${apiKey}`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                systemInstruction: {
+                    parts: [{ text: system }]
+                },
+                contents: contents,
+                generationConfig: {
+                    maxOutputTokens: 4000,
+                    temperature: 0.7
+                }
+            })
+        });
+
+        if (!response.ok) {
+            const errorText = await response.text();
+            throw new Error(`Gemini API error: ${response.status} ${response.statusText} - ${errorText}`);
+        }
+
+        const data = await response.json();
+        if (data.candidates && data.candidates[0] && data.candidates[0].content) {
+            const duration = Date.now() - startTime;
+            const content = data.candidates[0].content.parts.map(p => p.text).join('');
+            const tokens = data.usageMetadata?.totalTokenCount || 'unknown';
+
+            console.log(`✅ [AI] Gemini response received (${duration}ms)`, {
+                tokens,
+                responseLength: content.length,
+                promptTokens: data.usageMetadata?.promptTokenCount,
+                completionTokens: data.usageMetadata?.candidatesTokenCount
+            });
+
+            let cleanedContent = content.replace(/\*\*DM \([^)]+\)\*\*/g, '').trim();
+            return cleanedContent;
+        } else {
+            throw new Error('No content in Gemini response: ' + JSON.stringify(data));
         }
     }
 }
@@ -1894,7 +2082,7 @@ class IntelligentContextManager {
         console.log(`🎯 Retrieving context for: "${playerAction.substring(0, 50)}..."`);
 
         const relevantContext = {
-            immediate: this.getCurrentEvents(100), // Comprehensive recent context - last 100 current events
+            immediate: this.getCurrentEvents(30), // Recent context - RAG handles long-term memory now
             specific: [],
             historical: this.getHistoricalEvents(5), // Minimal historical context
             worldState: this.getCurrentWorldState(),
@@ -2005,13 +2193,25 @@ class IntelligentContextManager {
     isSimpleContinuation(action) {
         const continuationPhrases = [
             'looks', 'walks', 'says', 'nods', 'shakes', 'continues',
-            'waits', 'thinks', 'considers', 'watches', 'listens', 'smiles'
+            'waits', 'thinks', 'considers', 'watches', 'listens', 'smiles',
+            'asks', 'tells', 'replies', 'responds', 'agrees', 'disagrees',
+            'sits', 'stands', 'moves', 'turns', 'suggests', 'ready',
+            'punch it', 'do it', 'go ahead', 'let\'s go', 'send it'
         ];
         
+        // Short in-scene messages don't need RAG
+        const needsMemoryLookup = action.includes('remember') || 
+                                   action.includes('recall') || 
+                                   action.includes('earlier') ||
+                                   action.includes('back when') ||
+                                   action.includes('what happened');
+        
+        if (needsMemoryLookup) return false;
+        
+        // Short messages are usually in-scene continuations
+        if (action.length < 80) return true;
+        
         return continuationPhrases.some(phrase => action.includes(phrase)) &&
-               !action.includes('remember') &&
-               !action.includes('recall') &&
-               !action.includes('earlier') &&
                !action.includes('roll');
     }
 
@@ -2497,6 +2697,11 @@ class IntelligentContextManager {
                         ? Number(combatant.initiative)
                         : null;
 
+                    // Get conditions from combatant, character state, or empty array
+                    const charConditions = charData?.conditions || charData?.buffs || [];
+                    const combatantConditions = Array.isArray(combatant.conditions) ? combatant.conditions : [];
+                    const mergedConditions = [...new Set([...combatantConditions, ...charConditions])];
+                    
                     return {
                         name: combatant.name,
                         id,
@@ -2508,7 +2713,7 @@ class IntelligentContextManager {
                             max: hpSource.max ?? hpSource.maximum ?? hpSource.total ?? hpSource.maxHp ?? null
                         },
                         actionEconomy: ensureActionEconomy(),
-                        conditions: Array.isArray(combatant.conditions) ? [...combatant.conditions] : []
+                        conditions: mergedConditions
                     };
                 });
 
@@ -2835,22 +3040,49 @@ Current Turn: ${currentCombatant.name}
 - Reaction: ${currentCombatant.actionEconomy?.reaction ? '✓ Available' : '✗ Used'}
 
 **Initiative Order:**
-${this.combatState.initiativeOrder.map((c, i) =>
-    `${i === this.combatState.currentTurn ? '→' : ' '} ${c.initiative}: ${c.name} (HP: ${c.hp?.current || '?'}/${c.hp?.max || '?'}, AC: ${c.ac || '?'})`
-).join('\n')}
+${this.combatState.initiativeOrder.map((c, i) => {
+    // Get conditions from combatant or from character state
+    const charData = c.isPlayer && this.campaignState?.characters?.[c.id || c.name.toLowerCase()];
+    const conditions = c.conditions?.length ? c.conditions : (charData?.conditions || charData?.buffs || []);
+    const condStr = conditions.length > 0 ? ` [${conditions.join(', ')}]` : '';
+    return `${i === this.combatState.currentTurn ? '→' : ' '} ${c.initiative}: ${c.name} (HP: ${c.hp?.current || '?'}/${c.hp?.max || '?'}, AC: ${c.ac || '?'})${condStr}`;
+}).join('\n')}
 
 `;
+        }
+
+        // Add party status with conditions (always include this for DM awareness)
+        if (this.campaignState?.characters) {
+            const partyStatus = Object.entries(this.campaignState.characters).map(([id, char]) => {
+                const conditions = char.conditions || char.buffs || [];
+                const condStr = conditions.length > 0 ? ` **[${conditions.join(', ')}]**` : '';
+                const hp = char.hp?.current !== undefined ? `${char.hp.current}/${char.hp.max}` : '?';
+                return `- ${char.name || id}: HP ${hp}${condStr}`;
+            }).join('\n');
+            
+            if (partyStatus) {
+                prompt += `## PARTY STATUS:\n${partyStatus}\n\n`;
+                // Remind DM to roleplay conditions
+                const activeConditions = Object.values(this.campaignState.characters)
+                    .flatMap(c => c.conditions || c.buffs || [])
+                    .filter(Boolean);
+                if (activeConditions.length > 0) {
+                    prompt += `**IMPORTANT: Characters have active conditions (${[...new Set(activeConditions)].join(', ')}). Incorporate these into narration and apply mechanical effects!**\n\n`;
+                }
+            }
         }
 
         // Add core facts
         prompt += this.CORE_FACTS + '\n\n';
 
-        // Add immediate context (recent history) - MOST RECENT FIRST
+        // Add immediate context (recent history) - MOST RECENT FIRST with strong scene markers
         if (context.immediate && context.immediate.length > 0) {
-            prompt += `## RECENT HISTORY (most recent first - last ${context.immediate.length} exchanges):\n`;
-            prompt += context.immediate.slice().reverse().map(event =>
-                `${(event.type || 'ENTRY').toUpperCase()}: ${event.content.substring(0, 500)}${event.content.length > 500 ? '...' : ''}`
-            ).join('\n\n');
+            prompt += `## ═══ CURRENT SCENE (THIS IS NOW) ═══\n`;
+            prompt += `**CRITICAL: Stay in this scene. Do NOT jump to past events from RAG memories.**\n\n`;
+            prompt += context.immediate.slice().reverse().map((event, idx) => {
+                const marker = idx === 0 ? '🔴 [NOW]' : `[${idx+1} ago]`;
+                return `${marker} ${(event.type || 'ENTRY').toUpperCase()}: ${event.content.substring(0, 500)}${event.content.length > 500 ? '...' : ''}`;
+            }).join('\n\n');
             prompt += '\n\n';
         }
 
@@ -3246,7 +3478,31 @@ ${this.combatState.initiativeOrder.map((c, i) =>
             let enhancedPrompt = systemPrompt;
             if (hasFeature(this.campaignId, 'usesRAG') && this.memoryClient) {
                 try {
-                    const memories = await this.memoryClient.retrieveMemories(playerAction, 5);
+                    // Determine the best query for RAG retrieval
+                    // If playerAction is a dice roll result, use the last DM message instead
+                    // to get relevant context for what scene the roll applies to
+                    let ragQuery = playerAction;
+                    const isDiceRoll = /rolled\s+D\d+|rolled.*natural\s+\d+|result.*\d+.*total/i.test(playerAction);
+                    
+                    if (isDiceRoll) {
+                        // Get the last DM message from conversation history for better RAG context
+                        try {
+                            const historyData = await fs.readFile(this.paths.conversationHistory, 'utf8');
+                            const history = JSON.parse(historyData);
+                            // Find the last assistant message
+                            for (let i = history.length - 1; i >= 0; i--) {
+                                if (history[i].role === 'assistant' && history[i].content) {
+                                    ragQuery = history[i].content.substring(0, 500); // Use first 500 chars
+                                    console.log('🎲 Dice roll detected - using last DM message for RAG query');
+                                    break;
+                                }
+                            }
+                        } catch (e) {
+                            console.warn('⚠️ Could not read history for RAG query, using playerAction');
+                        }
+                    }
+                    
+                    const memories = await this.memoryClient.retrieveMemories(ragQuery, 5);
                     if (memories && memories.length > 0) {
                         const memoryContext = this.memoryClient.formatMemoriesForContext(memories);
                         enhancedPrompt = systemPrompt + '\n\n' + memoryContext;
@@ -3259,7 +3515,7 @@ ${this.combatState.initiativeOrder.map((c, i) =>
             }
 
             const messages = [{ role: "user", content: playerAction }];
-            const aiResponse = await this.aiProvider.generateResponse(enhancedPrompt, messages);
+            const aiResponse = await this.aiProvider.generateResponse(enhancedPrompt, messages, this.campaignId);
 
             // Handle new response format { text, stateMutations } from ClaudeProvider
             if (aiResponse && typeof aiResponse === 'object' && aiResponse.text !== undefined) {
@@ -3394,12 +3650,38 @@ ${this.combatState.initiativeOrder.map((c, i) =>
         // Apply inventory changes
         if (!charData.inventory) charData.inventory = [];
         if (add_items && add_items.length > 0) {
-            charData.inventory.push(...add_items);
-            console.log(`   Added items: ${add_items.join(', ')}`);
+            for (const item of add_items) {
+                // Handle both old string format and new object format
+                const itemObj = typeof item === 'string' 
+                    ? { name: item, category: 'misc', quantity: 1, condition: 'good', equipped: false, value: 0, stackable: false, treasure: false }
+                    : {
+                        name: item.name,
+                        baseItem: item.baseItem || null,
+                        custom: item.custom || false,
+                        category: item.category || 'misc',
+                        quantity: item.quantity || 1,
+                        condition: 'good',
+                        equipped: false,
+                        value: item.value || 0,
+                        stackable: item.category === 'consumable',
+                        treasure: item.category === 'treasure'
+                    };
+                charData.inventory.push(itemObj);
+                console.log(`   Added item: ${itemObj.name}${itemObj.baseItem ? ` (${itemObj.baseItem})` : ''}${itemObj.custom ? ' [CUSTOM]' : ''}`);
+            }
         }
         if (remove_items && remove_items.length > 0) {
-            charData.inventory = charData.inventory.filter(i => !remove_items.includes(i));
-            console.log(`   Removed items: ${remove_items.join(', ')}`);
+            // Remove by name match (handles both string and object items in inventory)
+            for (const toRemove of remove_items) {
+                const removeName = typeof toRemove === 'string' ? toRemove : toRemove.name;
+                const idx = charData.inventory.findIndex(i => 
+                    (typeof i === 'string' ? i : i.name).toLowerCase() === removeName.toLowerCase()
+                );
+                if (idx !== -1) {
+                    const removed = charData.inventory.splice(idx, 1)[0];
+                    console.log(`   Removed item: ${typeof removed === 'string' ? removed : removed.name}`);
+                }
+            }
         }
 
         // Save updated state
@@ -3993,7 +4275,7 @@ INSTRUCTIONS: Continue the narrative based on this roll result. Write what happe
 
         try {
             const messages = [{ role: "user", content: "Continue narrative based on roll result with full campaign context" }];
-            const response = await this.aiProvider.generateResponse(phase2Prompt, messages);
+            const response = await this.aiProvider.generateResponse(phase2Prompt, messages, this.campaignId);
             console.log('📖 Phase 2 complete with full context');
             return response;
         } catch (error) {
@@ -4270,6 +4552,77 @@ What do you do?`;
         }
     }
 
+    /**
+     * Save only a DM response to conversation history (no player message)
+     * Used for "continue" functionality where we don't want to log the trigger
+     */
+    async saveDMResponseOnly(dmResponse) {
+        if (this.saveInProgress) {
+            console.log('⏳ Save already in progress, queuing...');
+            await new Promise(resolve => setTimeout(resolve, 500));
+            if (this.saveInProgress) {
+                console.warn('⚠️ Save still in progress after wait, skipping');
+                return;
+            }
+        }
+
+        this.saveInProgress = true;
+        console.log('💾 saveDMResponseOnly called');
+        console.log('📝 DM response length:', dmResponse?.length || 0, 'chars');
+        
+        try {
+            let history = [];
+            try {
+                const data = await fs.readFile(this.paths.conversationHistory, 'utf8');
+                history = JSON.parse(data);
+            } catch (err) {
+                // File doesn't exist yet
+            }
+
+            const timestamp = new Date().toISOString();
+
+            // Only add DM response (no player message)
+            if (dmResponse && dmResponse.trim()) {
+                // Extract state changes from DM response
+                let stateChanges = null;
+                stateChanges = await this.extractStateChanges(dmResponse, '[continue]');
+
+                history.push({
+                    role: 'assistant',
+                    content: dmResponse,
+                    timestamp: timestamp,
+                    mode: 'continue',
+                    stateChanges: stateChanges
+                });
+
+                // Apply state changes if any
+                if (stateChanges && Object.keys(stateChanges).length > 0) {
+                    await this.applyStateChanges(stateChanges);
+                    console.log('🔄 State changes applied:', stateChanges);
+                }
+            } else {
+                console.warn('⚠️ Rejected empty DM response from being added to history');
+            }
+
+            await fs.writeFile(this.paths.conversationHistory, JSON.stringify(history, null, 2));
+            console.log(`💾 Saved DM-only response to history (now ${history.length} entries)`);
+
+            // Store to RAG if available
+            if (this.memoryClient && hasFeature(this.campaignId, 'usesRAG')) {
+                try {
+                    await this.memoryClient.addAction('assistant', dmResponse);
+                    console.log('🧠 Stored continuation in RAG via addAction');
+                } catch (e) {
+                    console.warn('⚠️ Failed to store in RAG:', e.message);
+                }
+            }
+        } catch (error) {
+            console.error('Failed to save DM response:', error);
+        } finally {
+            this.saveInProgress = false;
+        }
+    }
+
     async extractStateChanges(dmResponse, playerAction = '') {
         // Prevent concurrent extractions
         if (this.extractionInProgress) {
@@ -4367,7 +4720,7 @@ Critical Rules:
 
             console.log(`📊 Current state for extraction: party_credits=${this.campaignState.resources?.party_credits || 0}`);
 
-            const rawResponse = await this.aiProvider.generateResponse('You are a JSON extraction system. Return only valid JSON.', messages);
+            const rawResponse = await this.aiProvider.generateResponse('You are a JSON extraction system. Return only valid JSON.', messages, this.campaignId);
 
             // Handle new response format { text, stateMutations } from ClaudeProvider
             const extractionResponse = typeof rawResponse === 'object' && rawResponse.text !== undefined
@@ -6295,6 +6648,34 @@ async function handleActionRequest(req, res) {
         if (characterName && !actionValidation.sanitized.toLowerCase().startsWith(characterName.toLowerCase())) {
             actionWithContext = `${characterName}: ${actionValidation.sanitized}`;
         }
+        
+        // For dice rolls, enhance with the roll request context from the last DM message
+        // This prevents the AI from confusing what the roll was for
+        const isDiceRoll = /rolled\s+D\d+|rolled.*natural\s+\d+/i.test(actionWithContext);
+        if (isDiceRoll) {
+            try {
+                const historyPath = path.join(__dirname, 'campaigns', activeCampaignId, 'conversation-history.json');
+                const historyData = await fs.readFile(historyPath, 'utf8');
+                const history = JSON.parse(historyData);
+                // Find the last assistant message that contains a roll request
+                for (let i = history.length - 1; i >= 0; i--) {
+                    if (history[i].role === 'assistant' && history[i].content) {
+                        // Look for roll request pattern in the message
+                        const rollMatch = history[i].content.match(/(?:ROLL NEEDED|🎲)[:\s]*(?:Roll\s+)?([^(\n]+)\s*\(([^)]+)\)\s*(?:\(DC\s*(\d+)\)|DC\s*(\d+))?/i);
+                        if (rollMatch) {
+                            const skillName = rollMatch[1].trim();
+                            const ability = rollMatch[2].trim();
+                            const dc = rollMatch[3] || rollMatch[4] || '?';
+                            actionWithContext = `${actionWithContext} [This roll is for: ${skillName} (${ability}) DC ${dc}]`;
+                            console.log(`🎲 Enhanced dice roll with context: ${skillName} (${ability}) DC ${dc}`);
+                            break;
+                        }
+                    }
+                }
+            } catch (e) {
+                console.warn('⚠️ Could not enhance dice roll with context:', e.message);
+            }
+        }
 
         // Process with intelligent retrieval, passing mode parameter
         const result = await context.processPlayerAction(
@@ -6420,6 +6801,123 @@ const actionRoutes = [
     '/dnd/api/dnd/action'
 ];
 actionRoutes.forEach(route => app.post(route, checkLockdown('dnd'), handleActionRequest));
+
+// Continue story endpoint - triggers DM to continue without logging a player message
+const continueRoutes = ['/api/dnd/continue', '/dnd-api/dnd/continue'];
+continueRoutes.forEach(route => app.post(route, checkLockdown('dnd'), async (req, res) => {
+    const { campaignId, campaign } = req.body;
+    const activeCampaignId = campaignId || campaign || 'default';
+    
+    const validation = validateCampaignId(activeCampaignId);
+    if (!validation.valid) {
+        return res.status(400).json({ error: validation.error });
+    }
+
+    console.log(`\n▶️ Continue story requested for campaign: ${activeCampaignId}`);
+
+    try {
+        const context = await getCampaignContext(activeCampaignId);
+        if (!context.isLoaded) {
+            return res.status(503).json({ error: 'System still loading...' });
+        }
+
+        // Read last DM message from conversation history for RAG context
+        let lastDmContent = '';
+        try {
+            const historyPath = path.join(__dirname, 'campaigns', activeCampaignId, 'conversation-history.json');
+            const historyData = await fs.readFile(historyPath, 'utf8');
+            const history = JSON.parse(historyData);
+            const lastDmMessage = [...history].reverse().find(m => m.role === 'assistant');
+            if (lastDmMessage?.content) {
+                lastDmContent = lastDmMessage.content;
+                console.log(`📖 Found last DM message (${lastDmContent.length} chars)`);
+            }
+        } catch (e) {
+            console.warn('⚠️ Could not read last DM message:', e.message);
+        }
+
+        // Retrieve RAG memories using last DM message content (not a generic prompt)
+        let ragContext = '';
+        if (hasFeature(activeCampaignId, 'usesRAG') && context.memoryClient && lastDmContent) {
+            try {
+                // Use last 500 chars of DM message as the query
+                const ragQuery = lastDmContent.slice(-500);
+                const memories = await context.memoryClient.retrieveMemories(ragQuery, 5);
+                if (memories && memories.length > 0) {
+                    ragContext = context.memoryClient.formatMemoriesForContext(memories);
+                    console.log(`🧠 Retrieved ${memories.length} relevant memories for continuation`);
+                }
+            } catch (e) {
+                console.warn('⚠️ Failed to retrieve RAG memories:', e.message);
+            }
+        }
+
+        // Build context for continuation (no player action, just system instruction)
+        const balancedContext = await context.retrieveRelevantContext('[continue from last scene]');
+        
+        // Build the continuation prompt
+        let systemPrompt = context.CORE_FACTS || '';
+        
+        // Add RAG context if available
+        if (ragContext) {
+            systemPrompt += '\n\n' + ragContext;
+        }
+
+        // Add recent context
+        systemPrompt += `\n\n=== RECENT EVENTS ===\n`;
+        if (balancedContext.immediate && balancedContext.immediate.length > 0) {
+            balancedContext.immediate.slice(-10).forEach(event => {
+                systemPrompt += `- ${event.summary || event.content || JSON.stringify(event)}\n`;
+            });
+        }
+
+        // Add world state
+        if (balancedContext.worldState) {
+            systemPrompt += `\n=== CURRENT WORLD STATE ===\n${JSON.stringify(balancedContext.worldState, null, 2)}\n`;
+        }
+
+        // Add the continuation instruction (this is NOT a player message)
+        systemPrompt += `\n
+=== CONTINUATION INSTRUCTION ===
+The player has requested you continue the story from where you left off.
+Do NOT repeat what just happened. Pick up EXACTLY where the narrative ended and move the story forward naturally.
+Introduce new developments, NPC dialogue, environmental details, or dramatic tension as appropriate.
+If a scene was awaiting player input, you may have an NPC prompt them or describe what happens if they hesitate.
+Keep the same tone and pacing. Do not summarize - continue as if mid-scene.
+`;
+
+        // Send to AI (as a system instruction, not a player message)
+        const messages = [{ role: "user", content: "Continue the story from where you left off." }];
+        const aiResponse = await context.aiProvider.generateResponse(systemPrompt, messages, activeCampaignId);
+
+        // Extract the response text
+        let responseText = '';
+        if (aiResponse && typeof aiResponse === 'object' && aiResponse.text !== undefined) {
+            responseText = aiResponse.text;
+            // Process any state mutations
+            if (aiResponse.stateMutations && aiResponse.stateMutations.length > 0) {
+                console.log(`🔧 Processing ${aiResponse.stateMutations.length} state mutations`);
+                await context.processStateMutations(aiResponse.stateMutations);
+            }
+        } else {
+            responseText = aiResponse;
+        }
+
+        // Save ONLY the DM response to history (no player message logged)
+        await context.saveDMResponseOnly(responseText);
+
+        console.log(`✅ Continue story complete (${responseText.length} chars)`);
+
+        res.json({
+            narrative: responseText,
+            campaignState: context.campaignState
+        });
+
+    } catch (error) {
+        console.error('❌ Continue story error:', error);
+        res.status(500).json({ error: error.message || 'Failed to continue story' });
+    }
+}));
 
 // Get current context and state
 app.get('/api/dnd/context', async (req, res) => {
@@ -7818,7 +8316,8 @@ Extract scene description:`;
         const messages = [{ role: 'user', content: extractionPrompt }];
         const sceneDescription = await context.aiProvider.generateResponse(
             'You are a scene description extractor. Return only the scene description, nothing else.',
-            messages
+            messages,
+            context.campaignId
         );
 
         // Clean up the response (remove any AI provider stamps)
@@ -8277,6 +8776,67 @@ app.delete('/api/dnd/character/condition/:conditionId', async (req, res) => {
     } catch (error) {
         console.error('Remove condition error:', error);
         res.status(500).json({ error: error.message });
+    }
+});
+
+// ==================== RULES LOOKUP API ====================
+
+// Get spell details from D&D 5e API
+app.get('/api/dnd/spell/:spellName', async (req, res) => {
+    try {
+        const { spellName } = req.params;
+        const level = req.query.level ? parseInt(req.query.level) : null;
+        
+        const details = await rulesLookupService.getSpellDetails(spellName, level);
+        res.json(details);
+    } catch (error) {
+        console.error('Spell lookup error:', error);
+        res.status(500).json({ 
+            name: req.params.spellName,
+            error: 'Failed to fetch spell details'
+        });
+    }
+});
+
+// Get item/equipment details from D&D 5e API
+app.get('/api/dnd/item/:itemName', async (req, res) => {
+    try {
+        const { itemName } = req.params;
+        
+        const details = await rulesLookupService.getItemDetails(itemName);
+        res.json(details);
+    } catch (error) {
+        console.error('Item lookup error:', error);
+        res.status(500).json({ 
+            name: req.params.itemName,
+            error: 'Failed to fetch item details'
+        });
+    }
+});
+
+// Preload spells for a campaign (called on frontend mount)
+app.post('/api/dnd/preload-spells', async (req, res) => {
+    try {
+        const { spells } = req.body;
+        
+        if (!Array.isArray(spells)) {
+            return res.status(400).json({ error: 'spells must be an array' });
+        }
+        
+        // Fetch all in parallel (uses internal caching)
+        const results = await Promise.all(
+            spells.map(s => rulesLookupService.getSpellDetails(s).catch(() => null))
+        );
+        
+        const cached = results.filter(r => r && !r.error).length;
+        res.json({ 
+            success: true, 
+            cached,
+            total: spells.length 
+        });
+    } catch (error) {
+        console.error('Preload spells error:', error);
+        res.status(500).json({ error: 'Failed to preload spells' });
     }
 });
 

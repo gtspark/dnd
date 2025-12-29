@@ -61,7 +61,10 @@ class DnDRulesService {
                 }
 
                 if (response.status === 404) {
-                    throw new Error('404 Not Found');
+                    // Don't retry 404s - item simply doesn't exist in SRD
+                    const err = new Error('404 Not Found');
+                    err.is404 = true;
+                    throw err;
                 }
 
                 throw new Error(`HTTP ${response.status}`);
@@ -71,6 +74,12 @@ class DnDRulesService {
                 } else {
                     lastError = error;
                 }
+                
+                // Don't retry 404s - they won't change
+                if (error.is404) {
+                    throw error;
+                }
+                
                 attempt += 1;
                 const isLastAttempt = attempt > this.maxRetries;
                 console.warn(`⚠️ ${label} attempt ${attempt} failed: ${lastError.message}`);
@@ -321,18 +330,21 @@ class DnDRulesService {
             for (const slug of slugCandidates) {
                 const url = `${this.baseUrl}/equipment/${slug}`;
                 try {
-                    console.log(`⚔️ Fetching item: ${url}`);
                     item = await this.fetchJsonWithRetry(url, `Item lookup ${itemName}`);
+                    console.log(`⚔️ Item found: ${itemName} -> ${slug}`);
                     resolvedSlug = slug;
                     break;
                 } catch (error) {
+                    // Silently continue to next slug candidate on 404
                     if (error.message !== '404 Not Found') {
-                        console.warn(`⚠️ Item lookup retry for ${itemName} (${slug}): ${error.message}`);
+                        console.warn(`⚠️ Item lookup error for ${itemName} (${slug}): ${error.message}`);
                     }
                 }
             }
 
             if (!item) {
+                // Only log once when all candidates failed
+                console.log(`📦 Item not in SRD: ${itemName}`);
                 throw new Error(`Item not found: ${itemName}`);
             }
 

@@ -8,7 +8,7 @@
     <meta http-equiv="Expires" content="0">
     <title>Claude DM - D&D Campaign Manager</title>
     <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🎲</text></svg>">
-    <link rel="stylesheet" href="styles.css?v=1761137700">
+    <link rel="stylesheet" href="styles.css?v=1764054345">
     <link href="https://fonts.googleapis.com/css2?family=Crimson+Text:wght@400;600;700&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
 </head>
 <body>
@@ -468,8 +468,8 @@
         </div>
     </div>
 
-    <script src="api-handler.js?v=1761137700&cf=dev"></script>
-    <script src="script.js?v=1761137700&cf=dev"></script>
+    <script src="/dnd/shared/api-handler-base.js?v=1733746800"></script>
+    <script src="/dnd/shared/campaign-base.js?v=1733746800"></script>
     <script>
         // Extract campaign ID from URL parameter
         const urlParams = new URLSearchParams(window.location.search);
@@ -587,13 +587,13 @@
             // Load Svelte CSS
             const svelteCSS = document.createElement('link');
             svelteCSS.rel = 'stylesheet';
-            svelteCSS.href = '/dnd/campaigns/test-silverpeak/svelte-dist/assets/index-BZa3awbx.css?v=1761137700';
+            svelteCSS.href = '/dnd/campaigns/test-silverpeak/svelte-dist/assets/index-6GABUy0N.css?v=1764054345';
             document.head.appendChild(svelteCSS);
 
             // Load Svelte JS
             const svelteJS = document.createElement('script');
             svelteJS.type = 'module';
-            svelteJS.src = '/dnd/campaigns/test-silverpeak/svelte-dist/assets/index-CWWjSjdx.js?v=1761137700' + Date.now();
+            svelteJS.src = '/dnd/campaigns/test-silverpeak/svelte-dist/assets/index-DpGllzxI.js?v=1764054345' + Date.now();
             document.body.appendChild(svelteJS);
 
             console.log('✅ Loaded Svelte Equipment Manager for test-silverpeak');

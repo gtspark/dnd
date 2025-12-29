@@ -1,6 +1,6 @@
-# EMERGENCY CAMPAIGN EXPORT - 2025-10-20
+# EMERGENCY CAMPAIGN EXPORT - 2025-12-26
 
-### Entry 0 - UNKNOWN [2025-10-05T12:00:00.000Z]
+### Entry 0 - ASSISTANT [2025-10-05T12:00:00.000Z]
 The village of Thornhaven sits nestled in a valley beneath the towering peaks of the Silverpeak Mountains, their snow-capped summits glinting like dragon scales in the afternoon sun. The autumn air carries the scent of woodsmoke and freshly baked bread from the village bakery.
 
 You stand in the common room of the Laughing Griffin tavern, where three adventurers have answered the urgent summons of Elder Miriam. The common folk whisper nervously at their tables - something has disturbed the ancient woods to the north.

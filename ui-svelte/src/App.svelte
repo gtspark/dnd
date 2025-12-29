@@ -1,8 +1,11 @@
 <script>
   import CampaignManager from './lib/components/CampaignManager.svelte';
   import CombatTracker from './lib/components/CombatTracker.svelte';
+  import { initCampaignContext } from './stores/campaignContext.js';
 
-  const campaign = 'test-silverpeak';
+  // Initialize campaign context for all child components
+  const campaignStore = initCampaignContext();
+  $: campaign = $campaignStore;
 </script>
 
 <main>
