@@ -3120,7 +3120,34 @@ ${this.combatState.initiativeOrder.map((c, i) => {
 
         prompt += `CURRENT PLAYER ACTION: ${playerAction}\n\n`;
         prompt += 'Respond as the DM. You have recent history and any relevant past context above.\n';
-        prompt += 'For dice rolls, use format: 🎲 Roll [Skill] (DC [number]) to [action]';
+        prompt += 'For dice rolls, use format: 🎲 Roll [Skill] (DC [number]) to [action]\n\n';
+
+        // ANTI-TIMEWARP: Add canonical current scene block at the very end (recency bias)
+        if (this.campaignState?.current_scene) {
+            const scene = this.campaignState.current_scene;
+            prompt += `
+═══════════════════════════════════════════════════════════════════
+CANONICAL_CURRENT_SCENE (AUTHORITATIVE - THIS IS WHERE WE ARE NOW)
+═══════════════════════════════════════════════════════════════════
+{
+  "scene_id": ${scene.scene_id},
+  "location": "${scene.location}",
+  "npcs_present": ${JSON.stringify(scene.npcs_present || [])},
+  "npcs_departed": ${JSON.stringify(scene.npcs_departed || [])},
+  "situation": "${scene.situation || ''}",
+  "last_action": "${scene.last_action || ''}",
+  "pending": "${scene.pending || 'none'}"
+}
+
+YOUR RESPONSE MUST:
+1. Begin with: SceneCheck: #${scene.scene_id} | ${scene.location}
+2. Continue the story from THIS scene only - never reference or return to earlier scenes
+3. If you cannot continue from scene #${scene.scene_id}, output: SCENE_ERROR: [reason]
+
+Any response that doesn't match scene #${scene.scene_id} will be rejected and regenerated.
+═══════════════════════════════════════════════════════════════════
+`;
+        }
 
         return prompt;
     }
@@ -3193,8 +3220,41 @@ ${this.combatState.initiativeOrder.map((c, i) => {
                 console.log(`📉 Compression: ${(prompt.length / this.totalMemorySize * 100).toFixed(3)}%`);
             }
 
-            // Send to AI for Phase 1
-            const response = await this.sendToAI(prompt, playerAction);
+            // Send to AI for Phase 1 (with retry on scene mismatch)
+            let response = await this.sendToAI(prompt, playerAction);
+            
+            // ANTI-TIMEWARP: Validate scene check
+            if (this.campaignState?.current_scene && response) {
+                const validationResult = this.validateSceneCheck(response);
+                
+                if (!validationResult.valid) {
+                    console.log(`⚠️ TIMEWARP DETECTED: ${validationResult.reason}`);
+                    console.log(`   Expected scene #${this.campaignState.current_scene.scene_id} at ${this.campaignState.current_scene.location}`);
+                    console.log(`   Got: ${validationResult.detected || 'no scene check found'}`);
+                    
+                    // Retry once with correction
+                    const correctionPrompt = prompt + `\n\n⚠️ CORRECTION REQUIRED: Your previous response was for the wrong scene. You MUST continue from scene #${this.campaignState.current_scene.scene_id} (${this.campaignState.current_scene.location}). Start with: SceneCheck: #${this.campaignState.current_scene.scene_id} | ${this.campaignState.current_scene.location}`;
+                    
+                    console.log(`🔄 Retrying with scene correction...`);
+                    response = await this.sendToAI(correctionPrompt, playerAction);
+                    
+                    // Validate retry
+                    const retryValidation = this.validateSceneCheck(response);
+                    if (!retryValidation.valid) {
+                        console.log(`❌ TIMEWARP PERSISTS after retry: ${retryValidation.reason}`);
+                        // Log for analysis but continue with response (don't infinite loop)
+                    } else {
+                        console.log(`✅ Scene correction successful on retry`);
+                    }
+                } else {
+                    console.log(`✅ SceneCheck valid: #${validationResult.sceneId} | ${validationResult.location}`);
+                }
+                
+                // Strip the SceneCheck line from the response before returning to user
+                if (response) {
+                    response = response.replace(/^SceneCheck:\s*#\d+\s*\|\s*[^\n]+\n*/i, '').trim();
+                }
+            }
 
             console.log(`🔍 After sendToAI - combatState.active:`, this.combatState?.active);
 
@@ -4065,6 +4125,77 @@ ${this.combatState.initiativeOrder.map((c, i) => {
         console.log(`➡️  [TURN CHAIN] Complete. Advanced ${turnsAdvanced} enemy turn(s). Now: Round ${this.combatState.round}, Turn ${this.combatState.currentTurn + 1}`);
     }
 
+    // ==================== ANTI-TIMEWARP VALIDATION ====================
+    validateSceneCheck(response) {
+        if (!this.campaignState?.current_scene) {
+            return { valid: true, reason: 'No scene tracking configured' };
+        }
+        
+        const expectedSceneId = this.campaignState.current_scene.scene_id;
+        const expectedLocation = this.campaignState.current_scene.location;
+        
+        // Check for SCENE_ERROR (model couldn't continue)
+        const errorMatch = response.match(/SCENE_ERROR:\s*(.+)/i);
+        if (errorMatch) {
+            return { 
+                valid: false, 
+                reason: `Model reported scene error: ${errorMatch[1]}`,
+                detected: errorMatch[0]
+            };
+        }
+        
+        // Look for SceneCheck header
+        const sceneCheckMatch = response.match(/^SceneCheck:\s*#(\d+)\s*\|\s*([^\n]+)/im);
+        
+        if (!sceneCheckMatch) {
+            // No SceneCheck found - check if response mentions old locations
+            const oldLocations = ['sealed corridor', 'corridor approach', 'dock 7 corridor'];
+            const currentLocationLower = expectedLocation.toLowerCase();
+            
+            for (const oldLoc of oldLocations) {
+                if (response.toLowerCase().includes(oldLoc) && !currentLocationLower.includes(oldLoc)) {
+                    return {
+                        valid: false,
+                        reason: `Response mentions old location "${oldLoc}" but current scene is "${expectedLocation}"`,
+                        detected: `Old location reference: ${oldLoc}`
+                    };
+                }
+            }
+            
+            // No SceneCheck but also no obvious timewarp - warn but allow
+            console.log(`⚠️ No SceneCheck header in response (expected #${expectedSceneId})`);
+            return { valid: true, reason: 'No SceneCheck header but no obvious timewarp detected' };
+        }
+        
+        const responseSceneId = parseInt(sceneCheckMatch[1], 10);
+        const responseLocation = sceneCheckMatch[2].trim();
+        
+        // Validate scene ID
+        if (responseSceneId !== expectedSceneId) {
+            return {
+                valid: false,
+                reason: `Scene ID mismatch: expected #${expectedSceneId}, got #${responseSceneId}`,
+                detected: sceneCheckMatch[0],
+                sceneId: responseSceneId,
+                location: responseLocation
+            };
+        }
+        
+        // Scene ID matches - location check is softer (allow minor variations)
+        const locationMatch = responseLocation.toLowerCase().includes(expectedLocation.toLowerCase().split(',')[0]) ||
+                              expectedLocation.toLowerCase().includes(responseLocation.toLowerCase().split(',')[0]);
+        
+        if (!locationMatch) {
+            console.log(`⚠️ Location mismatch but scene ID correct: expected "${expectedLocation}", got "${responseLocation}"`);
+        }
+        
+        return {
+            valid: true,
+            sceneId: responseSceneId,
+            location: responseLocation
+        };
+    }
+
     // ==================== TWO-PHASE DICE SYSTEM ====================
     async detectPhase(response) { // Made async to allow await for processRollResult
         // Check if this looks like a roll REQUEST (dice emoji near the END asking for an action)
@@ -4511,6 +4642,28 @@ What do you do?`;
             if (stateChanges && Object.keys(stateChanges).length > 0) {
                 await this.applyStateChanges(stateChanges);
                 console.log('🔄 State changes applied:', stateChanges);
+            }
+
+            // Update current_scene.last_action for anti-timewarp tracking
+            if (this.campaignState?.current_scene && playerAction) {
+                // Summarize player action (first 100 chars)
+                const actionSummary = playerAction.length > 100 
+                    ? playerAction.substring(0, 100) + '...' 
+                    : playerAction;
+                this.campaignState.current_scene.last_action = actionSummary;
+                
+                // Check if DM response contains a roll request
+                if (dmResponse && dmResponse.includes('🎲') && dmResponse.match(/Roll\s+\w+/i)) {
+                    const rollMatch = dmResponse.match(/🎲\s*(?:ROLL NEEDED:\s*)?Roll\s+([^\n(]+)/i);
+                    this.campaignState.current_scene.pending = rollMatch 
+                        ? rollMatch[1].trim() 
+                        : 'Dice roll requested';
+                } else {
+                    this.campaignState.current_scene.pending = null;
+                }
+                
+                // Save updated scene state
+                await this.saveCampaignState();
             }
 
             // Detect combat end from narrative (in case end_combat tool wasn't called)
@@ -6981,6 +7134,83 @@ app.post('/api/dnd/state', async (req, res) => {
     } catch (error) {
         console.error('Error updating state:', error);
         res.status(500).json({ error: 'Failed to update state' });
+    }
+});
+
+// ==================== SCENE TRACKING (ANTI-TIMEWARP) ====================
+
+// Update current scene (for manual scene transitions or corrections)
+app.post('/api/dnd/scene', async (req, res) => {
+    const campaignId = req.body.campaignId || req.query.campaign || 'default';
+    const validation = validateCampaignId(campaignId);
+    if (!validation.valid) {
+        return res.status(400).json({ error: validation.error });
+    }
+
+    try {
+        const context = await getCampaignContext(campaignId);
+        const { location, npcs_present, npcs_departed, situation, pending, increment_scene } = req.body;
+        
+        // Initialize current_scene if it doesn't exist
+        if (!context.campaignState.current_scene) {
+            context.campaignState.current_scene = {
+                scene_id: 1,
+                location: '',
+                npcs_present: [],
+                npcs_departed: [],
+                situation: '',
+                last_action: '',
+                pending: null
+            };
+        }
+        
+        const scene = context.campaignState.current_scene;
+        
+        // Increment scene_id if transitioning to a new scene
+        if (increment_scene) {
+            scene.scene_id += 1;
+            console.log(`📍 Scene transition: Now at scene #${scene.scene_id}`);
+        }
+        
+        // Update fields if provided
+        if (location !== undefined) scene.location = location;
+        if (npcs_present !== undefined) scene.npcs_present = npcs_present;
+        if (npcs_departed !== undefined) scene.npcs_departed = npcs_departed;
+        if (situation !== undefined) scene.situation = situation;
+        if (pending !== undefined) scene.pending = pending;
+        
+        // Save the updated state
+        await context.saveCampaignState();
+        
+        console.log(`📍 Scene updated: #${scene.scene_id} | ${scene.location}`);
+        
+        res.json({
+            success: true,
+            current_scene: scene
+        });
+    } catch (error) {
+        console.error('Error updating scene:', error);
+        res.status(500).json({ error: 'Failed to update scene' });
+    }
+});
+
+// Get current scene
+app.get('/api/dnd/scene', async (req, res) => {
+    const campaignId = req.query.campaign || 'default';
+    const validation = validateCampaignId(campaignId);
+    if (!validation.valid) {
+        return res.status(400).json({ error: validation.error });
+    }
+
+    try {
+        const context = await getCampaignContext(campaignId);
+        res.json({
+            success: true,
+            current_scene: context.campaignState.current_scene || null
+        });
+    } catch (error) {
+        console.error('Error getting scene:', error);
+        res.status(500).json({ error: 'Failed to get scene' });
     }
 });
 
