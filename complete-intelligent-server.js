@@ -3149,6 +3149,13 @@ YOUR RESPONSE MUST:
 2. Continue the story from THIS scene only - never reference or return to earlier scenes
 3. If you cannot continue from scene #${scene.scene_id}, output: SCENE_ERROR: [reason]
 
+SCENE TRANSITIONS:
+- You may ONLY change locations if the narrative naturally leads there
+- To change scenes, you MUST include at END of your response:
+  [SCENE_TRANSITION: new_location="<location>" reason="<why>"]
+- Silent location changes are FORBIDDEN - always use SCENE_TRANSITION
+- The system will update scene_id automatically when you emit SCENE_TRANSITION
+
 Any response that doesn't match scene #${scene.scene_id} will be rejected and regenerated.
 ═══════════════════════════════════════════════════════════════════
 `;
@@ -3298,6 +3305,38 @@ Start your response with: SceneCheck: #${scene.scene_id} | ${scene.location}
                 // Strip the SceneCheck line from the response before returning to user
                 if (response) {
                     response = response.replace(/^SceneCheck:\s*#\d+\s*\|\s*[^\n]+\n*/i, '').trim();
+                }
+                
+                // Check for SCENE_TRANSITION and handle it
+                const sceneTransitionMatch = response.match(/\[SCENE_TRANSITION:\s*new_location="([^"]+)"\s*reason="([^"]+)"\]/i);
+                if (sceneTransitionMatch) {
+                    const newLocation = sceneTransitionMatch[1];
+                    const reason = sceneTransitionMatch[2];
+                    
+                    console.log(`📍 [SCENE_TRANSITION] Detected!`);
+                    console.log(`   From: ${this.campaignState.current_scene.location}`);
+                    console.log(`   To: ${newLocation}`);
+                    console.log(`   Reason: ${reason}`);
+                    
+                    // Update the scene
+                    this.campaignState.current_scene.scene_id += 1;
+                    this.campaignState.current_scene.location = newLocation;
+                    this.campaignState.current_scene.situation = reason;
+                    this.campaignState.current_scene.last_action = `Transitioned from previous location: ${reason}`;
+                    this.campaignState.current_scene.pending = null;
+                    
+                    // Sync with memory client
+                    if (this.memoryClient) {
+                        this.memoryClient.setCurrentSceneId(this.campaignState.current_scene.scene_id);
+                    }
+                    
+                    // Save updated state
+                    await this.saveCampaignState();
+                    
+                    console.log(`✅ Scene updated to #${this.campaignState.current_scene.scene_id} | ${newLocation}`);
+                    
+                    // Strip the transition marker from the response
+                    response = response.replace(/\[SCENE_TRANSITION:[^\]]+\]/gi, '').trim();
                 }
             } else {
                 // No scene tracking - just send normally
