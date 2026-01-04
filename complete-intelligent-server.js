@@ -124,10 +124,14 @@ class AIProviderManager {
             gpt5: new GPT5Provider(),
             gemini: new GeminiProvider()
         };
+        
+        // Cheap provider for Pass A scene verification (fast, low-cost)
+        this.cheapProvider = new GPT4MiniProvider();
 
         // Load saved provider or default to claude
         this.currentProvider = this.loadSavedProvider() || 'claude';
         console.log(`🔄 AI Provider Manager initialized with: ${this.currentProvider.toUpperCase()}`);
+        console.log(`💰 Cheap provider for Pass A: ${this.cheapProvider.getModelName()}`);
     }
 
     loadSavedProvider() {
@@ -189,6 +193,14 @@ class AIProviderManager {
         }
 
         return await provider.generateResponse(system, messages, campaignId);
+    }
+
+    /**
+     * Generate a cheap/fast response using gpt-4o-mini
+     * Used for Pass A scene verification to save cost and latency
+     */
+    async generateCheapResponse(system, messages) {
+        return await this.cheapProvider.generateResponse(system, messages);
     }
 }
 
@@ -1428,6 +1440,63 @@ class GeminiProvider extends BaseAIProvider {
             return cleanedContent;
         } else {
             throw new Error('No content in Gemini response: ' + JSON.stringify(data));
+        }
+    }
+}
+
+// GPT-4o-mini Provider (cheap/fast for Pass A verification)
+class GPT4MiniProvider extends BaseAIProvider {
+    constructor() {
+        super('gpt4mini', 'gpt-4o-mini');
+    }
+
+    async generateResponse(system, messages) {
+        const startTime = Date.now();
+        const fetch = require('node-fetch');
+        const apiKey = process.env.OPENAI_API_KEY;
+
+        if (!apiKey) {
+            throw new Error('OpenAI API key not found in environment variables');
+        }
+
+        console.log('💰 [AI] GPT-4o-mini request (cheap/fast)', {
+            model: this.modelName,
+            messageCount: messages.length,
+            systemPromptLength: system.length
+        });
+
+        const response = await fetch('https://api.openai.com/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${apiKey}`
+            },
+            body: JSON.stringify({
+                model: this.modelName,
+                messages: [
+                    { role: 'system', content: system },
+                    ...messages
+                ],
+                max_tokens: 500,  // Short responses for verification
+                temperature: 0.3  // Low temperature for deterministic output
+            })
+        });
+
+        if (!response.ok) {
+            throw new Error(`GPT-4o-mini API error: ${response.status} ${response.statusText}`);
+        }
+
+        const data = await response.json();
+        if (data.choices && data.choices[0] && data.choices[0].message) {
+            const duration = Date.now() - startTime;
+            const content = data.choices[0].message.content;
+            const tokens = data.usage?.total_tokens || 'unknown';
+
+            console.log(`✅ [AI] GPT-4o-mini response (${duration}ms, ${tokens} tokens)`);
+
+            return content.trim();
+        } else {
+            throw new Error('No content in GPT-4o-mini response');
         }
     }
 }
@@ -4314,12 +4383,11 @@ Based on these events, where is the party RIGHT NOW?
 Respond with ONLY a JSON object (no markdown, no explanation):
 {"location": "<current location>", "confidence": "high|medium|low", "evidence": "<brief quote from events>"}`;
 
-            // TODO: Route to cheaper model (gpt-4o-mini, haiku) for cost savings
+            // Use cheap provider (gpt-4o-mini) for cost/latency savings
             const messages = [{ role: "user", content: verificationPrompt }];
-            const verifyResponse = await this.aiProvider.generateResponse(
+            const verifyResponse = await this.aiProvider.generateCheapResponse(
                 "You are a JSON-only scene verification system. Output only valid JSON, nothing else.",
-                messages,
-                this.campaignId
+                messages
             );
             
             let responseText = verifyResponse;

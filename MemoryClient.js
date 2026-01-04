@@ -229,6 +229,79 @@ ${memoryTexts.join('\n\n')}
     }
 
     /**
+     * Store a timeless world fact (NPC bio, faction info, location details, etc.)
+     * These are NOT filtered by scene_id and are always retrieved when relevant.
+     *
+     * @param {string} factType - Type: 'npc_bio', 'faction', 'location', 'item', 'lore'
+     * @param {string} subject - Name/identifier of the subject
+     * @param {string} content - The actual fact content
+     * @param {Array<string>} tags - Optional tags for filtering
+     * @returns {Promise<object|null>} Stored fact object or null on error
+     */
+    async storeWorldFact(factType, subject, content, tags = []) {
+        if (!this.enabled) {
+            return null;
+        }
+
+        try {
+            const response = await fetch(`${this.serviceUrl}/store-world-fact`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    fact_type: factType,
+                    subject: subject,
+                    content: content,
+                    campaign: this.campaign,
+                    tags: tags
+                }),
+                timeout: 10000
+            });
+
+            if (response.ok) {
+                const data = await response.json();
+                console.log(`📚 World fact stored: ${data.fact.id} (${factType}) - ${subject}`);
+                return data.fact;
+            } else {
+                const errorText = await response.text();
+                console.error('❌ Failed to store world fact:', response.status, errorText);
+                return null;
+            }
+        } catch (error) {
+            console.error('❌ Error storing world fact:', error.message);
+            return null;
+        }
+    }
+
+    /**
+     * Get all world facts for the campaign
+     *
+     * @param {string} factType - Optional filter by fact type
+     * @returns {Promise<Array>} Array of world facts
+     */
+    async getWorldFacts(factType = null) {
+        if (!this.enabled) {
+            return [];
+        }
+
+        try {
+            let url = `${this.serviceUrl}/world-facts?campaign=${this.campaign}`;
+            if (factType) {
+                url += `&type=${factType}`;
+            }
+            
+            const response = await fetch(url, { timeout: 5000 });
+
+            if (response.ok) {
+                const data = await response.json();
+                return data.facts || [];
+            }
+        } catch (error) {
+            console.error('❌ Error getting world facts:', error.message);
+        }
+        return [];
+    }
+
+    /**
      * Store monster stats from 5e API in campaign RAG for quick access
      *
      * @param {string} monsterName - Name of the monster

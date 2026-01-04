@@ -476,6 +476,125 @@ def clear_memories():
         logger.error(f"Error in clear_memories endpoint: {e}")
         return jsonify({"error": str(e)}), 500
 
+
+@app.route('/store-world-fact', methods=['POST'])
+def store_world_fact():
+    """
+    Store a timeless world fact (NPC bio, faction info, location details, etc.)
+    These are NOT filtered by scene_id and are always retrieved.
+
+    Expected JSON body:
+    {
+        "fact_type": "npc_bio" | "faction" | "location" | "item" | "lore",
+        "subject": "Name/identifier of the subject",
+        "content": "The actual fact content",
+        "campaign": "campaign-id",
+        "tags": ["optional", "tags", "for", "filtering"]
+    }
+    """
+    try:
+        data = request.json
+        fact_type = data.get('fact_type', 'lore')
+        subject = data.get('subject', 'Unknown')
+        content = data.get('content', '')
+        campaign = data.get('campaign', 'test-silverpeak')
+        tags = data.get('tags', [])
+
+        if not content:
+            return jsonify({"error": "No content provided"}), 400
+
+        # Format the fact for storage
+        formatted_content = f"[{fact_type.upper()}] {subject}: {content}"
+        
+        # Generate embedding
+        embedding = memory_service.get_embedding(formatted_content)
+        
+        # Create memory ID with 'fact_' prefix for world facts
+        memory_id = f"fact_{memory_service.memory_counter:04d}"
+        memory_service.memory_counter += 1
+
+        # Prepare metadata - world facts have scene_id=-1 to bypass temporal filtering
+        metadata = {
+            "campaign": campaign,
+            "session": 0,  # System/world data
+            "turn_range": "permanent",
+            "entities": json.dumps([subject] + tags),
+            "timestamp": datetime.utcnow().isoformat(),
+            "action_count": 1,
+            "scene_id": -1,  # -1 = timeless, never filtered out
+            "memory_type": "world",  # "world" type bypasses bounded window filtering
+            "fact_type": fact_type,
+            "subject": subject
+        }
+
+        # Store in ChromaDB
+        collection.add(
+            ids=[memory_id],
+            embeddings=[embedding],
+            documents=[formatted_content],
+            metadatas=[metadata]
+        )
+
+        logger.info(f"Stored world fact {memory_id} ({fact_type}): {subject}")
+
+        return jsonify({
+            "success": True,
+            "fact": {
+                "id": memory_id,
+                "type": fact_type,
+                "subject": subject,
+                "content": formatted_content,
+                "metadata": metadata
+            }
+        })
+
+    except Exception as e:
+        logger.error(f"Error in store_world_fact endpoint: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/world-facts', methods=['GET'])
+def get_world_facts():
+    """Get all world facts for a campaign"""
+    try:
+        campaign = request.args.get('campaign', 'test-silverpeak')
+        fact_type = request.args.get('type', None)  # Optional filter by fact_type
+        
+        # Build where clause
+        where_clause = {
+            "$and": [
+                {"campaign": campaign},
+                {"memory_type": "world"}
+            ]
+        }
+        
+        if fact_type:
+            where_clause["$and"].append({"fact_type": fact_type})
+        
+        results = collection.get(where=where_clause)
+
+        facts = []
+        if results['ids']:
+            for i in range(len(results['ids'])):
+                fact = {
+                    "id": results['ids'][i],
+                    "content": results['documents'][i],
+                    "metadata": results['metadatas'][i],
+                    "type": results['metadatas'][i].get('fact_type', 'lore'),
+                    "subject": results['metadatas'][i].get('subject', 'Unknown')
+                }
+                facts.append(fact)
+
+        return jsonify({
+            "success": True,
+            "facts": facts,
+            "count": len(facts)
+        })
+
+    except Exception as e:
+        logger.error(f"Error in get_world_facts endpoint: {e}")
+        return jsonify({"error": str(e)}), 500
+
 if __name__ == '__main__':
     # Run Flask app
     port = int(os.getenv('MEMORY_SERVICE_PORT', 5003))
