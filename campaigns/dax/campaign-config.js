@@ -5,7 +5,7 @@ window.addEventListener('DOMContentLoaded', function() {
     const config = {
         campaignId: 'dax',
         campaignName: 'Titan Station Crisis',
-        genre: 'sci-fi',
+        genre: 'scifi',
 
         characters: [
             {

@@ -496,21 +496,47 @@ CRITICAL RULES:
 3. NEVER end combat without calling end_combat
 4. After calling request_roll, STOP - don't write the outcome
 5. The tools update the game state automatically - trust them
+6. NEVER call update_character for damage UNTIL you've described an attack landing
+   - You must narrate the attack first: "[Attacker] swings their sword at [Target]..."
+   - You must resolve the attack (hit or miss)
+   - ONLY if the attack hits, THEN call update_character with hp_change
+   - The [SYSTEM] initiative message does NOT mean attacks have happened!
 
 ───────────────────────────────────────────────────────────
 COMBAT FLOW - INITIATIVE AND TURN ORDER
 ───────────────────────────────────────────────────────────
 
-STARTING COMBAT:
+STARTING COMBAT (REQUIRED STEPS):
 1. Describe the threatening situation
-2. STOP and request initiative: "🎲 Roll Initiative for [Name1], [Name2], [Name3], and [Enemy description]"
-3. Wait for player to provide initiative results
-4. After receiving initiative order, begin Round 1 in that order
+2. CALL start_combat TOOL with list of enemies (name, hp, ac for each)
+3. After tool call, ask for initiative: "🎲 Roll Initiative!" (just this - the system handles who rolls)
+4. Wait for player to submit initiative rolls
+5. You'll receive a [SYSTEM] message with everyone's initiative results
+
+⚠️ YOU MUST call start_combat BEFORE asking for initiative rolls!
+The tool sets up enemies and their stats. Without it, combat won't work.
+
+AFTER INITIATIVE RESULTS - CRITICAL:
+When you receive "[SYSTEM]: Initiative rolled! ..." message:
+1. Announce the turn order clearly
+2. If an ENEMY is first in the order, IMMEDIATELY narrate their turn using the format "**[Enemy Name]'s turn**:"
+3. Continue narrating all enemy turns until you reach a player's turn
+4. Announce whose turn it is: "[Player name], it's your turn!"
 
 INITIATIVE FORMAT:
-✓ "🎲 Roll Initiative for Kira, Thorne, Riven, and the Cult Fanatic"
-✓ "🎲 Roll Initiative for all party members and the two Goblins"
+✓ "🎲 Roll Initiative!"
+✓ "🎲 Everyone, roll for initiative!"
+✗ "🎲 Roll Initiative for Kira, Thorne, Riven, and the Goblins" - DON'T list names, the system handles it
 ✗ Multiple separate roll requests - do it in ONE line
+
+ENEMY TURN FORMAT (REQUIRED):
+When narrating an enemy's turn, you MUST use this exact format:
+**[Enemy Name]'s turn**: [description of their action]
+
+Example:
+**Goblin Archer's turn**: The goblin draws an arrow and fires at Kira! [continue with attack resolution]
+
+This format is required so the turn tracker advances correctly.
 
 ROUND STRUCTURE:
 - Each round = 6 seconds of game time
@@ -949,7 +975,7 @@ END D&D 5E COMBAT MECHANICS
                 messages: messages,
                 max_tokens: 2000,
                 temperature: 0.7,
-                tools: filteredTools
+                tools: tools
             })
         });
 
@@ -2713,7 +2739,24 @@ class IntelligentContextManager {
     }
 
     // Extract enemy data from DM response for combat mode
+    //
+    // DISABLED 2026-01-12: Narrative-based combat detection has been disabled.
+    // Combat should ONLY be initiated via the start_combat tool call from the AI.
+    // This prevents false positives from narrative descriptions mentioning combat-like words.
+    //
+    // To re-enable narrative detection, restore the original function body from git history.
+    // The tool-based combat flow is handled by:
+    //   - start_combat tool definition (line ~348)
+    //   - initiateCombatFromTool() function (line ~3990)
+    //   - processStateMutations() handler (line ~3847)
+    //
     async extractEnemyData(response) {
+        // DISABLED: Always return no combat detected
+        // Combat initiation now requires explicit start_combat tool call from AI
+        console.log('⚔️  extractEnemyData called but DISABLED - combat only via start_combat tool');
+        return { combat: false };
+
+        /* ORIGINAL IMPLEMENTATION COMMENTED OUT FOR REFERENCE:
         try {
             // Look for JSON combat data block in the response
             const jsonMatch = response.match(/```json\s*\n([\s\S]*?)\n```/);
@@ -2775,7 +2818,7 @@ class IntelligentContextManager {
                     const charConditions = charData?.conditions || charData?.buffs || [];
                     const combatantConditions = Array.isArray(combatant.conditions) ? combatant.conditions : [];
                     const mergedConditions = [...new Set([...combatantConditions, ...charConditions])];
-                    
+
                     return {
                         name: combatant.name,
                         id,
@@ -2942,6 +2985,7 @@ class IntelligentContextManager {
             console.error('❌ Error extracting enemy data:', error);
             return null;
         }
+        END OF COMMENTED OUT ORIGINAL IMPLEMENTATION */
     }
 
     // Fetch enemy stats from D&D 5e API and expand count into multiple enemies
@@ -3530,14 +3574,17 @@ FAILURE TO COMPLY WILL RESULT IN AN ERROR BEING SHOWN TO THE USER.
                                 narrative = narrative.replace('[TURN_COMPLETE]', '').trim();
                             }
                 
-                            // Extract enemy data if present (for combat mode triggers)
-                            // But skip if combat was already initiated via start_combat tool
+                            // DISABLED 2026-01-12: Narrative-based combat detection disabled
+                            // Combat should ONLY start via start_combat tool call from AI
+                            // extractEnemyData() now always returns { combat: false }
+                            // Keeping call for logging purposes but it's effectively a no-op
                             let enemyData = null;
                             if (this.combatState?.active === 'pending' || this.combatState?.active === true) {
                                 console.log('🔍 Skipping extractEnemyData in processPlayerAction - combat already active/pending');
                             } else {
+                                // Note: extractEnemyData is disabled and will return { combat: false }
                                 enemyData = await this.extractEnemyData(narrative);
-                                console.log('🔍 DEBUG extractEnemyData result:', JSON.stringify(enemyData, null, 2));
+                                console.log('🔍 DEBUG extractEnemyData result (DISABLED - always false):', JSON.stringify(enemyData, null, 2));
                             }
                 
                             // Strip JSON code blocks from narrative before sending to frontend
@@ -4077,6 +4124,9 @@ FAILURE TO COMPLY WILL RESULT IN AN ERROR BEING SHOWN TO THE USER.
         this.campaignState.combat = JSON.parse(JSON.stringify(this.combatState));
         this.campaignState.combatMachineState = this.stateMachine?.getCurrentState() || 'COMBAT_PENDING';
 
+        // Persist combat state to disk (critical for server restart recovery)
+        await this.updateCampaignState(this.campaignState);
+
         console.log(`⚔️ Combat pending! Waiting for player initiative rolls...`);
         console.log(`   Enemy initiatives ready: ${enemyInits.map(e => `${e.name}(${e.initiative})`).join(', ')}`);
     }
@@ -4084,6 +4134,7 @@ FAILURE TO COMPLY WILL RESULT IN AN ERROR BEING SHOWN TO THE USER.
     /**
      * Complete combat initialization after players submit initiative rolls
      * Called when players roll initiative via the roll system
+     * @param {Array|number} rollResult - Either array of {id, name, initiative} or legacy single roll
      */
     async completeInitiativeRolls(rollResult) {
         if (!this.combatState || this.combatState.active !== 'pending') {
@@ -4091,20 +4142,37 @@ FAILURE TO COMPLY WILL RESULT IN AN ERROR BEING SHOWN TO THE USER.
             return null;
         }
 
-        console.log(`🎲 Processing player initiative roll: ${rollResult}`);
+        let playerInits;
 
-        // Parse the roll result - expecting a single d20 roll that applies to all PCs
-        // Each PC adds their own DEX mod
-        const baseRoll = parseInt(rollResult) || Math.floor(Math.random() * 20) + 1;
-
-        const playerInits = this.combatState.playerCharacters.map(pc => {
-            const finalInit = baseRoll + (pc.dexMod || 0);
-            console.log(`   ${pc.name}: ${baseRoll} + ${pc.dexMod || 0} = ${finalInit}`);
-            return {
-                ...pc,
-                initiative: finalInit
-            };
-        });
+        // Check if we received individual player initiatives (new format)
+        if (Array.isArray(rollResult)) {
+            console.log(`🎲 Processing individual player initiatives: ${rollResult.length} players`);
+            // Map frontend initiatives to backend player characters
+            playerInits = this.combatState.playerCharacters.map(pc => {
+                const frontendInit = rollResult.find(p =>
+                    p.id === pc.id ||
+                    p.name?.toLowerCase() === pc.name?.toLowerCase()
+                );
+                const initiative = frontendInit?.initiative ?? (Math.floor(Math.random() * 20) + 1 + (pc.dexMod || 0));
+                console.log(`   ${pc.name}: ${initiative}${frontendInit ? '' : ' (auto-rolled)'}`);
+                return {
+                    ...pc,
+                    initiative
+                };
+            });
+        } else {
+            // Legacy format: single d20 roll that applies to all PCs
+            console.log(`🎲 Processing legacy initiative roll: ${rollResult}`);
+            const baseRoll = parseInt(rollResult) || Math.floor(Math.random() * 20) + 1;
+            playerInits = this.combatState.playerCharacters.map(pc => {
+                const finalInit = baseRoll + (pc.dexMod || 0);
+                console.log(`   ${pc.name}: ${baseRoll} + ${pc.dexMod || 0} = ${finalInit}`);
+                return {
+                    ...pc,
+                    initiative: finalInit
+                };
+            });
+        }
 
         // Combine with enemy initiatives and sort
         const enemyInits = this.combatState.enemyInitiatives || [];
@@ -4151,6 +4219,9 @@ FAILURE TO COMPLY WILL RESULT IN AN ERROR BEING SHOWN TO THE USER.
         // Update campaign state
         this.campaignState.combat = JSON.parse(JSON.stringify(this.combatState));
         this.campaignState.combatMachineState = this.stateMachine?.getCurrentState() || 'COMBAT_ACTIVE';
+
+        // Persist to disk
+        await this.updateCampaignState(this.campaignState);
 
         console.log(`⚔️ Combat fully started! Turn order: ${initiativeOrder.map(c => `${c.name}(${c.initiative})`).join(' → ')}`);
 
@@ -4998,12 +5069,16 @@ What do you do?`;
             console.log(`✅ ${mode} mode: Extracting state changes`);
             stateChanges = await this.extractStateChanges(dmResponse, playerAction);
 
-            // Check for combat encounter in DM response
-            // BUT skip if combat was already initiated via start_combat tool (pending state)
+            // DISABLED 2026-01-12: Narrative-based combat detection disabled
+            // Combat should ONLY start via start_combat tool call from AI
+            // extractEnemyData() now always returns { combat: false }
+            // Keeping structure for potential future re-enablement
             if (this.combatState?.active === 'pending') {
                 console.log(`⚔️  Skipping extractEnemyData - combat already pending from start_combat tool`);
             } else {
+                // Note: extractEnemyData is disabled and will return { combat: false }
                 const enemyData = await this.extractEnemyData(dmResponse);
+                // This block will never trigger since extractEnemyData always returns { combat: false }
                 if (enemyData && enemyData.enemies && enemyData.enemies.length > 0) {
                     console.log(`⚔️  Combat detected via extraction! Adding ${enemyData.enemies.length} enemies to stateChanges`);
                     if (!stateChanges) stateChanges = {};
@@ -7163,12 +7238,15 @@ async function handleActionRequest(req, res) {
                 actingCharacter = typeof character === 'string' ? character : character?.name;
             }
             
-            if (actingCharacter && currentCombatant.isPlayer) {
+            // Skip turn validation for [SYSTEM] messages (e.g., initiative results, narrative prompts)
+            const isSystemMessage = actingCharacter && actingCharacter.toUpperCase() === 'SYSTEM';
+
+            if (actingCharacter && currentCombatant.isPlayer && !isSystemMessage) {
                 // Normalize names for comparison
                 const normalize = (name) => (name || '').toLowerCase().replace(/[^a-z0-9]/g, '');
                 const actingNorm = normalize(actingCharacter);
                 const currentNorm = normalize(currentCombatant.name);
-                
+
                 // Check if it's the right character's turn
                 if (actingNorm !== currentNorm && !currentNorm.includes(actingNorm) && !actingNorm.includes(currentNorm)) {
                     console.log(`⚠️ [TURN ORDER] Wrong turn! ${actingCharacter} tried to act but it's ${currentCombatant.name}'s turn`);
@@ -7459,8 +7537,14 @@ stateRoutes.forEach(route => app.get(route, async (req, res) => {
             context.campaignState.combat = freshCombatState;
             context.combatState = freshCombatState;
         }
-        
-        res.json(context.campaignState || {});
+
+        // Get genre from campaign features and normalize it
+        const features = getCampaignFeatures(campaignId);
+        const rawGenre = features.genre || 'fantasy';
+        // Normalize: lowercase, remove hyphens (e.g., 'sci-fi' -> 'scifi', 'high-fantasy' -> 'highfantasy')
+        const genre = rawGenre.toLowerCase().replace(/-/g, '');
+
+        res.json({ ...(context.campaignState || {}), genre });
     } catch (error) {
         console.error('Error getting state:', error);
         res.status(500).json({ error: 'Failed to get state' });
@@ -8067,7 +8151,7 @@ const combatInitiativeRoutes = [
 // Called when players roll initiative after AI calls start_combat
 combatInitiativeRoutes.forEach(route => app.post(route, async (req, res) => {
     try {
-        const { campaignId, campaign, roll, rollResult } = req.body;
+        const { campaignId, campaign, playerInitiatives, roll, rollResult } = req.body;
         const activeCampaignId = campaignId || campaign || 'default';
         const context = await getCampaignContext(activeCampaignId);
 
@@ -8083,11 +8167,11 @@ combatInitiativeRoutes.forEach(route => app.post(route, async (req, res) => {
             });
         }
 
-        console.log(`🎲 Received player initiative roll for campaign: ${activeCampaignId}`);
-        console.log(`   Roll result: ${roll || rollResult}`);
+        console.log(`🎲 Received player initiative for campaign: ${activeCampaignId}`);
 
-        // Complete initiative rolls with the player's roll
-        const completedCombat = await context.completeInitiativeRolls(roll || rollResult);
+        // Complete initiative rolls with player initiatives (array of {id, name, initiative})
+        // Falls back to legacy single roll if playerInitiatives not provided
+        const completedCombat = await context.completeInitiativeRolls(playerInitiatives || roll || rollResult);
 
         if (!completedCombat) {
             return res.status(500).json({ error: 'Failed to complete initiative rolls' });
@@ -9488,6 +9572,12 @@ app.get('/api/health', (req, res) => {
         timestamp: new Date().toISOString()
     });
 });
+
+app.get('/health', (_req, res) => res.json({
+    status: 'ok',
+    uptime: process.uptime(),
+    timestamp: new Date().toISOString()
+}));
 
 // ==================== GLOBAL ERROR HANDLER ====================
 // Must be registered after all routes

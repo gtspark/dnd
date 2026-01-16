@@ -8,7 +8,7 @@ export default defineConfig({
     host: '0.0.0.0',
     proxy: {
       '/api/dnd': {
-        target: 'http://localhost:3001',
+        target: 'http://localhost:3003',
         changeOrigin: true
       }
     }

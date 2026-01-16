@@ -6,7 +6,7 @@ window.addEventListener('DOMContentLoaded', function() {
         // Campaign Identity
         campaignId: 'test-silverpeak',
         campaignName: 'Silverpeak Chronicles',
-        genre: 'high-fantasy',
+        genre: 'fantasy',
 
         // Characters (made-up original characters)
         characters: [

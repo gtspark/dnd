@@ -1,6 +1,6 @@
 /**
  * API Service for D&D Campaign Manager
- * Replaces geminiService.ts - connects to our backend instead of Gemini directly
+ * Connects to our backend which supports multiple AI providers (Claude, DeepSeek, GPT-4/5, Gemini)
  */
 
 import { ThemeMode, Character, AIProvider, CombatState, Combatant, Message } from "../types";
@@ -13,7 +13,7 @@ const API_BASE = isProduction ? '/dnd-api/dnd' : '/api/dnd';
 // Get campaign ID from URL or default
 function getCampaignId(): string {
   const params = new URLSearchParams(window.location.search);
-  return params.get('campaign') || 'test-silverpeak';
+  return params.get('campaign') || 'default';
 }
 
 // ============ Backend Response Types ============
@@ -124,6 +124,7 @@ interface LootAssignmentPayload {
 interface StateResponse {
   campaignState: BackendCampaignState;
   conversationHistory?: any[];
+  genre?: 'fantasy' | 'scifi';  // Campaign genre/theme from backend
 }
 
 // ============ State Transformers ============
@@ -208,14 +209,23 @@ export function transformCombatState(
     order = [...enemies, ...players].sort((a, b) => b.initiative - a.initiative);
   }
 
-  const currentId = order[backendCombat.currentTurn]?.id;
-  const economy = backendCombat.actionEconomy?.[currentId || ''];
+  const currentIndex = backendCombat.currentTurn || 0;
+  const currentCombatant = order[currentIndex];
+  const currentName = currentCombatant?.name;
+  const currentId = currentCombatant?.id;
+
+  // Look up economy: first from combatant's own property, then by name, then by ID
+  const backendInitOrder = backendCombat.initiativeOrder || [];
+  const combatantEconomy = backendInitOrder[currentIndex]?.actionEconomy;
+  const economy = combatantEconomy
+    || backendCombat.actionEconomy?.[currentName || '']
+    || backendCombat.actionEconomy?.[currentId || ''];
 
   return {
     isActive: isActive, // Only true when combat is fully active (not pending)
     isPending: isPending, // Waiting for initiative rolls
     round: backendCombat.round || (isPending ? 0 : 1),
-    currentTurnIndex: backendCombat.currentTurn || 0,
+    currentTurnIndex: currentIndex,
     order,
     economy: {
       actionSpent: economy ? !economy.action : false,
@@ -446,7 +456,7 @@ export async function submitRoll(
  * Submit initiative roll (for pending combat)
  */
 export async function submitInitiative(
-  roll: number,
+  playerInitiatives: Array<{ id: string; name: string; initiative: number }>,
   campaignId?: string
 ): Promise<ActionResponse> {
   const id = campaignId || currentCampaignId;
@@ -456,7 +466,7 @@ export async function submitInitiative(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       campaignId: id,
-      roll
+      playerInitiatives // Array of { id, name, initiative } - totals already calculated
     })
   });
 

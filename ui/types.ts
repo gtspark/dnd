@@ -1,6 +1,6 @@
 export type ThemeMode = 'fantasy' | 'scifi';
 
-export type AIProvider = 'Gemini 2.5 Flash' | 'Gemini 2.5 Pro' | 'Gemini Thinking';
+export type AIProvider = 'claude' | 'deepseek' | 'gpt4' | 'gpt5' | 'gemini';
 
 // ==================== INVENTORY ITEM ====================
 

@@ -1,89 +1,21 @@
 {
   "active": false,
-  "round": 2,
-  "currentTurn": 3,
+  "round": 0,
+  "currentTurn": 0,
   "initiativeOrder": [],
   "participants": {
     "players": [],
     "enemies": []
   },
-  "context": "Two goblins ambush the party from the forest. Goblin 1 is grievously wounded (took 7 damage from Riven's sneak attack). Kira just hit with Fire Bolt and needs to roll damage.",
+  "context": null,
   "actionEconomy": {},
   "conditions": {},
   "conversationHistory": [],
   "rollQueue": [],
   "pending": false,
-  "enemyInitiatives": [
-    {
-      "id": "enemy-0",
-      "name": "Goblin 1",
-      "type": "enemy",
-      "isPlayer": false,
-      "initiative": 14,
-      "hp": {
-        "current": 0,
-        "max": 7
-      },
-      "ac": 15
-    },
-    {
-      "id": "enemy-1",
-      "name": "Goblin 2",
-      "type": "enemy",
-      "isPlayer": false,
-      "initiative": 11,
-      "hp": {
-        "current": 7,
-        "max": 7
-      },
-      "ac": 15
-    }
-  ],
-  "playerCharacters": [
-    {
-      "id": "kira",
-      "name": "Kira Moonwhisper",
-      "type": "player",
-      "isPlayer": true,
-      "initiative": 10,
-      "dexMod": 2,
-      "hp": {
-        "current": 11,
-        "max": 22
-      },
-      "ac": 13
-    },
-    {
-      "id": "thorne",
-      "name": "Thorne Ironheart",
-      "type": "player",
-      "isPlayer": true,
-      "initiative": 7,
-      "dexMod": 0,
-      "hp": {
-        "current": 19,
-        "max": 24
-      },
-      "ac": 16
-    },
-    {
-      "id": "riven",
-      "name": "Riven Shadowstep",
-      "type": "player",
-      "isPlayer": true,
-      "initiative": 16,
-      "dexMod": 4,
-      "hp": {
-        "current": 16,
-        "max": 20
-      },
-      "ac": 15
-    }
-  ],
   "surprise": "none",
-  "combatType": "random_encounter",
-  "startTime": "2025-12-28T01:55:38.887Z",
+  "combatType": null,
+  "startTime": null,
   "deathSaves": {},
-  "combatState": "ACTIVE",
-  "endTime": "2025-12-28T03:51:41.099Z"
+  "combatState": "IDLE"
 }

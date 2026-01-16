@@ -12,7 +12,7 @@ import { Character, Message, ThemeMode, AIProvider, CombatState, Combatant, Comb
 // Get campaign ID from URL
 const getCampaignId = () => {
   const params = new URLSearchParams(window.location.search);
-  return params.get('campaign') || 'test-silverpeak';
+  return params.get('campaign') || 'default';
 };
 
 const MOCK_CHARACTERS_FANTASY: Character[] = [
@@ -86,7 +86,7 @@ export default function App() {
   ]);
   const [inputValue, setInputValue] = useState('');
   const [isThinking, setIsThinking] = useState(false);
-  const [provider, setProvider] = useState<AIProvider>('Gemini 2.5 Flash');
+  const [provider, setProvider] = useState<AIProvider>('claude');
   const [showSettings, setShowSettings] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [showExitCombatConfirm, setShowExitCombatConfirm] = useState(false);
@@ -124,13 +124,14 @@ export default function App() {
       try {
         console.log(`[App] Loading campaign: ${campaignId}`);
 
-        // Determine theme from campaign ID
-        const detectedTheme: ThemeMode = campaignId.includes('dax') ? 'scifi' : 'fantasy';
-        setTheme(detectedTheme);
-
         // Load campaign state from backend
         const stateResponse = await loadCampaign(campaignId);
         console.log('[App] Campaign state loaded:', stateResponse);
+
+        // Get theme/genre from backend response, fallback to 'fantasy' if not provided
+        const detectedTheme: ThemeMode = stateResponse.genre || 'fantasy';
+        console.log(`[App] Using theme from backend: ${detectedTheme}`);
+        setTheme(detectedTheme);
 
         // State response IS the campaign state directly (not wrapped)
         const campaignState = stateResponse.campaignState || stateResponse;
@@ -335,7 +336,7 @@ What do you do?`;
       }
     }
 
-    // Legacy Gemini function call handlers (for backwards compatibility)
+    // Legacy function call handlers (for backwards compatibility)
     else if (fc.name === 'update_character_status') {
       const { characterId, hpChange, addCondition, removeCondition, addSpell, removeSpell, resourceChange } = fc.args;
       setCharacters(prev => prev.map(char => {
@@ -449,10 +450,9 @@ What do you do?`;
     }]);
 
     try {
-      // Submit initiative to backend to transition combat from pending to active
-      // Use the average of player rolls as the "party initiative" for the backend
-      const avgRoll = Math.round(playerRolls.reduce((sum, r) => sum + r.total, 0) / playerRolls.length);
-      const initResponse = await submitInitiative(avgRoll, campaignId);
+      // Submit individual player initiatives to backend (totals already include dexMod)
+      const playerInits = playerRolls.map(r => ({ id: r.id, name: r.name, initiative: r.total }));
+      const initResponse = await submitInitiative(playerInits, campaignId);
       console.log('[App] Initiative submitted to backend:', initResponse);
 
       // Get the full initiative order from backend response (includes enemies)
@@ -504,10 +504,28 @@ What do you do?`;
     setCombat(prev => {
       let nextIndex = prev.currentTurnIndex + 1;
       let nextRound = prev.round;
-      if (nextIndex >= prev.order.length) { nextIndex = 0; nextRound += 1; }
-      return { 
-        ...prev, 
-        currentTurnIndex: nextIndex, 
+      const orderLen = prev.order.length;
+
+      // Wrap to next round if at end
+      if (nextIndex >= orderLen) {
+        nextIndex = 0;
+        nextRound += 1;
+      }
+
+      // Skip dead combatants (loop at most once through the order)
+      let attempts = 0;
+      while (prev.order[nextIndex]?.isDead && attempts < orderLen) {
+        nextIndex += 1;
+        if (nextIndex >= orderLen) {
+          nextIndex = 0;
+          nextRound += 1;
+        }
+        attempts += 1;
+      }
+
+      return {
+        ...prev,
+        currentTurnIndex: nextIndex,
         round: nextRound,
         economy: INITIAL_ECONOMY
       };
