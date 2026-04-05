@@ -6077,6 +6077,17 @@ Critical Rules:
         }
     }
 
+    async saveCampaignState() {
+        try {
+            await fs.writeFile(
+                this.paths.campaignState,
+                JSON.stringify(this.campaignState, null, 2)
+            );
+        } catch (error) {
+            console.error('❌ Failed to save campaign state:', error.message);
+        }
+    }
+
     async updateCampaignState(updates) {
         if (updates && typeof updates === 'object') {
             this.campaignState = { ...this.campaignState, ...updates };
