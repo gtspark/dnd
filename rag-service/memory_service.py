@@ -15,7 +15,7 @@ from openai import OpenAI
 from dotenv import load_dotenv
 
 # Load environment variables
-load_dotenv()
+load_dotenv('/home/admin/.env.secrets')
 
 # Configure logging
 logging.basicConfig(
@@ -420,12 +420,13 @@ def retrieve_memories():
         n_results = data.get('n_results', 5)
         current_scene_id = data.get('current_scene_id', None)
         exclude_recent_scenes = data.get('exclude_recent_scenes', 5)
+        max_episode_age = data.get('max_episode_age', 20)
 
         if not query:
             return jsonify({"error": "No query provided"}), 400
 
         # Retrieve memories with scene filtering
-        memories = memory_service.retrieve_memories(query, campaign, n_results, current_scene_id, exclude_recent_scenes)
+        memories = memory_service.retrieve_memories(query, campaign, n_results, current_scene_id, exclude_recent_scenes, max_episode_age)
 
         return jsonify({
             "success": True,
@@ -474,6 +475,29 @@ def clear_memories():
 
     except Exception as e:
         logger.error(f"Error in clear_memories endpoint: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/update-memory', methods=['POST'])
+def update_memory():
+    """Update the text of an existing memory by ID (re-embeds automatically)"""
+    try:
+        data = request.json
+        memory_id = data.get('id')
+        new_text = data.get('text')
+        if not memory_id or not new_text:
+            return jsonify({"error": "id and text required"}), 400
+
+        new_embedding = memory_service.get_embedding(new_text)
+        collection.update(
+            ids=[memory_id],
+            documents=[new_text],
+            embeddings=[new_embedding]
+        )
+        logger.info(f"Updated memory {memory_id}: {new_text[:60]}...")
+        return jsonify({"success": True, "id": memory_id})
+    except Exception as e:
+        logger.error(f"Error updating memory: {e}")
         return jsonify({"error": str(e)}), 500
 
 

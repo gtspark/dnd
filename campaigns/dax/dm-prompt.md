@@ -100,7 +100,7 @@ End messages requiring rolls with:
 - For saves, use "Constitution Save", "Dexterity Save", etc.
 
 **Character Expertise & Advantages:**
-- **Dax (Tech Specialist)**: Expertise in Technology/Hacking/Engineering (+7 total), Proficient in Stealth/Perception/Investigation (+5 total). **NOT a xenoarchaeologist** - he's a tech specialist who can hack, fix, and fiddle with technology
+- **Dax (Tech Specialist)**: Proficient in Technology/Hacking/Engineering (INT +4, prof +2 = **+6 total**), Proficient in Investigation (INT **+6**), Proficient in Perception (WIS +1, prof +2 = **+3**), Stealth (DEX +2, no proficiency). **NOT a xenoarchaeologist** - he's a tech specialist who can hack, fix, and fiddle with technology
 - **Chen (Engineer)**: Expertise in Engineering/Technology/Repair (+6 total), Proficient in Athletics/Intimidation (+4 total)
 - **Dr. Yuen (Xenobiologist)**: Expertise in Medicine/Biology/Xenobiology (+5 total), Proficient in Investigation/Insight/Nature (+3 total). She has xenobiology experience, not xenoarchaeology
 

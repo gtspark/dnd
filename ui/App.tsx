@@ -5,8 +5,10 @@ import { LootDistributionCard } from './components/LootDistributionCard';
 import { SpellCard } from './components/SpellCard';
 import { ItemCard } from './components/ItemCard';
 import { CompanionRoster } from './components/CompanionRoster';
+import CharacterSheetModal from './components/CharacterSheetModal';
+import { SideChat } from './components/SideChat';
 import { initChat, sendMessageToDM, loadCampaign, getHistory, transformCharacters, transformCombatState, distributeLoot, skipLoot, submitInitiative } from './services/geminiService';
-import { preloadPartySpells, preloadPartyItems, continueStory } from './services/apiService';
+import { preloadPartySpells, preloadPartyItems, continueStory, updateCharacter } from './services/apiService';
 import { Character, Message, ThemeMode, AIProvider, CombatState, Combatant, CombatEconomy, LootDistribution, LootDistributionMessage, AnyMessage } from './types';
 
 // Get campaign ID from URL
@@ -88,7 +90,9 @@ export default function App() {
   const [isThinking, setIsThinking] = useState(false);
   const [provider, setProvider] = useState<AIProvider>('claude');
   const [showSettings, setShowSettings] = useState(false);
+  const [showCharSheet, setShowCharSheet] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [showSideChat, setShowSideChat] = useState(false);
   const [showExitCombatConfirm, setShowExitCombatConfirm] = useState(false);
   // Loot distribution state - maps lootId to loot data
   const [pendingLoot, setPendingLoot] = useState<Map<string, LootDistribution>>(new Map());
@@ -1143,7 +1147,10 @@ What do you do?`;
                        </div>
                      ) : (
                         <div className={`leading-relaxed whitespace-pre-line ${isFantasy ? 'italic text-lg font-fantasyBody text-stone-300' : 'font-mono text-sm opacity-90 text-slate-200'}`}>
-                           {msg.text.split(/(\*\*.*?\*\*)/g).map((part, i) => part.startsWith('**') ? <strong key={i} className={isFantasy ? "text-fantasy-gold" : "text-scifi-accent"}>{part.slice(2, -2)}</strong> : part)}
+                           {msg.text.split(/(\*\*.*?\*\*|\*(?!\*).*?\*(?!\*))/g).map((part, i) =>
+                             part.startsWith('**') ? <strong key={i} className={isFantasy ? "text-fantasy-gold" : "text-scifi-accent"}>{part.slice(2, -2)}</strong>
+                             : part.startsWith('*') && part.endsWith('*') && part.length > 2 ? <em key={i} className={isFantasy ? "text-fantasy-gold/80" : "text-scifi-accent/80"}>{part.slice(1, -1)}</em>
+                             : part)}
                            {msg.isThinking && <span className="inline-block w-2 h-5 ml-2 bg-current opacity-20 animate-pulse" />}
                         </div>
                      )}
@@ -1223,13 +1230,25 @@ What do you do?`;
         </div>
       </main>
 
+      {/* --- ABOVE TABLE SIDE CHAT --- */}
+      {activeChar && (
+        <SideChat
+          theme={theme}
+          activeChar={activeChar}
+          allCharacters={characters}
+          isOpen={showSideChat}
+          onToggle={() => setShowSideChat(prev => !prev)}
+        />
+      )}
+
       {/* --- CODEX --- */}
       <aside className={`w-80 border-l hidden lg:flex flex-col z-30 ${themeColors.panel} ${themeColors.border} relative overflow-hidden shadow-2xl`}>
-         <div className="p-8 space-y-6 flex-shrink-0 text-center">
-            <div className={`w-32 h-32 rounded-3xl border-2 mx-auto overflow-hidden transition-transform duration-700 hover:rotate-0 shadow-2xl ${isFantasy ? 'border-fantasy-gold rotate-3' : 'border-scifi-accent rotate-2'}`}><img src={activeChar.avatar} className="w-full h-full object-cover" /></div>
+         <div className="p-8 space-y-6 flex-shrink-0 text-center cursor-pointer group" onClick={() => setShowCharSheet(true)} title="Open character sheet">
+            <div className={`w-32 h-32 rounded-3xl border-2 mx-auto overflow-hidden transition-transform duration-700 hover:rotate-0 shadow-2xl group-hover:shadow-[0_0_20px_rgba(34,211,238,0.3)] ${isFantasy ? 'border-fantasy-gold rotate-3' : 'border-scifi-accent rotate-2'}`}><img src={activeChar.avatar} className="w-full h-full object-cover" /></div>
             <div>
-              <h2 className={`text-xl font-black uppercase tracking-tight ${themeColors.fontHead}`}>{activeChar.name}</h2>
+              <h2 className={`text-xl font-black uppercase tracking-tight ${themeColors.fontHead} group-hover:opacity-80 transition-opacity`}>{activeChar.name}</h2>
               <div className={`text-xs font-bold uppercase tracking-widest mt-2 ${isFantasy ? 'text-fantasy-gold/90' : 'text-scifi-accent/90'}`}>{activeChar.class}</div>
+              <div className={`text-[9px] uppercase tracking-widest mt-1 opacity-0 group-hover:opacity-40 transition-opacity`}>click for full sheet</div>
             </div>
             <div className="space-y-3">
                <div className="h-4 w-full bg-black/40 rounded-full overflow-hidden p-[2px] border border-white/5"><div className={`h-full rounded-full transition-all duration-1000 ${isFantasy ? 'bg-red-600 shadow-[0_0_10px_rgba(220,38,38,0.5)]' : 'bg-cyan-500 shadow-[0_0_10px_rgba(34,211,238,0.5)]'}`} style={{ width: `${((activeChar.hp as number) / (activeChar.maxHp as number)) * 100}%` }} /></div>
@@ -1278,13 +1297,38 @@ What do you do?`;
             {(activeSidebarTab === 'spells' && activeChar.heldSpells.length === 0) && <div className="text-center py-20 opacity-20 text-[10px] uppercase font-black tracking-widest">No active enchantments</div>}
             
             {/* Companion Roster - shows DM-controlled party members */}
-            <CompanionRoster 
-              companions={characters.filter(c => c.companion === true)} 
+            <CompanionRoster
+              companions={characters.filter(c => c.companion === true)}
               theme={theme}
               partyCredits={undefined} // TODO: Get from campaign state if available
             />
          </div>
       </aside>
+
+      {/* Character Sheet Modal */}
+      {showCharSheet && (
+        <CharacterSheetModal
+          character={activeChar}
+          theme={theme}
+          onClose={() => setShowCharSheet(false)}
+          onUpdateHp={async (hp) => {
+            try {
+              const result = await updateCharacter(activeChar.id, { hp_current: hp }, campaignId);
+              setCharacters(prev => prev.map(c =>
+                c.id === activeChar.id ? { ...c, hp: result.character.hp.current } : c
+              ));
+            } catch (e) { console.error('HP update failed:', e); }
+          }}
+          onUpdateCredits={async (credits) => {
+            try {
+              const result = await updateCharacter(activeChar.id, { credits }, campaignId);
+              setCharacters(prev => prev.map(c =>
+                c.id === activeChar.id ? { ...c, resource: result.character.credits } : c
+              ));
+            } catch (e) { console.error('Credits update failed:', e); }
+          }}
+        />
+      )}
     </div>
   );
 }

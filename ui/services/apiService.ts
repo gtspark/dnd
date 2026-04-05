@@ -39,6 +39,7 @@ interface BackendCharacter {
     cha?: number;
   };
   skills?: Record<string, { ability: string; proficient: boolean; notes?: string }>;
+  savingThrows?: Record<string, { proficient: boolean }>;
   inventory?: any[];  // Can be strings (legacy) or InventoryItem objects
   equipment?: string[];
   spells?: string[];
@@ -162,6 +163,7 @@ export function transformCharacters(
         cha: char.abilities?.cha ?? 10
       },
       skills: char.skills || {},
+      savingThrows: char.savingThrows || undefined,
       inventory: char.inventory || [],
       heldSpells: char.spells || []
     };
@@ -420,6 +422,42 @@ export const sendMessageToDM = async (
     return errorGenerator();
   }
 };
+
+/**
+ * Send a message to the DM in above-table / dm-question mode.
+ * Uses the same endpoint but with mode='dm-question'.
+ * Intentionally ignores combat, loot, character updates — only returns narrative + optional roll request.
+ * Nothing is saved to conversation history or RAG.
+ */
+export async function sendSideChatMessage(
+  question: string,
+  character: string,
+  campaignId?: string
+): Promise<{ narrative: string; rollRequest?: string }> {
+  const id = campaignId || currentCampaignId;
+
+  const res = await fetch(`${API_BASE}/action`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      campaignId: id,
+      action: question,
+      character,
+      mode: 'dm-question'
+    })
+  });
+
+  if (!res.ok) {
+    const errorText = await res.text();
+    throw new Error(`Side chat error: ${res.status} - ${errorText}`);
+  }
+
+  const data: ActionResponse = await res.json();
+  return {
+    narrative: data.narrative || data.error || 'No response from DM',
+    rollRequest: data.rollRequest
+  };
+}
 
 /**
  * Submit a roll result
@@ -767,6 +805,22 @@ export async function preloadPartyItems(items: string[]): Promise<void> {
   console.log(`[apiService] Item cache populated with ${itemCache.size} entries`);
 }
 
+// Player character edit (HP, credits)
+export async function updateCharacter(
+  characterId: string,
+  updates: { hp_current?: number; credits?: number },
+  campaignId?: string
+): Promise<{ success: boolean; character: { hp: { current: number; max: number }; credits: number } }> {
+  const campaign = campaignId || getCampaignId();
+  const resp = await fetch(`${API_BASE}/character/${characterId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ campaign, ...updates })
+  });
+  if (!resp.ok) throw new Error(`Failed to update character: ${resp.status}`);
+  return resp.json();
+}
+
 // Export for backwards compatibility
 export default {
   initChat,
@@ -786,5 +840,6 @@ export default {
   getSpellDetails,
   getItemDetails,
   preloadPartySpells,
-  preloadPartyItems
+  preloadPartyItems,
+  updateCharacter
 };

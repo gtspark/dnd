@@ -1,0 +1,864 @@
+{
+  "characters": {
+    "dax": {
+      "name": "Dax Stargazer",
+      "class": "Tech Specialist",
+      "race": "Vexian",
+      "pronouns": "he/him",
+      "controlledBy": "player",
+      "companion": false,
+      "hp": {
+        "current": 9,
+        "max": 9
+      },
+      "credits": 3000,
+      "proficiencyBonus": 2,
+      "abilities": {
+        "str": 8,
+        "dex": 14,
+        "con": 10,
+        "int": 18,
+        "wis": 12,
+        "cha": 10
+      },
+      "speed": 35,
+      "ac": 12,
+      "skills": {
+        "acrobatics": {
+          "ability": "dex",
+          "proficient": false
+        },
+        "athletics": {
+          "ability": "str",
+          "proficient": false
+        },
+        "deception": {
+          "ability": "cha",
+          "proficient": false
+        },
+        "engineering": {
+          "ability": "int",
+          "proficient": true
+        },
+        "history": {
+          "ability": "int",
+          "proficient": false
+        },
+        "insight": {
+          "ability": "wis",
+          "proficient": false
+        },
+        "intimidation": {
+          "ability": "cha",
+          "proficient": false
+        },
+        "investigation": {
+          "ability": "int",
+          "proficient": true
+        },
+        "medicine": {
+          "ability": "wis",
+          "proficient": false
+        },
+        "nature": {
+          "ability": "wis",
+          "proficient": false
+        },
+        "perception": {
+          "ability": "wis",
+          "proficient": true,
+          "notes": "Vexian enhanced senses"
+        },
+        "performance": {
+          "ability": "cha",
+          "proficient": false
+        },
+        "persuasion": {
+          "ability": "cha",
+          "proficient": false
+        },
+        "piloting": {
+          "ability": "dex",
+          "proficient": false
+        },
+        "sleight of hand": {
+          "ability": "dex",
+          "proficient": false
+        },
+        "stealth": {
+          "ability": "dex",
+          "proficient": false
+        },
+        "survival": {
+          "ability": "wis",
+          "proficient": false
+        },
+        "technology": {
+          "ability": "int",
+          "proficient": true,
+          "notes": "Hacking, bypassing systems, tech analysis"
+        }
+      },
+      "savingThrows": {
+        "str": {
+          "proficient": false
+        },
+        "dex": {
+          "proficient": true
+        },
+        "con": {
+          "proficient": false
+        },
+        "int": {
+          "proficient": true
+        },
+        "wis": {
+          "proficient": false
+        },
+        "cha": {
+          "proficient": false
+        }
+      },
+      "inventory": [
+        {
+          "name": "Empty Sidearm",
+          "category": "weapon",
+          "value": 500,
+          "condition": "good",
+          "quantity": 1,
+          "custom": true,
+          "equipped": true,
+          "stackable": false,
+          "treasure": false,
+          "notes": "Ammo confiscated by security"
+        },
+        {
+          "name": "Portable Tech Kit",
+          "category": "misc",
+          "value": 500,
+          "condition": "good",
+          "quantity": 1,
+          "custom": true,
+          "equipped": false,
+          "stackable": false,
+          "treasure": false
+        },
+        {
+          "name": "Datapad",
+          "category": "misc",
+          "value": 200,
+          "condition": "good",
+          "quantity": 1,
+          "custom": true,
+          "equipped": false,
+          "stackable": false,
+          "treasure": false
+        },
+        {
+          "name": "Weyland Encrypted Data Packet",
+          "baseItem": null,
+          "custom": true,
+          "category": "misc",
+          "quantity": 1,
+          "condition": "good",
+          "equipped": false,
+          "value": 0,
+          "stackable": false,
+          "treasure": false
+        },
+        "Docking Registry Transfer — Dock 19, the Ardent (provisional title)"
+      ],
+      "conditions": [],
+      "buffs": []
+    },
+    "chen": {
+      "name": "Chen",
+      "class": "Engineer",
+      "race": "Human",
+      "pronouns": "she/her",
+      "controlledBy": "dm",
+      "companion": true,
+      "hp": {
+        "current": 24,
+        "max": 24
+      },
+      "credits": 800,
+      "proficiencyBonus": 2,
+      "abilities": {
+        "str": 14,
+        "dex": 12,
+        "con": 14,
+        "int": 16,
+        "wis": 10,
+        "cha": 12
+      },
+      "speed": 30,
+      "ac": 14,
+      "skills": {
+        "acrobatics": {
+          "ability": "dex",
+          "proficient": false
+        },
+        "athletics": {
+          "ability": "str",
+          "proficient": true
+        },
+        "deception": {
+          "ability": "cha",
+          "proficient": false
+        },
+        "engineering": {
+          "ability": "int",
+          "proficient": true,
+          "notes": "Mechanical repair, system diagnostics, structural analysis"
+        },
+        "history": {
+          "ability": "int",
+          "proficient": false
+        },
+        "insight": {
+          "ability": "wis",
+          "proficient": false
+        },
+        "intimidation": {
+          "ability": "cha",
+          "proficient": true
+        },
+        "investigation": {
+          "ability": "int",
+          "proficient": false
+        },
+        "medicine": {
+          "ability": "wis",
+          "proficient": false
+        },
+        "nature": {
+          "ability": "wis",
+          "proficient": false
+        },
+        "perception": {
+          "ability": "wis",
+          "proficient": false
+        },
+        "performance": {
+          "ability": "cha",
+          "proficient": false
+        },
+        "persuasion": {
+          "ability": "cha",
+          "proficient": false
+        },
+        "piloting": {
+          "ability": "dex",
+          "proficient": false
+        },
+        "sleight of hand": {
+          "ability": "dex",
+          "proficient": false
+        },
+        "stealth": {
+          "ability": "dex",
+          "proficient": false
+        },
+        "survival": {
+          "ability": "wis",
+          "proficient": false
+        },
+        "technology": {
+          "ability": "int",
+          "proficient": true
+        }
+      },
+      "savingThrows": {
+        "str": {
+          "proficient": true
+        },
+        "dex": {
+          "proficient": false
+        },
+        "con": {
+          "proficient": true
+        },
+        "int": {
+          "proficient": false
+        },
+        "wis": {
+          "proficient": false
+        },
+        "cha": {
+          "proficient": false
+        }
+      },
+      "inventory": [
+        {
+          "name": "Confiscated Shotgun",
+          "category": "weapon",
+          "value": 800,
+          "condition": "good",
+          "quantity": 1,
+          "custom": true,
+          "equipped": false,
+          "stackable": false,
+          "treasure": false,
+          "notes": "Seized by station security"
+        },
+        {
+          "name": "Engineering Tools",
+          "category": "misc",
+          "value": 300,
+          "condition": "good",
+          "quantity": 1,
+          "custom": true,
+          "equipped": false,
+          "stackable": false,
+          "treasure": false
+        },
+        {
+          "name": "Repair Kit",
+          "category": "misc",
+          "value": 150,
+          "condition": "good",
+          "quantity": 1,
+          "custom": true,
+          "equipped": false,
+          "stackable": false,
+          "treasure": false
+        }
+      ],
+      "conditions": [],
+      "buffs": []
+    },
+    "yuen": {
+      "name": "Dr. Yuen",
+      "class": "Xenobiologist",
+      "race": "Human",
+      "pronouns": "she/her",
+      "controlledBy": "dm",
+      "companion": true,
+      "hp": {
+        "current": 16,
+        "max": 16
+      },
+      "credits": 12000,
+      "proficiencyBonus": 2,
+      "abilities": {
+        "str": 8,
+        "dex": 10,
+        "con": 12,
+        "int": 14,
+        "wis": 12,
+        "cha": 10
+      },
+      "speed": 30,
+      "ac": 11,
+      "skills": {
+        "acrobatics": {
+          "ability": "dex",
+          "proficient": false
+        },
+        "athletics": {
+          "ability": "str",
+          "proficient": false
+        },
+        "deception": {
+          "ability": "cha",
+          "proficient": false
+        },
+        "engineering": {
+          "ability": "int",
+          "proficient": false
+        },
+        "history": {
+          "ability": "int",
+          "proficient": true,
+          "notes": "Xenobiology research background, alien species knowledge"
+        },
+        "insight": {
+          "ability": "wis",
+          "proficient": true
+        },
+        "intimidation": {
+          "ability": "cha",
+          "proficient": false
+        },
+        "investigation": {
+          "ability": "int",
+          "proficient": true
+        },
+        "medicine": {
+          "ability": "wis",
+          "proficient": true,
+          "notes": "Emergency medical care, xenobiology applications"
+        },
+        "nature": {
+          "ability": "wis",
+          "proficient": true,
+          "notes": "Xenobiology specialization"
+        },
+        "perception": {
+          "ability": "wis",
+          "proficient": false
+        },
+        "performance": {
+          "ability": "cha",
+          "proficient": false
+        },
+        "persuasion": {
+          "ability": "cha",
+          "proficient": false
+        },
+        "piloting": {
+          "ability": "dex",
+          "proficient": false
+        },
+        "sleight of hand": {
+          "ability": "dex",
+          "proficient": false
+        },
+        "stealth": {
+          "ability": "dex",
+          "proficient": false
+        },
+        "survival": {
+          "ability": "wis",
+          "proficient": false
+        },
+        "technology": {
+          "ability": "int",
+          "proficient": false
+        }
+      },
+      "savingThrows": {
+        "str": {
+          "proficient": false
+        },
+        "dex": {
+          "proficient": false
+        },
+        "con": {
+          "proficient": false
+        },
+        "int": {
+          "proficient": true
+        },
+        "wis": {
+          "proficient": true
+        },
+        "cha": {
+          "proficient": false
+        }
+      },
+      "inventory": [
+        {
+          "name": "Medical Scanner",
+          "category": "misc",
+          "value": 2000,
+          "condition": "good",
+          "quantity": 1,
+          "custom": true,
+          "equipped": false,
+          "stackable": false,
+          "treasure": false,
+          "notes": "Jury-rigged, fully charged"
+        },
+        {
+          "name": "Xenobiology Field Kit",
+          "category": "misc",
+          "value": 800,
+          "condition": "good",
+          "quantity": 1,
+          "custom": true,
+          "equipped": false,
+          "stackable": false,
+          "treasure": false
+        },
+        {
+          "name": "Sample Containers",
+          "category": "misc",
+          "value": 50,
+          "condition": "good",
+          "quantity": 5,
+          "custom": true,
+          "equipped": false,
+          "stackable": true,
+          "treasure": false
+        }
+      ],
+      "conditions": [],
+      "buffs": []
+    }
+  },
+  "resources": {
+    "party_credits": 15800
+  },
+  "quests": {
+    "active": [],
+    "completed": []
+  },
+  "ship": {
+    "name": "The Ardent",
+    "class": "Kestrel-class Fast Courier",
+    "status": "docked",
+    "location": "Dock 19, Titan Station",
+    "origin": "Seized from smugglers, transferred by Director Holbrook",
+    "notes": "Military surplus, modified drive assembly, faster than Weyland commercial charters. Needs pilot inspection and Chen should check drive before hard use."
+  },
+  "key_npcs": {},
+  "combat": {
+    "active": false,
+    "round": 0,
+    "currentTurn": 0,
+    "initiativeOrder": [],
+    "participants": {
+      "players": [],
+      "enemies": []
+    },
+    "context": "Osprey Security strike team breaches the conference room with lethal force",
+    "actionEconomy": {},
+    "conditions": {},
+    "conversationHistory": [],
+    "rollQueue": [
+      {
+        "queueId": "rq-mjr034ba-xj1r7",
+        "campaignId": "dax",
+        "reason": "ROLL NEEDED: Roll Intelligence (DC 13) to deduce the strategic implications of the data Osprey has acquired.",
+        "type": "generic",
+        "requestedBy": "dm",
+        "source": "narrative",
+        "requestedAt": "2025-12-29T10:13:26.806Z",
+        "createdAt": "2025-12-29T10:13:26.806Z",
+        "lastUpdatedAt": "2025-12-29T10:13:26.806Z",
+        "expiresAt": null,
+        "status": "pending",
+        "ability": "str",
+        "dc": 13,
+        "advantage": "normal",
+        "metadata": {
+          "rawRequest": "ROLL NEEDED: Roll Intelligence (DC 13) to deduce the strategic implications of the data Osprey has acquired.",
+          "ability": "Strength",
+          "abilityKey": "str",
+          "checkType": "generic",
+          "autoCreated": true,
+          "combatAction": null
+        },
+        "participants": [
+          {
+            "participantId": "dax",
+            "id": "dax",
+            "name": "Dax Stargazer",
+            "entityType": "player",
+            "ability": "str",
+            "dc": 13,
+            "advantage": "normal",
+            "status": "pending",
+            "result": null,
+            "notes": null,
+            "submittedBy": null,
+            "submittedAt": null,
+            "lastUpdatedAt": "2025-12-29T10:13:26.806Z",
+            "aliases": [
+              "dax stargazer",
+              "dax",
+              "stargazer"
+            ]
+          },
+          {
+            "participantId": "chen",
+            "id": "chen",
+            "name": "Chen",
+            "entityType": "player",
+            "ability": "str",
+            "dc": 13,
+            "advantage": "normal",
+            "status": "pending",
+            "result": null,
+            "notes": null,
+            "submittedBy": null,
+            "submittedAt": null,
+            "lastUpdatedAt": "2025-12-29T10:13:26.806Z",
+            "aliases": [
+              "chen"
+            ]
+          },
+          {
+            "participantId": "yuen",
+            "id": "yuen",
+            "name": "Dr. Yuen",
+            "entityType": "player",
+            "ability": "str",
+            "dc": 13,
+            "advantage": "normal",
+            "status": "pending",
+            "result": null,
+            "notes": null,
+            "submittedBy": null,
+            "submittedAt": null,
+            "lastUpdatedAt": "2025-12-29T10:13:26.806Z",
+            "aliases": [
+              "dr. yuen",
+              "dr.",
+              "yuen"
+            ]
+          }
+        ]
+      },
+      {
+        "queueId": "rq-mjr06nhf-bwq7r",
+        "campaignId": "dax",
+        "reason": "ROLL NEEDED: Roll Technology (Intelligence) (DC 14) to scan the crate remotely using the dock's sensors before anyone approaches it.",
+        "type": "generic",
+        "requestedBy": "dm",
+        "source": "narrative",
+        "requestedAt": "2025-12-29T10:16:11.619Z",
+        "createdAt": "2025-12-29T10:16:11.619Z",
+        "lastUpdatedAt": "2025-12-29T10:16:11.619Z",
+        "expiresAt": null,
+        "status": "pending",
+        "ability": "int",
+        "dc": 14,
+        "advantage": "normal",
+        "metadata": {
+          "rawRequest": "ROLL NEEDED: Roll Technology (Intelligence) (DC 14) to scan the crate remotely using the dock's sensors before anyone approaches it.",
+          "ability": "Intelligence",
+          "abilityKey": "int",
+          "checkType": "generic",
+          "autoCreated": true,
+          "combatAction": null
+        },
+        "participants": [
+          {
+            "participantId": "dax",
+            "id": "dax",
+            "name": "Dax Stargazer",
+            "entityType": "player",
+            "ability": "int",
+            "dc": 14,
+            "advantage": "normal",
+            "status": "pending",
+            "result": null,
+            "notes": null,
+            "submittedBy": null,
+            "submittedAt": null,
+            "lastUpdatedAt": "2025-12-29T10:16:11.619Z",
+            "aliases": [
+              "dax stargazer",
+              "dax",
+              "stargazer"
+            ]
+          },
+          {
+            "participantId": "chen",
+            "id": "chen",
+            "name": "Chen",
+            "entityType": "player",
+            "ability": "int",
+            "dc": 14,
+            "advantage": "normal",
+            "status": "pending",
+            "result": null,
+            "notes": null,
+            "submittedBy": null,
+            "submittedAt": null,
+            "lastUpdatedAt": "2025-12-29T10:16:11.619Z",
+            "aliases": [
+              "chen"
+            ]
+          },
+          {
+            "participantId": "yuen",
+            "id": "yuen",
+            "name": "Dr. Yuen",
+            "entityType": "player",
+            "ability": "int",
+            "dc": 14,
+            "advantage": "normal",
+            "status": "pending",
+            "result": null,
+            "notes": null,
+            "submittedBy": null,
+            "submittedAt": null,
+            "lastUpdatedAt": "2025-12-29T10:16:11.619Z",
+            "aliases": [
+              "dr. yuen",
+              "dr.",
+              "yuen"
+            ]
+          }
+        ]
+      }
+    ],
+    "pending": true,
+    "enemyInitiatives": [
+      {
+        "id": "enemy-0",
+        "name": "Osprey Operative 1 (Lead)",
+        "type": "enemy",
+        "isPlayer": false,
+        "initiative": 11,
+        "hp": {
+          "current": 45,
+          "max": 45
+        },
+        "ac": 16
+      },
+      {
+        "id": "enemy-1",
+        "name": "Osprey Operative 2",
+        "type": "enemy",
+        "isPlayer": false,
+        "initiative": 17,
+        "hp": {
+          "current": 38,
+          "max": 38
+        },
+        "ac": 15
+      },
+      {
+        "id": "enemy-2",
+        "name": "Osprey Operative 3",
+        "type": "enemy",
+        "isPlayer": false,
+        "initiative": 16,
+        "hp": {
+          "current": 38,
+          "max": 38
+        },
+        "ac": 15
+      }
+    ],
+    "playerCharacters": [
+      {
+        "id": "dax",
+        "name": "Dax Stargazer",
+        "type": "player",
+        "isPlayer": true,
+        "initiative": null,
+        "dexMod": 0,
+        "hp": {
+          "current": 9,
+          "max": 9
+        },
+        "ac": 10
+      },
+      {
+        "id": "chen",
+        "name": "Chen",
+        "type": "player",
+        "isPlayer": true,
+        "initiative": null,
+        "dexMod": 0,
+        "hp": {
+          "current": 24,
+          "max": 24
+        },
+        "ac": 10
+      },
+      {
+        "id": "yuen",
+        "name": "Dr. Yuen",
+        "type": "player",
+        "isPlayer": true,
+        "initiative": null,
+        "dexMod": 0,
+        "hp": {
+          "current": 16,
+          "max": 16
+        },
+        "ac": 10
+      }
+    ],
+    "surprise": "none",
+    "startTime": "2025-12-22T13:51:48.338Z",
+    "deathSaves": {},
+    "combatState": "IDLE"
+  },
+  "npcs": {
+    "holbrook": {
+      "name": "Director Holbrook",
+      "pronouns": "she/her",
+      "role": "Director of Titan Station",
+      "status": "alive",
+      "location": "Security Command Center",
+      "notes": "Full station authority. Invoked Protocol Seven to freeze Weyland assets."
+    },
+    "torres": {
+      "name": "Commander Torres",
+      "pronouns": "she/her",
+      "role": "Security Commander, Titan Station",
+      "status": "alive",
+      "location": "Security Command Center",
+      "notes": "Holbrook's tactical right hand. Armed with assault rifle."
+    },
+    "morrison": {
+      "name": "Captain Morrison",
+      "pronouns": "he/him",
+      "role": "Captain of U.E.S. Wanderer",
+      "status": "dead",
+      "location": null,
+      "notes": "Died maintaining quarantine to protect others. Approved Weyland cargo unknowingly. Regarded as a hero."
+    },
+    "kellerman": {
+      "name": "Miranda Kellerman",
+      "pronouns": "she/her",
+      "role": "Senior Legal Counsel, Weyland Biosystems",
+      "status": "alive",
+      "location": "Unknown — retreated after legal defeat",
+      "notes": "Attempted intimidation and bribery. Made 73+ unanswered calls to Dr. Yuen."
+    },
+    "park": {
+      "name": "Jonathan Park",
+      "pronouns": "he/him",
+      "role": "U.E.S. Representative, Titan Station",
+      "status": "alive",
+      "location": "U.E.S. local office",
+      "notes": "Ineffectual middle manager. Will leak anything told to him."
+    },
+    "vance": {
+      "name": "Vance (callsign Raven)",
+      "pronouns": "unknown",
+      "role": "Osprey Security team lead (PMC, Weyland contractor)",
+      "status": "alive",
+      "location": "Departed Dock 7",
+      "notes": "Negotiated withdrawal. Carried unidentified shielded device on departure."
+    },
+    "rostova": {
+      "name": "Officer Rostova",
+      "pronouns": "she/her",
+      "role": "Ship officer, U.E.S. Wanderer",
+      "status": "dead",
+      "location": null,
+      "notes": "Found dead in Central Hub. Left armory code 7355."
+    },
+    "martinez": {
+      "name": "Martinez",
+      "pronouns": "he/him",
+      "role": "Crew member / data logger, U.E.S. Wanderer",
+      "status": "dead",
+      "location": null,
+      "notes": "Military background. Pulled into vent by creatures. His data log became key legal evidence. Do NOT use this name for living NPCs."
+    },
+    "okafor": {
+      "name": "Zara Okafor",
+      "pronouns": "she/her",
+      "role": "Former Colonial Marine, potential recruit",
+      "status": "alive",
+      "location": "Titan Station",
+      "notes": "Explosives specialist, CQC expert, 8 years service, honorable discharge. Passed background check. Party wants to meet her formally."
+    }
+  },
+  "current_scene": {
+    "scene_id": 47,
+    "location": "Security Command Center, Titan Station",
+    "npcs_present": [
+      "Director Holbrook",
+      "Commander Torres"
+    ],
+    "npcs_departed": [
+      "Vance",
+      "Osprey Team"
+    ],
+    "situation": "Osprey has departed Dock 7. Team analyzing encrypted packet and planning next move on Weyland.",
+    "last_action": "Dax Stargazer: rolled D20 with a natural 17, modifier +6, for a total of 23. [This roll is for: NEED...",
+    "pending": "Technology"
+  }
+}

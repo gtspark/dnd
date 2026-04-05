@@ -49,6 +49,7 @@ export interface Character {
     cha: number;
   };
   skills?: Record<string, CharacterSkill>;  // e.g., { technology: { ability: 'int', proficient: true } }
+  savingThrows?: Record<string, { proficient: boolean }>;
   inventory: InventoryItem[];
   heldSpells: string[];
 }

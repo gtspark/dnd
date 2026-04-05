@@ -62,7 +62,9 @@ const campaignFeatures = {
         // Dax-specific features
         narrativeCombat: true,   // Combat is narrative-only
         singlePlayerCompanions: true,  // Single PC with DM companions
-        disabledTools: ['start_combat']  // Tools to disable
+        disabledTools: ['start_combat'],  // Tools to disable
+        maxEpisodeAge: 100,      // Long campaign - all 47+ scenes reachable
+        ragResultCount: 8        // More history = more context needed
     },
     'default': {
         usesDatabase: false,

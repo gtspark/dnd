@@ -2,10 +2,10 @@
 // Combines intelligent context retrieval with full game management
 
 // Load environment variables from .env file (explicit absolute path for PM2, override existing)
-require('dotenv').config({ path: '/opt/dnd/.env', override: true });
+require('dotenv').config({ path: '/home/admin/.env.secrets', override: true });
 
-if (!process.env.CLAUDE_API_KEY) {
-    console.warn('⚠️ CLAUDE_API_KEY not found in environment – enhanced server will be unable to call the DM provider.');
+if (!process.env.ANTHROPIC_API_KEY) {
+    console.warn('⚠️ ANTHROPIC_API_KEY not found in environment – enhanced server will be unable to call the DM provider.');
 }
 
 const express = require('express');
@@ -222,9 +222,9 @@ class BaseAIProvider {
 // Claude Provider
 class ClaudeProvider extends BaseAIProvider {
     constructor() {
-        // Using Sonnet 4.5 for production quality
+        // Using Sonnet 4.6 for production quality
         // Haiku 4.5 (claude-haiku-4-5) had issues with combat context tracking
-        super('claude', 'claude-sonnet-4-5-20250929');
+        super('claude', 'claude-sonnet-4-6');
         const DnDRulesService = require('./DnDRulesService');
         this.rulesService = new DnDRulesService();
     }
@@ -429,6 +429,45 @@ class ClaudeProvider extends BaseAIProvider {
                     },
                     "required": ["character", "roll_type"]
                 }
+            },
+            {
+                "name": "update_npc",
+                "description": "Register a new NPC or update an existing one. Call this when introducing a named NPC for the first time, or when an NPC's status/location changes significantly (e.g., dies, moves to new area, changes allegiance).",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "id": {
+                            "type": "string",
+                            "description": "Lowercase identifier (e.g., 'holbrook', 'vance'). Use existing id to update."
+                        },
+                        "name": {
+                            "type": "string",
+                            "description": "Display name with title (e.g., 'Director Holbrook', 'Captain Morrison')"
+                        },
+                        "pronouns": {
+                            "type": "string",
+                            "description": "Pronouns (e.g., 'she/her', 'he/him', 'they/them')"
+                        },
+                        "role": {
+                            "type": "string",
+                            "description": "Role or title (e.g., 'Security Commander, Titan Station')"
+                        },
+                        "status": {
+                            "type": "string",
+                            "enum": ["alive", "dead", "unknown", "missing"],
+                            "description": "Current status"
+                        },
+                        "location": {
+                            "type": "string",
+                            "description": "Current location or null if unknown/dead"
+                        },
+                        "notes": {
+                            "type": "string",
+                            "description": "Brief notes about the NPC relevant to ongoing story"
+                        }
+                    },
+                    "required": ["id", "name"]
+                }
             }
         ];
 
@@ -471,13 +510,16 @@ LOOKUP TOOLS (for accurate mechanics):
 ✓ NEW enemies appear → call get_monster_stats for AC, HP, abilities, CR
 ✓ Character examines/uses equipment → call get_item_details
 
-STATE MUTATION TOOLS - ALWAYS USE THESE:
-✓ Character takes damage → call update_character with hp_change (REQUIRED)
-✓ Character heals → call update_character with hp_change (REQUIRED)
+STATE MUTATION TOOLS:
+✗ DO NOT call update_character for hp_change or gold_change — players manage their own HP and credits
 ✓ Character gains condition (Prone, Poisoned, etc.) → call update_character with add_conditions
 ✓ Character loses condition → call update_character with remove_conditions
 ✓ Character gains/loses items → call update_character with add_items/remove_items
-✓ Character gains/spends gold → call update_character with gold_change
+
+PLAYER-MANAGED STATS: HP and credits are edited by the player, not the DM.
+When damage occurs, narrate it clearly: "The blast hits Dax for 8 damage" — the player will update their HP.
+When costs occur, state the amount: "The repair costs 500 credits" — the player will deduct it.
+The PARTY STATUS section above shows the player's current values — trust those numbers.
 
 ITEM FORMAT FOR add_items:
 - Standard equipment: {name: "Rusty Scimitar", baseItem: "scimitar", category: "weapon", value: 25}
@@ -490,16 +532,22 @@ COMBAT TOOLS - ALWAYS USE THESE:
 ✓ Combat ends (victory/defeat/flee) → call end_combat (REQUIRED)
 ✓ Need a dice roll → call request_roll then STOP (don't describe outcome)
 
+NPC REGISTRY TOOL:
+✓ Introducing a NEW named NPC → call update_npc with id, name, pronouns, role, status, location
+✓ NPC dies, moves, or changes allegiance → call update_npc to update their entry
+✓ Do NOT register unnamed/generic NPCs (e.g., "a guard", "the bartender") — only named characters
+
 CRITICAL RULES:
-1. NEVER describe damage without calling update_character
+1. Narrate damage/costs clearly so the player can update their sheet — do NOT call update_character for HP or credits
 2. NEVER start combat without calling start_combat
 3. NEVER end combat without calling end_combat
+4. ALWAYS register new named NPCs with update_npc on first introduction
 4. After calling request_roll, STOP - don't write the outcome
 5. The tools update the game state automatically - trust them
-6. NEVER call update_character for damage UNTIL you've described an attack landing
+6. Narrate attacks fully before stating damage amounts
    - You must narrate the attack first: "[Attacker] swings their sword at [Target]..."
    - You must resolve the attack (hit or miss)
-   - ONLY if the attack hits, THEN call update_character with hp_change
+   - ONLY if the attack hits, state the damage amount clearly
    - The [SYSTEM] initiative message does NOT mean attacks have happened!
 
 ───────────────────────────────────────────────────────────
@@ -906,6 +954,19 @@ END D&D 5E COMBAT MECHANICS
         // Handle tool use (may recurse if AI uses multiple tools)
         if (data.stop_reason === 'tool_use') {
             console.log('🔧 Claude requested tool use');
+
+            // Capture any text blocks from the initial response (often contains SceneCheck + narrative)
+            const preToolText = data.content
+                .filter(block => block.type === 'text' && block.text)
+                .map(block => block.text)
+                .join('\n')
+                .replace(/\*\*DM \([^)]+\)\*\*/g, '')
+                .trim();
+
+            if (preToolText) {
+                console.log(`📝 Pre-tool text captured (${preToolText.length} chars)`);
+            }
+
             const { toolResults, stateMutations } = await this.handleToolUse(data.content);
             allStateMutations.push(...stateMutations);
 
@@ -926,8 +987,19 @@ END D&D 5E COMBAT MECHANICS
                 allStateMutations.push(...finalResult.stateMutations);
             }
 
+            // Combine pre-tool text with continuation text
+            // The model often emits SceneCheck + narrative BEFORE tool calls,
+            // then the continuation after tool results may add more or be empty
+            const continuationText = (finalResult.text || finalResult || '').trim();
+            let combinedText;
+            if (preToolText && continuationText) {
+                combinedText = preToolText + '\n\n' + continuationText;
+            } else {
+                combinedText = preToolText || continuationText;
+            }
+
             return {
-                text: finalResult.text || finalResult,
+                text: combinedText,
                 stateMutations: allStateMutations
             };
         }
@@ -990,6 +1062,15 @@ END D&D 5E COMBAT MECHANICS
         // Handle more tool use
         if (data.stop_reason === 'tool_use') {
             console.log('🔧 Claude requested additional tool use');
+
+            // Capture any text blocks from this response before recursing
+            const preToolText = data.content
+                .filter(block => block.type === 'text' && block.text)
+                .map(block => block.text)
+                .join('\n')
+                .replace(/\*\*DM \([^)]+\)\*\*/g, '')
+                .trim();
+
             const { toolResults, stateMutations } = await this.handleToolUse(data.content);
             allStateMutations.push(...stateMutations);
 
@@ -1006,8 +1087,16 @@ END D&D 5E COMBAT MECHANICS
                 allStateMutations.push(...finalResult.stateMutations);
             }
 
+            const continuationText = (finalResult.text || finalResult || '').trim();
+            let combinedText;
+            if (preToolText && continuationText) {
+                combinedText = preToolText + '\n\n' + continuationText;
+            } else {
+                combinedText = preToolText || continuationText;
+            }
+
             return {
-                text: finalResult.text || finalResult,
+                text: combinedText,
                 stateMutations: allStateMutations
             };
         }
@@ -1078,6 +1167,10 @@ END D&D 5E COMBAT MECHANICS
                         stateMutations.push({ type: 'request_roll', input: block.input });
                         result = { success: true, message: `Roll requested: ${block.input.roll_type} for ${block.input.character}` };
                         console.log(`🎲 State mutation: request_roll - ${block.input.roll_type} for ${block.input.character}`);
+                    } else if (block.name === 'update_npc') {
+                        stateMutations.push({ type: 'update_npc', input: block.input });
+                        result = { success: true, message: `NPC ${block.input.name} (${block.input.id}) registered` };
+                        console.log(`👤 State mutation: update_npc - ${block.input.name}`, block.input);
                     } else {
                         result = { error: `Unknown tool: ${block.name}` };
                         console.warn(`⚠️ Unknown tool requested: ${block.name}`);
@@ -1140,17 +1233,17 @@ END D&D 5E COMBAT MECHANICS
     getApiKey() {
         // API keys should ONLY come from environment variables (via .env file)
         // Never store API keys in config files that might be committed to git
-        const envKey = process.env.CLAUDE_API_KEY && process.env.CLAUDE_API_KEY.trim();
+        const envKey = process.env.ANTHROPIC_API_KEY && process.env.ANTHROPIC_API_KEY.trim();
         if (envKey) {
             if (!this._apiKeyLoggedFromEnv) {
-                console.log('🔑 Using Claude API key from environment variables');
+                console.log('🔑 Using Anthropic API key from environment variables');
                 this._apiKeyLoggedFromEnv = true;
             }
             return envKey;
         }
 
-        console.error('❌ Claude API key not found in environment (CLAUDE_API_KEY)');
-        throw new Error('Claude API key not found in environment (CLAUDE_API_KEY)');
+        console.error('❌ Anthropic API key not found in environment (ANTHROPIC_API_KEY)');
+        throw new Error('Anthropic API key not found in environment (ANTHROPIC_API_KEY)');
     }
 }
 
@@ -1641,7 +1734,9 @@ class IntelligentContextManager {
             // Initialize RAG memory service
             console.log('🧠 Initializing RAG memory service...');
             try {
-                this.memoryClient = new MemoryClient('http://localhost:5003', this.campaignId);
+                const features = getCampaignFeatures(this.campaignId);
+                const maxEpisodeAge = features.maxEpisodeAge || 20;
+                this.memoryClient = new MemoryClient('http://localhost:5003', this.campaignId, maxEpisodeAge);
                 const health = await this.memoryClient.checkHealth();
                 if (health) {
                     console.log('✅ RAG memory service connected');
@@ -3128,7 +3223,12 @@ class IntelligentContextManager {
 
         // Add mode-specific instructions
         if (mode === 'dm-question') {
-            prompt += `**DM QUESTION MODE**: The player is asking you a question about the game, rules, or world. Answer helpfully but don't advance the story or change any game state. This is a clarification, not an in-character action.\n\n`;
+            prompt += `**ABOVE-TABLE MODE** (this is NOT an in-character action — do NOT advance the scene or narrate anything):
+The player is asking a metagame question from across the table. Be casual and brief — a sentence or two, like a friend.
+- If they ask whether a roll is appropriate: just say the check type and DC, plus advantage/disadvantage if relevant.
+- If they send a roll result: just state what info they'd know. Plain facts only, 2-3 sentences max. No scene-setting, no NPC reactions, no "you recall..." prose.
+- Do NOT use any tools. Do NOT describe the scene. Do NOT move the story forward.
+Example responses: "Tech check DC 14, you'd have advantage." / "With a 21: yeah, the data's air-gapped now that it's off Osprey's network. No remote wipe possible."\n\n`;
         } else if (mode === 'ooc') {
             prompt += `**OUT-OF-CHARACTER MODE**: The player is talking to you meta/casually, not role-playing. Respond in a friendly, conversational tone like "Sure! I'll give them weapons" or "Yep, makes sense - added!". Be casual and brief. Still extract any game state changes they request, but skip the dramatic narrative.\n\n`;
         } else {
@@ -3169,23 +3269,81 @@ ${this.combatState.initiativeOrder.map((c, i) => {
 `;
         }
 
-        // Add party status with conditions (always include this for DM awareness)
+        // Add party status with full character detail for DM awareness
         if (this.campaignState?.characters) {
             const partyStatus = Object.entries(this.campaignState.characters).map(([id, char]) => {
                 const conditions = char.conditions || char.buffs || [];
-                const condStr = conditions.length > 0 ? ` **[${conditions.join(', ')}]**` : '';
+                const condStr = conditions.length > 0 ? `\n  Conditions: **${conditions.join(', ')}**` : '\n  Conditions: none';
                 const hp = char.hp?.current !== undefined ? `${char.hp.current}/${char.hp.max}` : '?';
-                return `- ${char.name || id}: HP ${hp}${condStr}`;
+                const profBonus = char.proficiencyBonus || 2;
+                const credits = char.credits !== undefined ? char.credits.toLocaleString() : '?';
+
+                // Build skills line with computed modifiers
+                let skillsLine = '';
+                if (char.skills && char.abilities) {
+                    const skillParts = Object.entries(char.skills).map(([name, skill]) => {
+                        const abilityScore = char.abilities[skill.ability] || 10;
+                        const abilityMod = Math.floor((abilityScore - 10) / 2);
+                        const totalMod = abilityMod + (skill.proficient ? profBonus : 0);
+                        const sign = totalMod >= 0 ? '+' : '';
+                        const profMark = skill.proficient ? '*' : '';
+                        return `${name} (${skill.ability.toUpperCase()}) ${sign}${totalMod}${profMark}`;
+                    });
+                    skillsLine = `\n  Skills: ${skillParts.join(', ')}`;
+                }
+
+                // Build saves line
+                let savesLine = '';
+                if (char.savingThrows && char.abilities) {
+                    const saveParts = Object.entries(char.savingThrows).map(([ability, save]) => {
+                        const abilityScore = char.abilities[ability] || 10;
+                        const abilityMod = Math.floor((abilityScore - 10) / 2);
+                        const totalMod = abilityMod + (save.proficient ? profBonus : 0);
+                        const sign = totalMod >= 0 ? '+' : '';
+                        const profMark = save.proficient ? '*' : '';
+                        return `${ability.toUpperCase()} ${sign}${totalMod}${profMark}`;
+                    });
+                    savesLine = `\n  Saves: ${saveParts.join(', ')}`;
+                }
+
+                // Build inventory line (compact)
+                let inventoryLine = '';
+                if (char.inventory && char.inventory.length > 0) {
+                    const items = char.inventory.map(item => {
+                        const equip = item.equipped ? ' (equipped)' : '';
+                        return `${item.name}${equip}`;
+                    });
+                    inventoryLine = `\n  Inventory: ${items.join(', ')}`;
+                }
+
+                const role = char.companion ? ' [DM companion]' : ' [Player]';
+                const pronouns = char.pronouns ? ` (${char.pronouns})` : '';
+                return `- ${char.name || id}${pronouns}${role}: HP ${hp} | Credits: ${credits}${skillsLine}${savesLine}${inventoryLine}${condStr}`;
             }).join('\n');
-            
+
             if (partyStatus) {
-                prompt += `## PARTY STATUS:\n${partyStatus}\n\n`;
+                prompt += `## PARTY STATUS (player-managed — trust these values):\n${partyStatus}\n\n`;
                 // Remind DM to roleplay conditions
                 const activeConditions = Object.values(this.campaignState.characters)
                     .flatMap(c => c.conditions || c.buffs || [])
                     .filter(Boolean);
                 if (activeConditions.length > 0) {
                     prompt += `**IMPORTANT: Characters have active conditions (${[...new Set(activeConditions)].join(', ')}). Incorporate these into narration and apply mechanical effects!**\n\n`;
+                }
+            }
+
+            // NPC registry — persistent reference for pronouns, roles, and status
+            if (this.campaignState.npcs) {
+                const npcEntries = Object.values(this.campaignState.npcs);
+                if (npcEntries.length > 0) {
+                    const npcLines = npcEntries.map(npc => {
+                        const pronouns = npc.pronouns && npc.pronouns !== 'unknown' ? ` (${npc.pronouns})` : '';
+                        const status = npc.status === 'dead' ? ' [DEAD]' : '';
+                        const loc = npc.location ? ` — ${npc.location}` : '';
+                        const notes = npc.notes ? ` | ${npc.notes}` : '';
+                        return `- ${npc.name}${pronouns}${status}: ${npc.role}${loc}${notes}`;
+                    }).join('\n');
+                    prompt += `## KEY NPCs (use correct pronouns, respect status):\n${npcLines}\n\n`;
                 }
             }
         }
@@ -3550,8 +3708,10 @@ FAILURE TO COMPLY WILL RESULT IN AN ERROR BEING SHOWN TO THE USER.
             const phaseInfo = this.detectPhase(response);
 
             if (phaseInfo.phase === 'setup') {
-                // Phase 1: Setup + Roll Request - DON'T save to conversation history yet
-                console.log('🎲 Two-phase flow: Setup phase completed, awaiting roll result');
+                // Phase 1: Setup + Roll Request - save the setup narrative NOW
+                // (previously skipped saving, causing lost exchanges when DM narrates + requests roll)
+                console.log('🎲 Two-phase flow: Setup phase completed, saving setup narrative before awaiting roll');
+                await this.updateMemory(playerAction, phaseInfo.setup, sessionId, mode);
                 return {
                     success: true,
                     narrative: phaseInfo.setup,
@@ -3844,7 +4004,8 @@ FAILURE TO COMPLY WILL RESULT IN AN ERROR BEING SHOWN TO THE USER.
                         }
                     }
                     
-                    const memories = await this.memoryClient.retrieveMemories(ragQuery, 5);
+                    const ragCount = getCampaignFeatures(this.campaignId).ragResultCount || 5;
+                    const memories = await this.memoryClient.retrieveMemories(ragQuery, ragCount);
                     if (memories && memories.length > 0) {
                         const memoryContext = this.memoryClient.formatMemoriesForContext(memories);
                         enhancedPrompt = systemPrompt + '\n\n' + memoryContext;
@@ -3903,6 +4064,9 @@ FAILURE TO COMPLY WILL RESULT IN AN ERROR BEING SHOWN TO THE USER.
                         this.pendingRollRequest = mutation.input;
                         console.log(`🎲 Pending roll request: ${mutation.input.roll_type} for ${mutation.input.character}`);
                         break;
+                    case 'update_npc':
+                        await this.applyNpcUpdate(mutation.input);
+                        break;
                     default:
                         console.warn(`⚠️ Unknown mutation type: ${mutation.type}`);
                 }
@@ -3910,6 +4074,41 @@ FAILURE TO COMPLY WILL RESULT IN AN ERROR BEING SHOWN TO THE USER.
                 console.error(`❌ Error processing mutation ${mutation.type}:`, error);
             }
         }
+    }
+
+    /**
+     * Apply NPC registry update from update_npc tool
+     */
+    async applyNpcUpdate(input) {
+        const { id, name, pronouns, role, status, location, notes } = input;
+
+        if (!this.campaignState.npcs) {
+            this.campaignState.npcs = {};
+        }
+
+        const existing = this.campaignState.npcs[id];
+        if (existing) {
+            // Merge — only overwrite fields that were provided
+            if (name) existing.name = name;
+            if (pronouns) existing.pronouns = pronouns;
+            if (role) existing.role = role;
+            if (status) existing.status = status;
+            if (location !== undefined) existing.location = location;
+            if (notes) existing.notes = notes;
+            console.log(`👤 Updated NPC: ${existing.name} (${id})`);
+        } else {
+            this.campaignState.npcs[id] = {
+                name,
+                pronouns: pronouns || 'unknown',
+                role: role || 'Unknown',
+                status: status || 'alive',
+                location: location || null,
+                notes: notes || null
+            };
+            console.log(`👤 Registered new NPC: ${name} (${id})`);
+        }
+
+        await this.saveCampaignState();
     }
 
     /**
@@ -5024,6 +5223,12 @@ What do you do?`;
     }
 
     async saveConversationHistory(playerAction, dmResponse, mode = 'ic') {
+        // Above-table / dm-question mode: never persist to history or RAG
+        if (mode === 'dm-question') {
+            console.log('📋 dm-question mode: skipping history save');
+            return;
+        }
+
         // Prevent concurrent saves
         if (this.saveInProgress) {
             console.log('⏳ Save already in progress, queuing...');
@@ -9258,6 +9463,56 @@ app.delete('/api/dnd/equipment/:equipmentId', async (req, res) => {
         res.status(500).json({ error: error.message });
     }
 });
+
+// Player-facing character edit endpoint (works for all campaigns)
+const characterPatchRoutes = ['/api/dnd/character/:characterId', '/dnd-api/dnd/character/:characterId', '/dnd/api/dnd/character/:characterId'];
+characterPatchRoutes.forEach(route => app.patch(route, async (req, res) => {
+    try {
+        const { characterId } = req.params;
+        const { campaign, hp_current, hp_max, credits } = req.body;
+        const activeCampaignId = campaign || process.env.DEFAULT_CAMPAIGN || 'default';
+
+        const context = await getCampaignContext(activeCampaignId);
+        if (!context.campaignState?.characters) {
+            return res.status(400).json({ error: 'Campaign has no characters' });
+        }
+
+        const charData = context.campaignState.characters[characterId];
+        if (!charData) {
+            return res.status(404).json({ error: `Character '${characterId}' not found` });
+        }
+
+        // Apply player edits
+        if (hp_current !== undefined && charData.hp) {
+            charData.hp.current = Math.max(0, Math.min(charData.hp.max, parseInt(hp_current)));
+        }
+        if (hp_max !== undefined && charData.hp) {
+            charData.hp.max = Math.max(1, parseInt(hp_max));
+            charData.hp.current = Math.min(charData.hp.current, charData.hp.max);
+        }
+        if (credits !== undefined) {
+            charData.credits = Math.max(0, parseInt(credits));
+        }
+
+        // Save state
+        await context.updateCampaignState(context.campaignState);
+
+        console.log(`📝 Player edit: ${charData.name} — HP: ${charData.hp?.current}/${charData.hp?.max}, Credits: ${charData.credits}`);
+
+        res.json({
+            success: true,
+            character: {
+                id: characterId,
+                name: charData.name,
+                hp: charData.hp,
+                credits: charData.credits
+            }
+        });
+    } catch (error) {
+        console.error('Character patch error:', error);
+        res.status(500).json({ error: error.message });
+    }
+}));
 
 // Update character HP
 app.post('/api/dnd/character/hp', async (req, res) => {

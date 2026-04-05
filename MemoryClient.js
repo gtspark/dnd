@@ -6,9 +6,10 @@
 const fetch = require('node-fetch');
 
 class MemoryClient {
-    constructor(serviceUrl = 'http://localhost:5003', campaign = 'test-silverpeak') {
+    constructor(serviceUrl = 'http://localhost:5003', campaign = 'test-silverpeak', maxEpisodeAge = 20) {
         this.serviceUrl = serviceUrl;
         this.campaign = campaign;
+        this.maxEpisodeAge = maxEpisodeAge;
         this.enabled = true;  // Can be disabled if service is down
         this.actionBuffer = [];  // Buffer to collect actions before storing
         this.actionBufferSize = 4;  // Store memory every 4 actions
@@ -130,7 +131,8 @@ class MemoryClient {
                     campaign: this.campaign,
                     n_results: nResults,
                     current_scene_id: this.currentSceneId,
-                    exclude_recent_scenes: 5  // Don't retrieve memories from last 5 scenes
+                    exclude_recent_scenes: 5,  // Don't retrieve memories from last 5 scenes
+                    max_episode_age: this.maxEpisodeAge
                 }),
                 timeout: 10000
             });
