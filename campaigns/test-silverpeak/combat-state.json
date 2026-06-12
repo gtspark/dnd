@@ -7,15 +7,189 @@
     "players": [],
     "enemies": []
   },
-  "context": null,
+  "context": {
+    "reason": "zone verification"
+  },
   "actionEconomy": {},
   "conditions": {},
   "conversationHistory": [],
-  "rollQueue": [],
+  "rollQueue": [
+    {
+      "queueId": "rq-mq7lw03j-s4ruk",
+      "campaignId": "test-silverpeak",
+      "reason": "Roll Athletics (DC 13) to leap the gap successfully",
+      "type": "generic",
+      "requestedBy": "dm",
+      "source": "narrative",
+      "requestedAt": "2026-06-10T05:06:19.135Z",
+      "createdAt": "2026-06-10T05:06:19.135Z",
+      "lastUpdatedAt": "2026-06-10T05:06:19.135Z",
+      "expiresAt": null,
+      "status": "cancelled",
+      "ability": null,
+      "dc": 13,
+      "advantage": "normal",
+      "metadata": {
+        "rawRequest": "Roll Athletics (DC 13) to leap the gap successfully",
+        "ability": null,
+        "abilityKey": null,
+        "checkType": "generic",
+        "autoCreated": true,
+        "combatAction": null
+      },
+      "participants": [
+        {
+          "participantId": "kira",
+          "id": "kira",
+          "name": "Kira Moonwhisper",
+          "entityType": "player",
+          "ability": null,
+          "dc": 13,
+          "advantage": "normal",
+          "status": "cancelled",
+          "result": null,
+          "notes": null,
+          "submittedBy": null,
+          "submittedAt": null,
+          "lastUpdatedAt": "2026-06-10T05:06:19.135Z",
+          "aliases": [
+            "kira moonwhisper",
+            "kira",
+            "moonwhisper"
+          ]
+        },
+        {
+          "participantId": "thorne",
+          "id": "thorne",
+          "name": "Thorne Ironheart",
+          "entityType": "player",
+          "ability": null,
+          "dc": 13,
+          "advantage": "normal",
+          "status": "cancelled",
+          "result": null,
+          "notes": null,
+          "submittedBy": null,
+          "submittedAt": null,
+          "lastUpdatedAt": "2026-06-10T05:06:19.135Z",
+          "aliases": [
+            "thorne ironheart",
+            "thorne",
+            "ironheart"
+          ]
+        },
+        {
+          "participantId": "riven",
+          "id": "riven",
+          "name": "Riven Shadowstep",
+          "entityType": "player",
+          "ability": null,
+          "dc": 13,
+          "advantage": "normal",
+          "status": "cancelled",
+          "result": null,
+          "notes": null,
+          "submittedBy": null,
+          "submittedAt": null,
+          "lastUpdatedAt": "2026-06-10T05:06:19.135Z",
+          "aliases": [
+            "riven shadowstep",
+            "riven",
+            "shadowstep"
+          ]
+        }
+      ],
+      "cancelledAt": "2026-06-10T05:08:04.095Z",
+      "cancelReason": "superseded by new player action"
+    },
+    {
+      "queueId": "rq-mq7lyh4p-i04sk",
+      "campaignId": "test-silverpeak",
+      "reason": "Roll Athletics (DC 12) to leap the gap between the inn roof and the stable roof",
+      "type": "generic",
+      "requestedBy": "dm",
+      "source": "narrative",
+      "requestedAt": "2026-06-10T05:08:14.521Z",
+      "createdAt": "2026-06-10T05:08:14.521Z",
+      "lastUpdatedAt": "2026-06-10T05:08:26.932Z",
+      "expiresAt": null,
+      "status": "complete",
+      "ability": "str",
+      "dc": 12,
+      "advantage": "normal",
+      "metadata": {
+        "rawRequest": "Roll Athletics (DC 12) to leap the gap between the inn roof and the stable roof",
+        "ability": "Strength",
+        "abilityKey": "str",
+        "checkType": "generic",
+        "autoCreated": true,
+        "combatAction": null
+      },
+      "participants": [
+        {
+          "participantId": "kira",
+          "id": "kira",
+          "name": "Kira Moonwhisper",
+          "entityType": "player",
+          "ability": "str",
+          "dc": 12,
+          "advantage": "normal",
+          "status": "rolled",
+          "result": {
+            "total": 15,
+            "natural": 15,
+            "modifier": 0,
+            "formula": "1d20",
+            "rolls": [
+              15
+            ],
+            "auto": false,
+            "submittedBy": "Kira Moonwhisper",
+            "submittedAt": "2026-06-10T05:08:26.932Z",
+            "notes": null,
+            "metadata": {}
+          },
+          "notes": null,
+          "submittedBy": "Kira Moonwhisper",
+          "submittedAt": "2026-06-10T05:08:26.932Z",
+          "lastUpdatedAt": "2026-06-10T05:08:26.932Z",
+          "aliases": [
+            "kira moonwhisper",
+            "kira",
+            "moonwhisper"
+          ]
+        }
+      ],
+      "results": [
+        {
+          "participantId": "kira",
+          "name": "Kira Moonwhisper",
+          "status": "rolled",
+          "total": 15,
+          "auto": false,
+          "submittedBy": "Kira Moonwhisper",
+          "submittedAt": "2026-06-10T05:08:26.932Z"
+        }
+      ],
+      "completedAt": "2026-06-10T05:08:26.932Z"
+    }
+  ],
   "pending": false,
   "surprise": "none",
-  "combatType": null,
-  "startTime": null,
+  "combatType": "random_encounter",
+  "startTime": "2026-06-10T01:10:59.737Z",
   "deathSaves": {},
-  "combatState": "IDLE"
+  "combatState": "IDLE",
+  "lastExpiredConditions": [],
+  "positions": {
+    "kira": {
+      "band": 2,
+      "name": "kira"
+    },
+    "goblin": {
+      "band": 0,
+      "name": "goblin"
+    }
+  },
+  "endTime": "2026-06-10T01:11:31.837Z"
 }

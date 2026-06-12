@@ -12,6 +12,14 @@
         "max": 9
       },
       "credits": 3000,
+      "level": 3,
+      "experience": {
+        "current": 900,
+        "levelStart": 900,
+        "nextLevel": 2700,
+        "toNextLevel": 1800,
+        "progressPct": 0
+      },
       "proficiencyBonus": 2,
       "abilities": {
         "str": 8,
@@ -155,7 +163,19 @@
           "treasure": false
         },
         {
-          "name": "Weyland Encrypted Data Packet",
+          "name": "Docking Registry Transfer - Dock 19, The Ardent",
+          "category": "document",
+          "value": 0,
+          "condition": "good",
+          "quantity": 1,
+          "custom": true,
+          "equipped": false,
+          "stackable": false,
+          "treasure": false,
+          "notes": "Provisional title paperwork issued by Director Holbrook."
+        },
+        {
+          "name": "Weyland Encrypted Data Packet (Isolated)",
           "baseItem": null,
           "custom": true,
           "category": "misc",
@@ -165,8 +185,7 @@
           "value": 0,
           "stackable": false,
           "treasure": false
-        },
-        "Docking Registry Transfer — Dock 19, the Ardent (provisional title)"
+        }
       ],
       "conditions": [],
       "buffs": []
@@ -183,6 +202,14 @@
         "max": 24
       },
       "credits": 800,
+      "level": 3,
+      "experience": {
+        "current": 900,
+        "levelStart": 900,
+        "nextLevel": 2700,
+        "toNextLevel": 1800,
+        "progressPct": 0
+      },
       "proficiencyBonus": 2,
       "abilities": {
         "str": 14,
@@ -323,7 +350,8 @@
           "equipped": false,
           "stackable": false,
           "treasure": false
-        }
+        },
+        "Encrypted short-range comm unit (station-issue, keyed to command center and Yuen's medical scanner)"
       ],
       "conditions": [],
       "buffs": []
@@ -340,6 +368,14 @@
         "max": 16
       },
       "credits": 12000,
+      "level": 3,
+      "experience": {
+        "current": 900,
+        "levelStart": 900,
+        "nextLevel": 2700,
+        "toNextLevel": 1800,
+        "progressPct": 0
+      },
       "proficiencyBonus": 2,
       "abilities": {
         "str": 8,
@@ -488,11 +524,213 @@
       "buffs": []
     }
   },
+  "campaign_reset_point": {
+    "label": "Ardent handoff at Dock 19",
+    "createdAt": "2026-05-01T00:00:00.000Z",
+    "description": "Current campaign state baseline for RAG, character progression, ship systems, and DM continuity testing."
+  },
+  "progression": {
+    "mode": "xp",
+    "baselineLevel": 3,
+    "xpEvents": []
+  },
   "resources": {
     "party_credits": 15800
   },
   "quests": {
-    "active": [],
+    "active": [
+      {
+        "id": "weyland-relay-node",
+        "title": "Inspect Weyland's Sub-Level 4 Relay Node",
+        "status": "selected",
+        "priority": "immediate",
+        "location": "Sub-Level 4, Titan Station",
+        "summary": "Holbrook identified a sealed Weyland hardline relay that may have cached reports, uplink keys, or a secondary route for Project LACHESIS data.",
+        "next_steps": [
+          "Bring Dax and Chen to the proprietary access panel.",
+          "Confirm whether the relay transmitted after Osprey's departure.",
+          "Recover logs without alerting any Weyland dead-drop monitor."
+        ],
+        "stakes": "The node may reveal where Osprey took the primary sample recovery unit, but tampering could notify Weyland or trigger local countermeasures."
+      },
+      {
+        "id": "sector-9-pharma-bay",
+        "title": "Secure Sector 9 Weyland Storage",
+        "status": "open",
+        "priority": "high",
+        "location": "Sector 9 pharmaceutical storage bay",
+        "summary": "A bonded Weyland pharmaceutical bay is sealed and supposedly inert, but it remains one of the company's three active Titan Station interests.",
+        "next_steps": [
+          "Verify quarantine seals and inventory manifests.",
+          "Decide whether Yuen should examine samples before station security moves them."
+        ],
+        "stakes": "The bay could hold Project LACHESIS precursors, legal evidence, or a dormant hazard."
+      },
+      {
+        "id": "kellerman-liaison-office",
+        "title": "Search Kellerman's Level 4 Liaison Office",
+        "status": "open",
+        "priority": "medium",
+        "location": "Level 4, Titan Station",
+        "summary": "Miranda Kellerman's abandoned Weyland liaison office may contain documents, devices, or legal leverage left behind after Protocol Seven.",
+        "next_steps": [
+          "Enter after the relay-node lead or assign Torres to lock it down.",
+          "Look for communications with Helix Applied Research."
+        ],
+        "stakes": "Delayed search risks Weyland remote wiping or legal cleanup."
+      },
+      {
+        "id": "ardent-preflight",
+        "title": "Make The Ardent Mission-Ready",
+        "status": "open",
+        "priority": "medium",
+        "location": "Dock 19, Titan Station",
+        "summary": "Holbrook transferred provisional title to The Ardent, but it still needs pilot inspection, Chen's drive check, crew station assignments, and fuel top-off.",
+        "next_steps": [
+          "Assign crew stations.",
+          "Have Chen inspect the modified drive assembly.",
+          "Confirm Dock 19 release authority and fuel allotment."
+        ],
+        "stakes": "The ship is the party's escape route and chase platform if Weyland moves faster than station security."
+      },
+      {
+        "id": "okafor-recruitment",
+        "title": "Meet Zara Okafor",
+        "status": "open",
+        "priority": "medium",
+        "location": "Titan Station",
+        "summary": "Zara Okafor passed Holbrook's background check and could fill the team's security gap as a former Colonial Marine.",
+        "next_steps": [
+          "Introduce Okafor when the team needs field security or combat support.",
+          "Let Dax decide whether she joins the relay-node operation or guards the Ardent."
+        ],
+        "stakes": "The party needs someone who can handle violence without forcing Chen or Yuen into frontline roles."
+      },
+      {
+        "id": "project-lachesis",
+        "title": "Expose Project LACHESIS",
+        "status": "open",
+        "priority": "campaign",
+        "location": "Weyland/Helix network",
+        "summary": "Evidence suggests Weyland Biosystems and Helix Applied Research used the Wanderer/Titan disaster as a xenobiological weapons field test.",
+        "next_steps": [
+          "Map the chain from Kellerman to Helix decision-makers.",
+          "Identify two prior redacted incidents.",
+          "Find where Osprey took the shielded recovery unit."
+        ],
+        "stakes": "The investigation is larger than Titan Station and may point to an active off-station weapons program."
+      },
+      {
+        "id": "relay-node-inspection",
+        "title": "Inspect Weyland's Sub-Level 4 Relay Node",
+        "status": "active",
+        "createdAt": "2026-06-10T01:43:34.364Z",
+        "updates": [
+          {
+            "ts": "2026-06-10T01:43:34.364Z",
+            "note": "Dax and Chen selected this as the immediate lead. Holbrook has provided access route. Torres on station lockdown. Yuen on standby for xenobiology analysis."
+          }
+        ],
+        "priority": "immediate",
+        "location": "Sub-Level 4, Titan Station",
+        "summary": "A sealed Weyland hardline relay in Sub-Level 4 may hold cached reports, uplink keys, or a secondary route for Project LACHESIS data.",
+        "next_steps": [
+          "Proceed to Sub-Level 4 with Dax and Chen",
+          "Access the proprietary Weyland panel",
+          "Extract cached data without triggering remote countermeasures"
+        ],
+        "stakes": "May reveal where Osprey took the primary sample recovery unit; tampering could notify Weyland or trigger local countermeasures."
+      },
+      {
+        "id": "weyland-storage-sector9",
+        "title": "Secure Sector 9 Weyland Storage",
+        "status": "active",
+        "createdAt": "2026-06-10T01:43:34.367Z",
+        "updates": [],
+        "priority": "high",
+        "location": "Sector 9 pharmaceutical storage bay, Titan Station",
+        "summary": "A bonded Weyland pharmaceutical bay in Sector 9 is sealed and supposedly inert, but remains one of their three active Titan Station interests.",
+        "next_steps": [
+          "Verify quarantine seals and inventory manifests",
+          "Cross-reference contents against Project LACHESIS precursor list"
+        ],
+        "stakes": "Bay could hold Project LACHESIS precursors, legal evidence, or a dormant biological hazard."
+      },
+      {
+        "id": "kellerman-office-search",
+        "title": "Search Kellerman's Level 4 Liaison Office",
+        "status": "active",
+        "createdAt": "2026-06-10T01:43:34.369Z",
+        "updates": [],
+        "priority": "high",
+        "location": "Level 4, Titan Station",
+        "summary": "Miranda Kellerman's abandoned Weyland liaison office may contain documents, devices, or legal leverage left behind after Protocol Seven forced her retreat.",
+        "next_steps": [
+          "Enter office after relay-node lead, OR assign Torres to lock it down immediately",
+          "Look for devices, data cores, or hardcopy legal documents"
+        ],
+        "stakes": "Delayed search risks Weyland remote-wiping devices or sending a cleanup crew."
+      },
+      {
+        "id": "inspect-relay-node",
+        "title": "Inspect Weyland's Sub-Level 4 Relay Node",
+        "status": "active",
+        "createdAt": "2026-06-10T04:19:03.505Z",
+        "updates": [
+          {
+            "ts": "2026-06-10T04:19:03.505Z",
+            "note": "Dax and Chen preparing to depart Security Command Center. Asking Holbrook for comms plan and role assignments for Torres and Yuen."
+          },
+          {
+            "ts": "2026-06-10T12:53:04.965Z",
+            "note": "Dax and Chen encountered an unknown organism sleeping near the T-junction before reaching the relay node. Dax is contacting Dr. Yuen for xenobiological identification."
+          }
+        ],
+        "next_steps": [
+          "Get Yuen's identification of the organism at the junction",
+          "Decide whether to bypass, observe, or avoid the creature",
+          "Reach the Weyland relay node past the junction"
+        ],
+        "priority": "immediate"
+      },
+      {
+        "id": "inspect-weyland-relay-node",
+        "title": "Inspect Weyland's Sub-Level 4 Relay Node",
+        "status": "active",
+        "createdAt": "2026-06-10T04:22:38.849Z",
+        "updates": [
+          {
+            "ts": "2026-06-10T04:22:38.849Z",
+            "note": "Dax and Chen have departed the Security Command Center via Holbrook's safer service route, moving stealthily toward Sub-Level 4."
+          },
+          {
+            "ts": "2026-06-10T12:48:29.927Z",
+            "note": "Dax and Chen reached Sub-Level 4 via service corridor C-7. Stealth compromised by damp floor \u2014 something in the corridor may have heard them. Drag marks discovered near the T-junction. Technology scan (DC 13, rolled 13) revealed partial sensor data ahead."
+          }
+        ],
+        "next_steps": [
+          "Proceed past the T-junction toward the relay node",
+          "Identify what made the drag marks",
+          "Bypass or avoid whatever is in the corridor ahead"
+        ]
+      },
+      {
+        "id": "relay-node-creature",
+        "title": "Bypass the Junction Creature",
+        "status": "active",
+        "createdAt": "2026-06-10T13:10:34.135Z",
+        "updates": [],
+        "priority": "immediate",
+        "location": "Sub-Level 4, Titan Station",
+        "summary": "An unknown organism is sleeping at the T-junction blocking access to the Weyland relay node. Dax is devising a way to trap or lure it away.",
+        "next_steps": [
+          "Use station blueprints to find a containment or lure solution",
+          "Get Yuen's biological ID to inform the approach",
+          "Clear the junction to reach the relay node"
+        ],
+        "stakes": "If the creature wakes and attacks, the party has no weapons. If it blocks the junction indefinitely, the relay node remains inaccessible."
+      }
+    ],
     "completed": []
   },
   "ship": {
@@ -501,9 +739,146 @@
     "status": "docked",
     "location": "Dock 19, Titan Station",
     "origin": "Seized from smugglers, transferred by Director Holbrook",
-    "notes": "Military surplus, modified drive assembly, faster than Weyland commercial charters. Needs pilot inspection and Chen should check drive before hard use."
+    "notes": "Military surplus, modified drive assembly, faster than Weyland commercial charters. Needs pilot inspection before hard burn. Current station plan: Dax at helm/command, Chen in engineering, Yuen on sensors/science, Torres coordinating comms/security, Okafor available if recruited for weapons/security.",
+    "hull": {
+      "current": 45,
+      "max": 45,
+      "status": "nominal"
+    },
+    "shields": {
+      "current": 20,
+      "max": 20,
+      "status": "nominal",
+      "recharge_per_round": 2
+    },
+    "power": {
+      "total": 10,
+      "available": 0
+    },
+    "systems": {
+      "engines": {
+        "label": "Propulsion Drive",
+        "status": "operational",
+        "power_allocated": 3,
+        "power_min": 1,
+        "power_max": 4,
+        "upgrades": [],
+        "notes": "Modified drive assembly; Chen should inspect before hard burn. Extra thrust at max power."
+      },
+      "weapons": {
+        "label": "Weapon Systems",
+        "status": "operational",
+        "power_allocated": 2,
+        "power_min": 0,
+        "power_max": 4,
+        "upgrades": [
+          "Light Plasma Cannon"
+        ],
+        "notes": "Light plasma cannon; best handled by a security specialist such as Okafor if she joins."
+      },
+      "shields_sys": {
+        "label": "Shield Generator",
+        "status": "operational",
+        "power_allocated": 2,
+        "power_min": 0,
+        "power_max": 4,
+        "upgrades": [],
+        "notes": null
+      },
+      "sensors": {
+        "label": "Sensor Array",
+        "status": "operational",
+        "power_allocated": 1,
+        "power_min": 0,
+        "power_max": 3,
+        "upgrades": [],
+        "notes": "Can support xenobiology scans, relay-node sweeps, and anomaly detection when Yuen is aboard."
+      },
+      "comms": {
+        "label": "Communications",
+        "status": "operational",
+        "power_allocated": 1,
+        "power_min": 0,
+        "power_max": 2,
+        "upgrades": [],
+        "notes": "Tied into Titan Station security while docked; Torres can coordinate lockdowns and encrypted channels."
+      },
+      "life_support": {
+        "label": "Life Support",
+        "status": "operational",
+        "power_allocated": 1,
+        "power_min": 1,
+        "power_max": 2,
+        "upgrades": [],
+        "notes": "Cannot be reduced below minimum"
+      },
+      "cargo_bay": {
+        "label": "Cargo Bay",
+        "status": "operational",
+        "power_allocated": 0,
+        "power_min": 0,
+        "power_max": 1,
+        "upgrades": [],
+        "notes": null
+      }
+    },
+    "fuel": {
+      "current": 80,
+      "max": 100,
+      "unit": "cells"
+    },
+    "supplies": {
+      "current": 14,
+      "max": 20,
+      "unit": "days"
+    },
+    "crew_stations": {
+      "helm": "Dax Stargazer",
+      "weapons": "Zara Okafor (prospective)",
+      "engineering": "Chen",
+      "sensors": "Dr. Yuen",
+      "comms": "Commander Torres / Titan Security"
+    },
+    "cargo_manifest": [],
+    "conditions": []
   },
-  "key_npcs": {},
+  "key_npcs": {
+    "holbrook": {
+      "name": "Director Holbrook",
+      "priority": "primary ally",
+      "current_role": "Station authority and mission sponsor",
+      "continuity": "Invoked Protocol Seven, froze Weyland assets, offered the Ardent incentives, and is steering Dax toward the relay-node lead."
+    },
+    "torres": {
+      "name": "Commander Torres",
+      "priority": "field support",
+      "current_role": "Security commander",
+      "continuity": "Controls tactical station resources and can provide escorts, lockdowns, and threat updates."
+    },
+    "vance": {
+      "name": "Vance (callsign Raven)",
+      "priority": "active antagonist",
+      "current_role": "Departed Osprey team lead",
+      "continuity": "Left Dock 7 with a shielded device tied to the primary sample recovery unit."
+    },
+    "kellerman": {
+      "name": "Miranda Kellerman",
+      "priority": "legal antagonist",
+      "current_role": "Weyland liaison in retreat",
+      "continuity": "Tried intimidation and bribery; her Level 4 office remains an unresolved evidence target."
+    },
+    "okafor": {
+      "name": "Zara Okafor",
+      "priority": "prospective companion",
+      "current_role": "Cleared security recruit",
+      "continuity": "Former Colonial Marine, explosives and CQC specialist, not yet introduced to the party."
+    }
+  },
+  "relationship_beats": {
+    "dax_chen": "Dax rescued Chen from the shaft and treats her as a capable engineer. Chen trusts him, wants to help with the relay node, and should act as a practical second chair rather than a passive follower.",
+    "dax_yuen": "Yuen is shaken by evidence that her field and Titan Station were used by Project LACHESIS. She should provide scientific caution, moral pressure, and biological threat insight.",
+    "dax_holbrook": "Holbrook trusts Dax's competence and restraint after the Osprey standoff. She is offering authority, incentives, and access, but expects results before Weyland recovers."
+  },
   "combat": {
     "active": false,
     "round": 0,
@@ -513,28 +888,139 @@
       "players": [],
       "enemies": []
     },
-    "context": "Osprey Security strike team breaches the conference room with lethal force",
+    "context": null,
     "actionEconomy": {},
     "conditions": {},
     "conversationHistory": [],
     "rollQueue": [
       {
-        "queueId": "rq-mjr034ba-xj1r7",
+        "queueId": "rq-mq7kbvfp-45uex",
         "campaignId": "dax",
-        "reason": "ROLL NEEDED: Roll Intelligence (DC 13) to deduce the strategic implications of the data Osprey has acquired.",
+        "reason": "ROLL NEEDED: Roll Stealth (Dexterity) (DC 12) to move through the service corridor without drawing attention from any automated motion sensors still active on the route",
         "type": "generic",
         "requestedBy": "dm",
         "source": "narrative",
-        "requestedAt": "2025-12-29T10:13:26.806Z",
-        "createdAt": "2025-12-29T10:13:26.806Z",
-        "lastUpdatedAt": "2025-12-29T10:13:26.806Z",
+        "requestedAt": "2026-06-10T04:22:40.357Z",
+        "createdAt": "2026-06-10T04:22:40.357Z",
+        "lastUpdatedAt": "2026-06-10T04:35:44.339Z",
         "expiresAt": null,
-        "status": "pending",
-        "ability": "str",
-        "dc": 13,
+        "status": "cancelled",
+        "ability": "dex",
+        "dc": 12,
         "advantage": "normal",
         "metadata": {
-          "rawRequest": "ROLL NEEDED: Roll Intelligence (DC 13) to deduce the strategic implications of the data Osprey has acquired.",
+          "rawRequest": "ROLL NEEDED: Roll Stealth (Dexterity) (DC 12) to move through the service corridor without drawing attention from any automated motion sensors still active on the route",
+          "ability": "Dexterity",
+          "abilityKey": "dex",
+          "checkType": "generic",
+          "autoCreated": true,
+          "combatAction": null
+        },
+        "participants": [
+          {
+            "participantId": "dax",
+            "id": "dax",
+            "name": "Dax Stargazer",
+            "entityType": "player",
+            "ability": "dex",
+            "dc": 12,
+            "advantage": "normal",
+            "status": "rolled",
+            "result": {
+              "total": 14,
+              "natural": 12,
+              "modifier": 2,
+              "formula": "1d20",
+              "rolls": [
+                12
+              ],
+              "auto": false,
+              "submittedBy": "Dax Stargazer",
+              "submittedAt": "2026-06-10T04:35:44.339Z",
+              "notes": null,
+              "metadata": {}
+            },
+            "notes": null,
+            "submittedBy": "Dax Stargazer",
+            "submittedAt": "2026-06-10T04:35:44.339Z",
+            "lastUpdatedAt": "2026-06-10T04:35:44.339Z",
+            "aliases": [
+              "dax stargazer",
+              "dax",
+              "stargazer"
+            ]
+          },
+          {
+            "participantId": "chen",
+            "id": "chen",
+            "name": "Chen",
+            "entityType": "player",
+            "ability": "dex",
+            "dc": 12,
+            "advantage": "normal",
+            "status": "cancelled",
+            "result": null,
+            "notes": null,
+            "submittedBy": null,
+            "submittedAt": null,
+            "lastUpdatedAt": "2026-06-10T04:22:40.357Z",
+            "aliases": [
+              "chen"
+            ]
+          },
+          {
+            "participantId": "yuen",
+            "id": "yuen",
+            "name": "Dr. Yuen",
+            "entityType": "player",
+            "ability": "dex",
+            "dc": 12,
+            "advantage": "normal",
+            "status": "cancelled",
+            "result": null,
+            "notes": null,
+            "submittedBy": null,
+            "submittedAt": null,
+            "lastUpdatedAt": "2026-06-10T04:22:40.357Z",
+            "aliases": [
+              "dr. yuen",
+              "dr.",
+              "yuen"
+            ]
+          }
+        ],
+        "results": [
+          {
+            "participantId": "dax",
+            "name": "Dax Stargazer",
+            "status": "rolled",
+            "total": 14,
+            "auto": false,
+            "submittedBy": "Dax Stargazer",
+            "submittedAt": "2026-06-10T04:35:44.339Z"
+          }
+        ],
+        "completedAt": null,
+        "cancelledAt": "2026-06-10T04:55:00Z",
+        "cancelReason": "stranded by companion participants (pre-fix); DM already narrated the outcome"
+      },
+      {
+        "queueId": "rq-mq7len6j-3jtbl",
+        "campaignId": "dax",
+        "reason": "Roll Athletics (Strength) (DC 10) to descend the maintenance ladder quickly and quietly using all four arms for stability",
+        "type": "generic",
+        "requestedBy": "dm",
+        "source": "narrative",
+        "requestedAt": "2026-06-10T04:52:49.242Z",
+        "createdAt": "2026-06-10T04:52:49.242Z",
+        "lastUpdatedAt": "2026-06-10T04:53:02.733Z",
+        "expiresAt": null,
+        "status": "cancelled",
+        "ability": "str",
+        "dc": 10,
+        "advantage": "normal",
+        "metadata": {
+          "rawRequest": "Roll Athletics (Strength) (DC 10) to descend the maintenance ladder quickly and quietly using all four arms for stability",
           "ability": "Strength",
           "abilityKey": "str",
           "checkType": "generic",
@@ -548,14 +1034,27 @@
             "name": "Dax Stargazer",
             "entityType": "player",
             "ability": "str",
-            "dc": 13,
+            "dc": 10,
             "advantage": "normal",
-            "status": "pending",
-            "result": null,
+            "status": "rolled",
+            "result": {
+              "total": 12,
+              "natural": 12,
+              "modifier": 0,
+              "formula": "1d20",
+              "rolls": [
+                12
+              ],
+              "auto": false,
+              "submittedBy": "Dax Stargazer",
+              "submittedAt": "2026-06-10T04:53:02.733Z",
+              "notes": null,
+              "metadata": {}
+            },
             "notes": null,
-            "submittedBy": null,
-            "submittedAt": null,
-            "lastUpdatedAt": "2025-12-29T10:13:26.806Z",
+            "submittedBy": "Dax Stargazer",
+            "submittedAt": "2026-06-10T04:53:02.733Z",
+            "lastUpdatedAt": "2026-06-10T04:53:02.733Z",
             "aliases": [
               "dax stargazer",
               "dax",
@@ -568,14 +1067,27 @@
             "name": "Chen",
             "entityType": "player",
             "ability": "str",
-            "dc": 13,
+            "dc": 10,
             "advantage": "normal",
-            "status": "pending",
-            "result": null,
+            "status": "auto",
+            "result": {
+              "total": 17,
+              "natural": 13,
+              "modifier": 4,
+              "formula": "1d20+4",
+              "rolls": [
+                13
+              ],
+              "auto": true,
+              "submittedBy": "auto-companion",
+              "submittedAt": "2026-06-10T04:52:49.252Z",
+              "notes": null,
+              "metadata": {}
+            },
             "notes": null,
-            "submittedBy": null,
-            "submittedAt": null,
-            "lastUpdatedAt": "2025-12-29T10:13:26.806Z",
+            "submittedBy": "auto-companion",
+            "submittedAt": "2026-06-10T04:52:49.252Z",
+            "lastUpdatedAt": "2026-06-10T04:52:49.252Z",
             "aliases": [
               "chen"
             ]
@@ -586,39 +1098,671 @@
             "name": "Dr. Yuen",
             "entityType": "player",
             "ability": "str",
-            "dc": 13,
+            "dc": 10,
             "advantage": "normal",
-            "status": "pending",
-            "result": null,
+            "status": "auto",
+            "result": {
+              "total": 18,
+              "natural": 19,
+              "modifier": -1,
+              "formula": "1d20-1",
+              "rolls": [
+                19
+              ],
+              "auto": true,
+              "submittedBy": "auto-companion",
+              "submittedAt": "2026-06-10T04:52:49.258Z",
+              "notes": null,
+              "metadata": {}
+            },
             "notes": null,
-            "submittedBy": null,
-            "submittedAt": null,
-            "lastUpdatedAt": "2025-12-29T10:13:26.806Z",
+            "submittedBy": "auto-companion",
+            "submittedAt": "2026-06-10T04:52:49.258Z",
+            "lastUpdatedAt": "2026-06-10T04:52:49.258Z",
             "aliases": [
               "dr. yuen",
               "dr.",
               "yuen"
             ]
           }
-        ]
+        ],
+        "results": [
+          {
+            "participantId": "chen",
+            "name": "Chen",
+            "status": "auto",
+            "total": 17,
+            "auto": true,
+            "submittedBy": "auto-companion",
+            "submittedAt": "2026-06-10T04:52:49.252Z"
+          },
+          {
+            "participantId": "yuen",
+            "name": "Dr. Yuen",
+            "status": "auto",
+            "total": 18,
+            "auto": true,
+            "submittedBy": "auto-companion",
+            "submittedAt": "2026-06-10T04:52:49.258Z"
+          },
+          {
+            "participantId": "dax",
+            "name": "Dax Stargazer",
+            "status": "rolled",
+            "total": 12,
+            "auto": false,
+            "submittedBy": "Dax Stargazer",
+            "submittedAt": "2026-06-10T04:53:02.733Z"
+          }
+        ],
+        "completedAt": "2026-06-10T04:53:02.733Z",
+        "cancelledAt": "2026-06-10T05:01:08.496Z",
+        "cancelReason": "rolled back"
       },
       {
-        "queueId": "rq-mjr06nhf-bwq7r",
+        "queueId": "rq-mq7p19b4-hdcfb",
         "campaignId": "dax",
-        "reason": "ROLL NEEDED: Roll Technology (Intelligence) (DC 14) to scan the crate remotely using the dock's sensors before anyone approaches it.",
+        "reason": "Roll Perception with advantage (DC 13) to notice anything unusual in the shaft or below \u2014 sounds, movement, light sources that shouldn't be there",
         "type": "generic",
         "requestedBy": "dm",
         "source": "narrative",
-        "requestedAt": "2025-12-29T10:16:11.619Z",
-        "createdAt": "2025-12-29T10:16:11.619Z",
-        "lastUpdatedAt": "2025-12-29T10:16:11.619Z",
+        "requestedAt": "2026-06-10T06:34:23.200Z",
+        "createdAt": "2026-06-10T06:34:23.200Z",
+        "lastUpdatedAt": "2026-06-10T06:34:41.123Z",
         "expiresAt": null,
-        "status": "pending",
-        "ability": "int",
+        "status": "complete",
+        "ability": "wis",
+        "dc": 13,
+        "advantage": "advantage",
+        "metadata": {
+          "rawRequest": "Roll Perception with advantage (DC 13) to notice anything unusual in the shaft or below \u2014 sounds, movement, light sources that shouldn't be there",
+          "ability": "Wisdom",
+          "abilityKey": "wis",
+          "checkType": "generic",
+          "autoCreated": true,
+          "combatAction": null
+        },
+        "participants": [
+          {
+            "participantId": "dax",
+            "id": "dax",
+            "name": "Dax Stargazer",
+            "entityType": "player",
+            "ability": "wis",
+            "dc": 13,
+            "advantage": "advantage",
+            "advantageReasons": [
+              "advantage (four arms gripping the ladder rungs provide exceptional stability, freeing Dax's compound eyes to actively scan in multiple directions during the descent)"
+            ],
+            "status": "rolled",
+            "result": {
+              "total": 17,
+              "natural": 16,
+              "modifier": 1,
+              "formula": "2d20kh1",
+              "rolls": [
+                16,
+                16
+              ],
+              "auto": false,
+              "submittedBy": "Dax Stargazer",
+              "submittedAt": "2026-06-10T06:34:41.123Z",
+              "notes": null,
+              "metadata": {}
+            },
+            "notes": null,
+            "submittedBy": "Dax Stargazer",
+            "submittedAt": "2026-06-10T06:34:41.123Z",
+            "lastUpdatedAt": "2026-06-10T06:34:41.123Z",
+            "aliases": [
+              "dax stargazer",
+              "dax",
+              "stargazer"
+            ]
+          }
+        ],
+        "results": [
+          {
+            "participantId": "dax",
+            "name": "Dax Stargazer",
+            "status": "rolled",
+            "total": 17,
+            "auto": false,
+            "submittedBy": "Dax Stargazer",
+            "submittedAt": "2026-06-10T06:34:41.123Z"
+          }
+        ],
+        "completedAt": "2026-06-10T06:34:41.123Z"
+      },
+      {
+        "queueId": "rq-mq7q7jsd-o1zks",
+        "campaignId": "dax",
+        "reason": "Roll Investigation (DC 14) to read the drag mark more carefully \u2014 how old is it, what made it, and does it connect to anything your Perception already flagged?",
+        "type": "generic",
+        "requestedBy": "dm",
+        "source": "narrative",
+        "requestedAt": "2026-06-10T07:07:16.333Z",
+        "createdAt": "2026-06-10T07:07:16.333Z",
+        "lastUpdatedAt": "2026-06-10T07:08:06.956Z",
+        "expiresAt": null,
+        "status": "complete",
+        "ability": "con",
         "dc": 14,
         "advantage": "normal",
         "metadata": {
-          "rawRequest": "ROLL NEEDED: Roll Technology (Intelligence) (DC 14) to scan the crate remotely using the dock's sensors before anyone approaches it.",
+          "rawRequest": "Roll Investigation (DC 14) to read the drag mark more carefully \u2014 how old is it, what made it, and does it connect to anything your Perception already flagged?",
+          "ability": "Constitution",
+          "abilityKey": "con",
+          "checkType": "generic",
+          "autoCreated": true,
+          "combatAction": null
+        },
+        "participants": [
+          {
+            "participantId": "dax",
+            "id": "dax",
+            "name": "Dax Stargazer",
+            "entityType": "player",
+            "ability": "con",
+            "dc": 14,
+            "advantage": "normal",
+            "status": "rolled",
+            "result": {
+              "total": 14,
+              "natural": 14,
+              "modifier": 0,
+              "formula": "1d20",
+              "rolls": [
+                14
+              ],
+              "auto": false,
+              "submittedBy": "Dax Stargazer",
+              "submittedAt": "2026-06-10T07:08:06.956Z",
+              "notes": null,
+              "metadata": {}
+            },
+            "notes": null,
+            "submittedBy": "Dax Stargazer",
+            "submittedAt": "2026-06-10T07:08:06.956Z",
+            "lastUpdatedAt": "2026-06-10T07:08:06.956Z",
+            "aliases": [
+              "dax stargazer",
+              "dax",
+              "stargazer"
+            ]
+          }
+        ],
+        "results": [
+          {
+            "participantId": "dax",
+            "name": "Dax Stargazer",
+            "status": "rolled",
+            "total": 14,
+            "auto": false,
+            "submittedBy": "Dax Stargazer",
+            "submittedAt": "2026-06-10T07:08:06.956Z"
+          }
+        ],
+        "completedAt": "2026-06-10T07:08:06.956Z"
+      },
+      {
+        "queueId": "rq-mq7q95vw-szg4r",
+        "campaignId": "dax",
+        "reason": "ROLL NEEDED: Roll Stealth (Dexterity) (DC 13) to move down the corridor quietly \u2014 the floor is damp and the conduit bundles overhead rattle with any vibration",
+        "type": "generic",
+        "requestedBy": "dm",
+        "source": "narrative-continue",
+        "requestedAt": "2026-06-10T07:08:31.628Z",
+        "createdAt": "2026-06-10T07:08:31.628Z",
+        "lastUpdatedAt": "2026-06-10T12:31:18.758Z",
+        "expiresAt": null,
+        "status": "complete",
+        "ability": "dex",
+        "dc": 13,
+        "advantage": "normal",
+        "metadata": {
+          "rawRequest": "ROLL NEEDED: Roll Stealth (Dexterity) (DC 13) to move down the corridor quietly \u2014 the floor is damp and the conduit bundles overhead rattle with any vibration",
+          "ability": "Dexterity",
+          "abilityKey": "dex",
+          "checkType": "generic",
+          "autoCreated": true,
+          "combatAction": null
+        },
+        "participants": [
+          {
+            "participantId": "dax",
+            "id": "dax",
+            "name": "Dax Stargazer",
+            "entityType": "player",
+            "ability": "dex",
+            "dc": 13,
+            "advantage": "normal",
+            "status": "rolled",
+            "result": {
+              "total": 6,
+              "natural": 4,
+              "modifier": 2,
+              "formula": "1d20",
+              "rolls": [
+                4
+              ],
+              "auto": false,
+              "submittedBy": "Dax Stargazer",
+              "submittedAt": "2026-06-10T12:31:18.758Z",
+              "notes": null,
+              "metadata": {}
+            },
+            "notes": null,
+            "submittedBy": "Dax Stargazer",
+            "submittedAt": "2026-06-10T12:31:18.758Z",
+            "lastUpdatedAt": "2026-06-10T12:31:18.758Z",
+            "aliases": [
+              "dax stargazer",
+              "dax",
+              "stargazer"
+            ]
+          },
+          {
+            "participantId": "chen",
+            "id": "chen",
+            "name": "Chen",
+            "entityType": "player",
+            "ability": "dex",
+            "dc": 13,
+            "advantage": "normal",
+            "status": "auto",
+            "result": {
+              "total": 9,
+              "natural": 8,
+              "modifier": 1,
+              "formula": "1d20+1",
+              "rolls": [
+                8
+              ],
+              "auto": true,
+              "submittedBy": "auto-companion",
+              "submittedAt": "2026-06-10T07:08:31.659Z",
+              "notes": null,
+              "metadata": {}
+            },
+            "notes": null,
+            "submittedBy": "auto-companion",
+            "submittedAt": "2026-06-10T07:08:31.659Z",
+            "lastUpdatedAt": "2026-06-10T07:08:31.659Z",
+            "aliases": [
+              "chen"
+            ]
+          },
+          {
+            "participantId": "yuen",
+            "id": "yuen",
+            "name": "Dr. Yuen",
+            "entityType": "player",
+            "ability": "dex",
+            "dc": 13,
+            "advantage": "normal",
+            "status": "auto",
+            "result": {
+              "total": 15,
+              "natural": 15,
+              "modifier": 0,
+              "formula": "1d20",
+              "rolls": [
+                15
+              ],
+              "auto": true,
+              "submittedBy": "auto-companion",
+              "submittedAt": "2026-06-10T07:08:31.664Z",
+              "notes": null,
+              "metadata": {}
+            },
+            "notes": null,
+            "submittedBy": "auto-companion",
+            "submittedAt": "2026-06-10T07:08:31.664Z",
+            "lastUpdatedAt": "2026-06-10T07:08:31.664Z",
+            "aliases": [
+              "dr. yuen",
+              "dr.",
+              "yuen"
+            ]
+          }
+        ],
+        "results": [
+          {
+            "participantId": "chen",
+            "name": "Chen",
+            "status": "auto",
+            "total": 9,
+            "auto": true,
+            "submittedBy": "auto-companion",
+            "submittedAt": "2026-06-10T07:08:31.659Z"
+          },
+          {
+            "participantId": "yuen",
+            "name": "Dr. Yuen",
+            "status": "auto",
+            "total": 15,
+            "auto": true,
+            "submittedBy": "auto-companion",
+            "submittedAt": "2026-06-10T07:08:31.664Z"
+          },
+          {
+            "participantId": "dax",
+            "name": "Dax Stargazer",
+            "status": "rolled",
+            "total": 6,
+            "auto": false,
+            "submittedBy": "Dax Stargazer",
+            "submittedAt": "2026-06-10T12:31:18.758Z"
+          }
+        ],
+        "completedAt": "2026-06-10T12:31:18.758Z"
+      },
+      {
+        "queueId": "rq-mq7qawdw-ijp2s",
+        "campaignId": "dax",
+        "reason": "ROLL NEEDED: Roll Perception (Wisdom) (DC 13) to listen down the left-hand corridor before committing to a direction \u2014 is whatever left that mark still nearby?",
+        "type": "generic",
+        "requestedBy": "dm",
+        "source": "narrative-continue",
+        "requestedAt": "2026-06-10T07:09:52.628Z",
+        "createdAt": "2026-06-10T07:09:52.628Z",
+        "lastUpdatedAt": "2026-06-10T07:15:01.968Z",
+        "expiresAt": null,
+        "status": "cancelled",
+        "ability": "wis",
+        "dc": 13,
+        "advantage": "normal",
+        "metadata": {
+          "rawRequest": "ROLL NEEDED: Roll Perception (Wisdom) (DC 13) to listen down the left-hand corridor before committing to a direction \u2014 is whatever left that mark still nearby?",
+          "ability": "Wisdom",
+          "abilityKey": "wis",
+          "checkType": "generic",
+          "autoCreated": true,
+          "combatAction": null
+        },
+        "participants": [
+          {
+            "participantId": "dax",
+            "id": "dax",
+            "name": "Dax Stargazer",
+            "entityType": "player",
+            "ability": "wis",
+            "dc": 13,
+            "advantage": "normal",
+            "status": "rolled",
+            "result": {
+              "total": 5,
+              "natural": 2,
+              "modifier": 3,
+              "formula": "1d20",
+              "rolls": [
+                2
+              ],
+              "auto": false,
+              "submittedBy": "Dax Stargazer",
+              "submittedAt": "2026-06-10T07:15:01.968Z",
+              "notes": null,
+              "metadata": {}
+            },
+            "notes": null,
+            "submittedBy": "Dax Stargazer",
+            "submittedAt": "2026-06-10T07:15:01.968Z",
+            "lastUpdatedAt": "2026-06-10T07:15:01.968Z",
+            "aliases": [
+              "dax stargazer",
+              "dax",
+              "stargazer"
+            ]
+          },
+          {
+            "participantId": "chen",
+            "id": "chen",
+            "name": "Chen",
+            "entityType": "player",
+            "ability": "wis",
+            "dc": 13,
+            "advantage": "normal",
+            "status": "auto",
+            "result": {
+              "total": 8,
+              "natural": 8,
+              "modifier": 0,
+              "formula": "1d20",
+              "rolls": [
+                8
+              ],
+              "auto": true,
+              "submittedBy": "auto-companion",
+              "submittedAt": "2026-06-10T07:09:52.633Z",
+              "notes": null,
+              "metadata": {}
+            },
+            "notes": null,
+            "submittedBy": "auto-companion",
+            "submittedAt": "2026-06-10T07:09:52.633Z",
+            "lastUpdatedAt": "2026-06-10T07:09:52.633Z",
+            "aliases": [
+              "chen"
+            ]
+          },
+          {
+            "participantId": "yuen",
+            "id": "yuen",
+            "name": "Dr. Yuen",
+            "entityType": "player",
+            "ability": "wis",
+            "dc": 13,
+            "advantage": "normal",
+            "status": "auto",
+            "result": {
+              "total": 16,
+              "natural": 15,
+              "modifier": 1,
+              "formula": "1d20+1",
+              "rolls": [
+                15
+              ],
+              "auto": true,
+              "submittedBy": "auto-companion",
+              "submittedAt": "2026-06-10T07:09:52.639Z",
+              "notes": null,
+              "metadata": {}
+            },
+            "notes": null,
+            "submittedBy": "auto-companion",
+            "submittedAt": "2026-06-10T07:09:52.639Z",
+            "lastUpdatedAt": "2026-06-10T07:09:52.639Z",
+            "aliases": [
+              "dr. yuen",
+              "dr.",
+              "yuen"
+            ]
+          }
+        ],
+        "results": [
+          {
+            "participantId": "chen",
+            "name": "Chen",
+            "status": "auto",
+            "total": 8,
+            "auto": true,
+            "submittedBy": "auto-companion",
+            "submittedAt": "2026-06-10T07:09:52.633Z"
+          },
+          {
+            "participantId": "yuen",
+            "name": "Dr. Yuen",
+            "status": "auto",
+            "total": 16,
+            "auto": true,
+            "submittedBy": "auto-companion",
+            "submittedAt": "2026-06-10T07:09:52.639Z"
+          },
+          {
+            "participantId": "dax",
+            "name": "Dax Stargazer",
+            "status": "rolled",
+            "total": 5,
+            "auto": false,
+            "submittedBy": "Dax Stargazer",
+            "submittedAt": "2026-06-10T07:15:01.968Z"
+          }
+        ],
+        "completedAt": "2026-06-10T07:15:01.968Z",
+        "cancelledAt": "2026-06-10T07:20:37.970Z",
+        "cancelReason": "rolled back"
+      },
+      {
+        "queueId": "rq-mq7qi34h-9j63z",
+        "campaignId": "dax",
+        "reason": "ROLL NEEDED: Roll Investigation (Intelligence) (DC 12) to read the drag mark's endpoint \u2014 does it terminate under the right-hand passage, or does it continue past it toward the relay node's sector?",
+        "type": "generic",
+        "requestedBy": "dm",
+        "source": "narrative-continue",
+        "requestedAt": "2026-06-10T07:15:27.953Z",
+        "createdAt": "2026-06-10T07:15:27.953Z",
+        "lastUpdatedAt": "2026-06-10T07:15:27.972Z",
+        "expiresAt": null,
+        "status": "cancelled",
+        "ability": "con",
+        "dc": 12,
+        "advantage": "normal",
+        "metadata": {
+          "rawRequest": "ROLL NEEDED: Roll Investigation (Intelligence) (DC 12) to read the drag mark's endpoint \u2014 does it terminate under the right-hand passage, or does it continue past it toward the relay node's sector?",
+          "ability": "Constitution",
+          "abilityKey": "con",
+          "checkType": "generic",
+          "autoCreated": true,
+          "combatAction": null
+        },
+        "participants": [
+          {
+            "participantId": "dax",
+            "id": "dax",
+            "name": "Dax Stargazer",
+            "entityType": "player",
+            "ability": "con",
+            "dc": 12,
+            "advantage": "normal",
+            "status": "cancelled",
+            "result": null,
+            "notes": null,
+            "submittedBy": null,
+            "submittedAt": null,
+            "lastUpdatedAt": "2026-06-10T07:15:27.953Z",
+            "aliases": [
+              "dax stargazer",
+              "dax",
+              "stargazer"
+            ]
+          },
+          {
+            "participantId": "chen",
+            "id": "chen",
+            "name": "Chen",
+            "entityType": "player",
+            "ability": "con",
+            "dc": 12,
+            "advantage": "normal",
+            "status": "auto",
+            "result": {
+              "total": 18,
+              "natural": 16,
+              "modifier": 2,
+              "formula": "1d20+2",
+              "rolls": [
+                16
+              ],
+              "auto": true,
+              "submittedBy": "auto-companion",
+              "submittedAt": "2026-06-10T07:15:27.967Z",
+              "notes": null,
+              "metadata": {}
+            },
+            "notes": null,
+            "submittedBy": "auto-companion",
+            "submittedAt": "2026-06-10T07:15:27.967Z",
+            "lastUpdatedAt": "2026-06-10T07:15:27.967Z",
+            "aliases": [
+              "chen"
+            ]
+          },
+          {
+            "participantId": "yuen",
+            "id": "yuen",
+            "name": "Dr. Yuen",
+            "entityType": "player",
+            "ability": "con",
+            "dc": 12,
+            "advantage": "normal",
+            "status": "auto",
+            "result": {
+              "total": 14,
+              "natural": 13,
+              "modifier": 1,
+              "formula": "1d20+1",
+              "rolls": [
+                13
+              ],
+              "auto": true,
+              "submittedBy": "auto-companion",
+              "submittedAt": "2026-06-10T07:15:27.972Z",
+              "notes": null,
+              "metadata": {}
+            },
+            "notes": null,
+            "submittedBy": "auto-companion",
+            "submittedAt": "2026-06-10T07:15:27.972Z",
+            "lastUpdatedAt": "2026-06-10T07:15:27.972Z",
+            "aliases": [
+              "dr. yuen",
+              "dr.",
+              "yuen"
+            ]
+          }
+        ],
+        "results": [
+          {
+            "participantId": "chen",
+            "name": "Chen",
+            "status": "auto",
+            "total": 18,
+            "auto": true,
+            "submittedBy": "auto-companion",
+            "submittedAt": "2026-06-10T07:15:27.967Z"
+          },
+          {
+            "participantId": "yuen",
+            "name": "Dr. Yuen",
+            "status": "auto",
+            "total": 14,
+            "auto": true,
+            "submittedBy": "auto-companion",
+            "submittedAt": "2026-06-10T07:15:27.972Z"
+          }
+        ],
+        "completedAt": null,
+        "cancelledAt": "2026-06-10T07:20:37.970Z",
+        "cancelReason": "rolled back"
+      },
+      {
+        "queueId": "rq-mq82dfr4-08mjt",
+        "campaignId": "dax",
+        "reason": "ROLL NEEDED: Roll Technology (Intelligence) (DC 13) to tap Titan Station's maintenance sensor network and read what's waiting past that junction",
+        "type": "generic",
+        "requestedBy": "dm",
+        "source": "narrative",
+        "requestedAt": "2026-06-10T12:47:46.432Z",
+        "createdAt": "2026-06-10T12:47:46.432Z",
+        "lastUpdatedAt": "2026-06-10T12:48:04.149Z",
+        "expiresAt": null,
+        "status": "complete",
+        "ability": "int",
+        "dc": 13,
+        "advantage": "normal",
+        "metadata": {
+          "rawRequest": "ROLL NEEDED: Roll Technology (Intelligence) (DC 13) to tap Titan Station's maintenance sensor network and read what's waiting past that junction",
           "ability": "Intelligence",
           "abilityKey": "int",
           "checkType": "generic",
@@ -632,143 +1776,174 @@
             "name": "Dax Stargazer",
             "entityType": "player",
             "ability": "int",
-            "dc": 14,
+            "dc": 13,
             "advantage": "normal",
-            "status": "pending",
-            "result": null,
+            "status": "rolled",
+            "result": {
+              "total": 13,
+              "natural": 7,
+              "modifier": 6,
+              "formula": "1d20",
+              "rolls": [
+                7
+              ],
+              "auto": false,
+              "submittedBy": "Dax Stargazer",
+              "submittedAt": "2026-06-10T12:48:04.149Z",
+              "notes": null,
+              "metadata": {}
+            },
             "notes": null,
-            "submittedBy": null,
-            "submittedAt": null,
-            "lastUpdatedAt": "2025-12-29T10:16:11.619Z",
+            "submittedBy": "Dax Stargazer",
+            "submittedAt": "2026-06-10T12:48:04.149Z",
+            "lastUpdatedAt": "2026-06-10T12:48:04.149Z",
             "aliases": [
               "dax stargazer",
               "dax",
               "stargazer"
             ]
-          },
+          }
+        ],
+        "results": [
           {
-            "participantId": "chen",
-            "id": "chen",
-            "name": "Chen",
+            "participantId": "dax",
+            "name": "Dax Stargazer",
+            "status": "rolled",
+            "total": 13,
+            "auto": false,
+            "submittedBy": "Dax Stargazer",
+            "submittedAt": "2026-06-10T12:48:04.149Z"
+          }
+        ],
+        "completedAt": "2026-06-10T12:48:04.149Z"
+      },
+      {
+        "queueId": "rq-mq82gj8j-3yz0w",
+        "campaignId": "dax",
+        "reason": "ROLL NEEDED: Roll Stealth (Dexterity) with disadvantage (DC 14) to edge closer to the junction without waking it \u2014 the earlier noise already set a fragile baseline, and the wet floor punishes every misplaced step",
+        "type": "generic",
+        "requestedBy": "dm",
+        "source": "narrative",
+        "requestedAt": "2026-06-10T12:50:10.915Z",
+        "createdAt": "2026-06-10T12:50:10.915Z",
+        "lastUpdatedAt": "2026-06-10T12:50:29.815Z",
+        "expiresAt": null,
+        "status": "complete",
+        "ability": "dex",
+        "dc": 14,
+        "advantage": "advantage",
+        "metadata": {
+          "rawRequest": "ROLL NEEDED: Roll Stealth (Dexterity) with disadvantage (DC 14) to edge closer to the junction without waking it \u2014 the earlier noise already set a fragile baseline, and the wet floor punishes every misplaced step",
+          "ability": "Dexterity",
+          "abilityKey": "dex",
+          "checkType": "generic",
+          "autoCreated": true,
+          "combatAction": null
+        },
+        "participants": [
+          {
+            "participantId": "dax",
+            "id": "dax",
+            "name": "Dax Stargazer",
             "entityType": "player",
-            "ability": "int",
+            "ability": "dex",
             "dc": 14,
-            "advantage": "normal",
-            "status": "pending",
-            "result": null,
+            "advantage": "disadvantage",
+            "advantageReasons": [
+              "disadvantage (Dax already made noise earlier (Stealth roll of 6), and the corridor floor is wet and uneven \u2014 the thing ahead may already be in a lighter sleep state)"
+            ],
+            "status": "rolled",
+            "result": {
+              "total": 16,
+              "natural": 14,
+              "modifier": 2,
+              "formula": "2d20kl1",
+              "rolls": [
+                14,
+                19
+              ],
+              "auto": false,
+              "submittedBy": "Dax Stargazer",
+              "submittedAt": "2026-06-10T12:50:29.815Z",
+              "notes": null,
+              "metadata": {}
+            },
             "notes": null,
-            "submittedBy": null,
-            "submittedAt": null,
-            "lastUpdatedAt": "2025-12-29T10:16:11.619Z",
+            "submittedBy": "Dax Stargazer",
+            "submittedAt": "2026-06-10T12:50:29.815Z",
+            "lastUpdatedAt": "2026-06-10T12:50:29.815Z",
             "aliases": [
-              "chen"
+              "dax stargazer",
+              "dax",
+              "stargazer"
             ]
-          },
+          }
+        ],
+        "results": [
           {
-            "participantId": "yuen",
-            "id": "yuen",
-            "name": "Dr. Yuen",
+            "participantId": "dax",
+            "name": "Dax Stargazer",
+            "status": "rolled",
+            "total": 16,
+            "auto": false,
+            "submittedBy": "Dax Stargazer",
+            "submittedAt": "2026-06-10T12:50:29.815Z"
+          }
+        ],
+        "completedAt": "2026-06-10T12:50:29.815Z"
+      },
+      {
+        "queueId": "rq-mq836tfb-cr7li",
+        "campaignId": "dax",
+        "reason": "Roll Investigation (Intelligence) (DC 13) to read the blueprints more carefully \u2014 there may be a third option in the Sub-Level 4 layout that doesn't require anyone to pass the creature first.",
+        "type": "generic",
+        "requestedBy": "dm",
+        "source": "narrative",
+        "requestedAt": "2026-06-10T13:10:37.175Z",
+        "createdAt": "2026-06-10T13:10:37.175Z",
+        "lastUpdatedAt": "2026-06-10T13:10:37.175Z",
+        "expiresAt": null,
+        "status": "pending",
+        "ability": "int",
+        "dc": 13,
+        "advantage": "normal",
+        "metadata": {
+          "rawRequest": "Roll Investigation (Intelligence) (DC 13) to read the blueprints more carefully \u2014 there may be a third option in the Sub-Level 4 layout that doesn't require anyone to pass the creature first.",
+          "ability": "Intelligence",
+          "abilityKey": "int",
+          "checkType": "generic",
+          "autoCreated": true,
+          "combatAction": null
+        },
+        "participants": [
+          {
+            "participantId": "dax",
+            "id": "dax",
+            "name": "Dax Stargazer",
             "entityType": "player",
             "ability": "int",
-            "dc": 14,
+            "dc": 13,
             "advantage": "normal",
             "status": "pending",
             "result": null,
             "notes": null,
             "submittedBy": null,
             "submittedAt": null,
-            "lastUpdatedAt": "2025-12-29T10:16:11.619Z",
+            "lastUpdatedAt": "2026-06-10T13:10:37.175Z",
             "aliases": [
-              "dr. yuen",
-              "dr.",
-              "yuen"
+              "dax stargazer",
+              "dax",
+              "stargazer"
             ]
           }
         ]
       }
     ],
-    "pending": true,
-    "enemyInitiatives": [
-      {
-        "id": "enemy-0",
-        "name": "Osprey Operative 1 (Lead)",
-        "type": "enemy",
-        "isPlayer": false,
-        "initiative": 11,
-        "hp": {
-          "current": 45,
-          "max": 45
-        },
-        "ac": 16
-      },
-      {
-        "id": "enemy-1",
-        "name": "Osprey Operative 2",
-        "type": "enemy",
-        "isPlayer": false,
-        "initiative": 17,
-        "hp": {
-          "current": 38,
-          "max": 38
-        },
-        "ac": 15
-      },
-      {
-        "id": "enemy-2",
-        "name": "Osprey Operative 3",
-        "type": "enemy",
-        "isPlayer": false,
-        "initiative": 16,
-        "hp": {
-          "current": 38,
-          "max": 38
-        },
-        "ac": 15
-      }
-    ],
-    "playerCharacters": [
-      {
-        "id": "dax",
-        "name": "Dax Stargazer",
-        "type": "player",
-        "isPlayer": true,
-        "initiative": null,
-        "dexMod": 0,
-        "hp": {
-          "current": 9,
-          "max": 9
-        },
-        "ac": 10
-      },
-      {
-        "id": "chen",
-        "name": "Chen",
-        "type": "player",
-        "isPlayer": true,
-        "initiative": null,
-        "dexMod": 0,
-        "hp": {
-          "current": 24,
-          "max": 24
-        },
-        "ac": 10
-      },
-      {
-        "id": "yuen",
-        "name": "Dr. Yuen",
-        "type": "player",
-        "isPlayer": true,
-        "initiative": null,
-        "dexMod": 0,
-        "hp": {
-          "current": 16,
-          "max": 16
-        },
-        "ac": 10
-      }
-    ],
+    "pending": false,
+    "enemyInitiatives": [],
+    "playerCharacters": [],
     "surprise": "none",
-    "startTime": "2025-12-22T13:51:48.338Z",
+    "startTime": null,
     "deathSaves": {},
     "combatState": "IDLE"
   },
@@ -779,7 +1954,12 @@
       "role": "Director of Titan Station",
       "status": "alive",
       "location": "Security Command Center",
-      "notes": "Full station authority. Invoked Protocol Seven to freeze Weyland assets."
+      "notes": "Full station authority. Invoked Protocol Seven to freeze Weyland assets.",
+      "tier": "npc",
+      "station": null,
+      "history": [
+        "scene #47 @ Security Command Center, Titan Station"
+      ]
     },
     "torres": {
       "name": "Commander Torres",
@@ -787,7 +1967,12 @@
       "role": "Security Commander, Titan Station",
       "status": "alive",
       "location": "Security Command Center",
-      "notes": "Holbrook's tactical right hand. Armed with assault rifle."
+      "notes": "Holbrook's tactical right hand. Armed with assault rifle.",
+      "tier": "npc",
+      "station": null,
+      "history": [
+        "scene #47 @ Security Command Center, Titan Station"
+      ]
     },
     "morrison": {
       "name": "Captain Morrison",
@@ -795,15 +1980,19 @@
       "role": "Captain of U.E.S. Wanderer",
       "status": "dead",
       "location": null,
-      "notes": "Died maintaining quarantine to protect others. Approved Weyland cargo unknowingly. Regarded as a hero."
+      "notes": "Died maintaining quarantine to protect others. Approved Weyland cargo unknowingly. Regarded as a hero.",
+      "tier": "npc",
+      "station": null
     },
     "kellerman": {
       "name": "Miranda Kellerman",
       "pronouns": "she/her",
       "role": "Senior Legal Counsel, Weyland Biosystems",
       "status": "alive",
-      "location": "Unknown — retreated after legal defeat",
-      "notes": "Attempted intimidation and bribery. Made 73+ unanswered calls to Dr. Yuen."
+      "location": "Unknown \u2014 retreated after legal defeat",
+      "notes": "Attempted intimidation and bribery. Made 73+ unanswered calls to Dr. Yuen.",
+      "tier": "npc",
+      "station": null
     },
     "park": {
       "name": "Jonathan Park",
@@ -811,7 +2000,9 @@
       "role": "U.E.S. Representative, Titan Station",
       "status": "alive",
       "location": "U.E.S. local office",
-      "notes": "Ineffectual middle manager. Will leak anything told to him."
+      "notes": "Ineffectual middle manager. Will leak anything told to him.",
+      "tier": "npc",
+      "station": null
     },
     "vance": {
       "name": "Vance (callsign Raven)",
@@ -819,7 +2010,9 @@
       "role": "Osprey Security team lead (PMC, Weyland contractor)",
       "status": "alive",
       "location": "Departed Dock 7",
-      "notes": "Negotiated withdrawal. Carried unidentified shielded device on departure."
+      "notes": "Negotiated withdrawal. Carried unidentified shielded device on departure.",
+      "tier": "npc",
+      "station": null
     },
     "rostova": {
       "name": "Officer Rostova",
@@ -827,7 +2020,9 @@
       "role": "Ship officer, U.E.S. Wanderer",
       "status": "dead",
       "location": null,
-      "notes": "Found dead in Central Hub. Left armory code 7355."
+      "notes": "Found dead in Central Hub. Left armory code 7355.",
+      "tier": "npc",
+      "station": null
     },
     "martinez": {
       "name": "Martinez",
@@ -835,30 +2030,50 @@
       "role": "Crew member / data logger, U.E.S. Wanderer",
       "status": "dead",
       "location": null,
-      "notes": "Military background. Pulled into vent by creatures. His data log became key legal evidence. Do NOT use this name for living NPCs."
+      "notes": "Military background. Pulled into vent by creatures. His data log became key legal evidence. Do NOT use this name for living NPCs.",
+      "tier": "npc",
+      "station": null
     },
     "okafor": {
       "name": "Zara Okafor",
       "pronouns": "she/her",
-      "role": "Former Colonial Marine, potential recruit",
+      "role": "Former Colonial Marine",
       "status": "alive",
       "location": "Titan Station",
-      "notes": "Explosives specialist, CQC expert, 8 years service, honorable discharge. Passed background check. Party wants to meet her formally."
+      "notes": "Explosives specialist, CQC expert, 8 years service, honorable discharge. Background check passed. Not yet introduced to party.",
+      "tier": "npc",
+      "station": null
     }
   },
   "current_scene": {
-    "scene_id": 47,
-    "location": "Security Command Center, Titan Station",
+    "scene_id": 51,
+    "location": "Sub-Level 4 Maintenance Corridor, Titan Station",
     "npcs_present": [
-      "Director Holbrook",
-      "Commander Torres"
+      "Chen"
     ],
     "npcs_departed": [
-      "Vance",
-      "Osprey Team"
+      "Chen"
     ],
-    "situation": "Osprey has departed Dock 7. Team analyzing encrypted packet and planning next move on Weyland.",
-    "last_action": "Dax Stargazer: rolled D20 with a natural 17, modifier +6, for a total of 23. [This roll is for: NEED...",
-    "pending": "Technology"
-  }
+    "situation": "Dax and Chen have moved from the base of the shaft into the corridor proper and are now approaching the T-junction",
+    "last_action": "Dax Stargazer: dax remarks that there's not much they're gonna do with a datapad and a repair kit. i...",
+    "pending": "Investigation"
+  },
+  "sessions": [
+    {
+      "id": "session-1",
+      "startedAt": "2026-06-10T04:19:03.523Z",
+      "endedAt": null,
+      "summary": null
+    }
+  ],
+  "arcSummaries": [
+    {
+      "id": "arc-backfill-1",
+      "fromScene": 1,
+      "toScene": 50,
+      "summary": "**STORY SO FAR:**\n\nIn the aftermath of the catastrophic *Wanderer Incident*, Dax Stargazer, a Vexian tech specialist, along with his companions Chen and Dr. Yuen, narrowly escaped the alien Skitterer infestation that claimed the lives of most of their crew, including Captain Morrison, who sacrificed himself for their survival. The trio's harrowing escape led them to Titan Station, a corporate and governmental hub where they now seek to uncover the truth behind Weyland Biosystems' involvement in the disaster. As they navigate the political landscape, they face the looming threat of Osprey Corporation, a private military contractor hired by Weyland to extract xenobiological data, which they successfully negotiated to withdraw from Titan Station, leaving behind crucial evidence of corporate espionage.\n\nOn Titan Station, Dax and his team have forged a bond through shared trauma, with Dax stepping into a leadership role, driven by a desire to honor Morrison's sacrifice and protect his crew. They have gathered critical evidence, including Officer Rostova's armory code and Martinez's data log, which implicates Weyland in the creation of the Skitterers. Their efforts culminated in a tense legal confrontation with Weyland representatives, where Dax's technical expertise and strategic thinking helped dismantle the corporation's arguments. However, their victory is overshadowed by the threat of Osprey and the ongoing corporate machinations that could jeopardize their safety.\n\nAs they prepare for the next phase of their mission, Dax's team is on high alert, having successfully navigated a series of tense negotiations and confrontations. They have secured a potential fourth member, Zara Okafor, and are strategizing their next moves to expose Weyland's wrongdoing while ensuring their own survival amidst the corporate intrigue. With the stakes higher than ever, the crew must remain vigilant as they delve deeper into the conspiracy surrounding the *Wanderer Incident* and the dark secrets of Weyland Biosystems.",
+      "ts": "2026-06-10T07:30:00Z",
+      "source": "backfill from RAG episodes"
+    }
+  ]
 }
