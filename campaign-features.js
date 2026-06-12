@@ -66,6 +66,29 @@ const campaignFeatures = {
         maxEpisodeAge: 100,      // Long campaign - all 47+ scenes reachable
         ragResultCount: 8        // More history = more context needed
     },
+    // Sandbox clone of dax for prompt-consistency evals — no RAG/DB so trials
+    // are cheap and self-contained; otherwise mirrors dax behavior
+    'dax-eval': {
+        usesDatabase: false,
+        usesRAG: false,
+        genre: 'scifi',
+        structure: 'characters',
+        hasCombat: false,
+        hasRollQueue: true,
+        hasEquipmentAPI: false,
+        hasSpellsAPI: false,
+        hasConditionsAPI: false,
+        hasCreditsAPI: false,
+        hasHpAPI: false,
+        hasEventsAPI: false,
+        hasQuestsAPI: false,
+        hasShipStatus: true,
+        hasSceneGenerator: false,
+        hasInventoryAPI: false,
+        narrativeCombat: true,
+        singlePlayerCompanions: true,
+        disabledTools: ['start_combat']
+    },
     'default': {
         usesDatabase: false,
         usesRAG: false,

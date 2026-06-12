@@ -133,6 +133,12 @@
       ::-webkit-scrollbar-thumb:hover {
         background: rgba(150, 150, 150, 0.4);
       }
+
+      /* Force codex left panel visible on desktop via pure CSS, no Tailwind CDN dependency */
+      @media (min-width: 768px) {
+        aside[style*="order: 1"] { display: flex !important; }
+        aside[style*="order:1"] { display: flex !important; }
+      }
     </style>
   <script type="importmap">
 {
@@ -147,6 +153,9 @@
 </script>
 </head>
   <body>
+    <div style="position:fixed;right:8px;top:8px;z-index:99999;background:#00131a;color:#22d3ee;border:1px solid rgba(34,211,238,.7);border-radius:8px;padding:4px 8px;font:700 10px JetBrains Mono,monospace;letter-spacing:.12em;text-transform:uppercase;pointer-events:none">
+      HTML LIVE 2026-06-08
+    </div>
     <div id="root"></div>
   <script type="module" src="/index.tsx"></script>
 </body>

@@ -31,8 +31,76 @@ const { CombatStateMachine, STATE } = require('./combat-state-machine');
 const KeywordTransitionDetector = require('./keyword-transition-detector');
 const xpCalculator = require('./xp-calculator');
 const lootGenerator = require('./loot-generator-dmg');
+const mutationLedger = require('./mutation-ledger');
+const conditionEffects = require('./condition-effects');
+const zoneTracker = require('./zone-tracker');
 
 const rulesLookupService = new DnDRulesService();
+
+// Sentinel separating stable / semi-stable / volatile prompt sections.
+// buildSmartPrompt emits it; the Claude provider splits on it to place
+// prompt-cache breakpoints (prefix-match caching: stable content first).
+const PROMPT_CACHE_BREAK = '\n<!--PROMPT_CACHE_BREAK-->\n';
+
+// Coin values in gold pieces (D&D 5e standard)
+const COIN_GP_VALUES = { cp: 0.01, sp: 0.1, ep: 0.5, gp: 1, pp: 10 };
+
+/**
+ * Convert a raw loot-generator result into the offer shape the frontend
+ * LootDistributionCard expects: { lootId, coins: {totalGP, breakdown}, items }.
+ */
+function convertLootForOffer(rawLoot) {
+    if (!rawLoot) return null;
+    const breakdown = {};
+    let totalGP = 0;
+    for (const [type, amount] of Object.entries(rawLoot.coins || {})) {
+        if (!amount) continue;
+        breakdown[type] = amount;
+        totalGP += amount * (COIN_GP_VALUES[type] || 0);
+    }
+    const items = [...(rawLoot.items || []), ...(rawLoot.questItems || [])].map(item => ({
+        name: item.name,
+        type: item.type || 'misc',
+        quantity: item.quantity || 1,
+        sellValue: item.sellValue ?? item.value ?? undefined,
+        rarity: item.rarity || undefined,
+        description: item.description || undefined
+    }));
+    return {
+        lootId: `loot-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        coins: { totalGP: Math.round(totalGP), breakdown },
+        items,
+        lootType: rawLoot.lootType || 'individual'
+    };
+}
+
+/**
+ * Detect a continuation that re-narrates the previous DM message instead of
+ * advancing: if the new narrative's opening (~120 normalized chars) appears
+ * verbatim inside the previous narrative, it's a retread.
+ */
+function isRetreadNarration(prevNarrative, newNarrative) {
+    const norm = s => (s || '').toLowerCase().replace(/[^a-z0-9 ]/g, '').replace(/\s+/g, ' ').trim();
+    const probe = norm(newNarrative).slice(0, 120);
+    if (probe.length < 80) return false;
+    return norm(prevNarrative).includes(probe);
+}
+
+/**
+ * Map a loot item type to an inventory category for applyCharacterUpdate.
+ */
+function lootTypeToCategory(type) {
+    switch (type) {
+        case 'weapon': return 'weapon';
+        case 'armor': return 'armor';
+        case 'consumable': return 'consumable';
+        case 'gem':
+        case 'art': return 'treasure';
+        case 'magic_item': return 'misc';
+        case 'quest_item': return 'misc';
+        default: return 'misc';
+    }
+}
 
 // ==================== INPUT VALIDATION ====================
 
@@ -111,6 +179,111 @@ function validateMode(mode) {
         valid: validModes.includes(m),
         sanitized: validModes.includes(m) ? m : 'ic'
     };
+}
+
+function extractFirstJsonObject(text) {
+    if (!text || typeof text !== 'string') return null;
+
+    const trimmed = text.trim();
+    if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+        try {
+            return JSON.parse(trimmed);
+        } catch {
+            // Fall through to balanced extraction below.
+        }
+    }
+
+    const start = text.indexOf('{');
+    if (start === -1) return null;
+
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+
+    for (let i = start; i < text.length; i++) {
+        const ch = text[i];
+
+        if (inString) {
+            if (escaped) {
+                escaped = false;
+            } else if (ch === '\\') {
+                escaped = true;
+            } else if (ch === '"') {
+                inString = false;
+            }
+            continue;
+        }
+
+        if (ch === '"') {
+            inString = true;
+        } else if (ch === '{') {
+            depth++;
+        } else if (ch === '}') {
+            depth--;
+            if (depth === 0) {
+                return JSON.parse(text.slice(start, i + 1));
+            }
+        }
+    }
+
+    return null;
+}
+
+function isPlainObject(value) {
+    return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function validateExtractedStateChanges(changes) {
+    if (!isPlainObject(changes)) return {};
+
+    const allowedTopLevel = new Set([
+        'party', 'characters', 'resources', 'inventory', 'hp', 'conditions', 'ship', 'combat', 'credits'
+    ]);
+
+    return Object.fromEntries(
+        Object.entries(changes).filter(([key, value]) =>
+            allowedTopLevel.has(key) && value !== undefined && value !== null
+        )
+    );
+}
+
+async function atomicWriteFile(filePath, data) {
+    const dir = path.dirname(filePath);
+    const base = path.basename(filePath);
+    const tempPath = path.join(dir, `.${base}.${process.pid}.${Date.now()}.tmp`);
+
+    await fs.mkdir(dir, { recursive: true });
+    try {
+        await fs.writeFile(tempPath, data);
+        const handle = await fs.open(tempPath, 'r');
+        try {
+            await handle.sync();
+        } finally {
+            await handle.close();
+        }
+
+        await fs.rename(tempPath, filePath);
+
+        try {
+            const dirHandle = await fs.open(dir, 'r');
+            try {
+                await dirHandle.sync();
+            } finally {
+                await dirHandle.close();
+            }
+        } catch (error) {
+            if (!['EINVAL', 'EPERM', 'EISDIR'].includes(error.code)) {
+                throw error;
+            }
+        }
+    } catch (error) {
+        try {
+            await fs.unlink(tempPath);
+        } catch {
+            // Best effort cleanup only.
+        }
+        throw error;
+    }
 }
 
 // ==================== AI PROVIDER SYSTEM ====================
@@ -199,8 +372,8 @@ class AIProviderManager {
      * Generate a cheap/fast response using gpt-4o-mini
      * Used for Pass A scene verification to save cost and latency
      */
-    async generateCheapResponse(system, messages) {
-        return await this.cheapProvider.generateResponse(system, messages);
+    async generateCheapResponse(system, messages, options = {}) {
+        return await this.cheapProvider.generateResponse(system, messages, undefined, options);
     }
 }
 
@@ -293,7 +466,7 @@ class ClaudeProvider extends BaseAIProvider {
             // === STATE MUTATION TOOLS (modify game state) ===
             {
                 "name": "update_character",
-                "description": "Update a character's state when HP, conditions, inventory, or resources change. ALWAYS call this when narrating damage, healing, gaining/losing items, or status effects.",
+                "description": "Update a character's conditions, inventory, or gold/credits. ALWAYS call this when narrating gained/lost items, status effects, or money changes. For damage/healing use apply_damage instead (it validates against rolls).",
                 "input_schema": {
                     "type": "object",
                     "properties": {
@@ -307,8 +480,21 @@ class ClaudeProvider extends BaseAIProvider {
                         },
                         "add_conditions": {
                             "type": "array",
-                            "items": { "type": "string" },
-                            "description": "Conditions to add (e.g., ['Prone', 'Poisoned'])"
+                            "items": {
+                                "anyOf": [
+                                    { "type": "string" },
+                                    {
+                                        "type": "object",
+                                        "properties": {
+                                            "name": { "type": "string", "description": "Condition name (e.g., 'poisoned')" },
+                                            "source": { "type": "string", "description": "What caused it (e.g., 'spider bite')" },
+                                            "duration_rounds": { "type": "integer", "description": "Rounds until auto-expiry (omit for indefinite). Counts down at the start of the character's turns." }
+                                        },
+                                        "required": ["name"]
+                                    }
+                                ]
+                            },
+                            "description": "Conditions to add. Use object form with duration_rounds for timed effects — the server expires them automatically (e.g., [{name: 'poisoned', source: 'spider bite', duration_rounds: 3}])."
                         },
                         "remove_conditions": {
                             "type": "array",
@@ -345,6 +531,41 @@ class ClaudeProvider extends BaseAIProvider {
                 }
             },
             {
+                "name": "apply_damage",
+                "description": "Apply damage or healing to ANY combatant (player, companion, or enemy). The server does the HP math, validates against rolled results, and shows the player an undoable audit card. ALWAYS call this when an attack hits, a spell deals damage, or healing occurs — for enemies too, so their HP is tracked.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "target": {
+                            "type": "string",
+                            "description": "Name of the combatant taking damage/healing (e.g., 'Kira', 'Goblin Archer')"
+                        },
+                        "amount": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "description": "Damage or healing amount. If roll_ref is provided the server uses the actual rolled total instead."
+                        },
+                        "is_healing": {
+                            "type": "boolean",
+                            "description": "True for healing, false/omitted for damage"
+                        },
+                        "damage_type": {
+                            "type": "string",
+                            "description": "Damage type (e.g., 'slashing', 'fire'). Optional."
+                        },
+                        "source": {
+                            "type": "string",
+                            "description": "What caused it (e.g., 'goblin scimitar', 'Cure Wounds from Thorne')"
+                        },
+                        "roll_ref": {
+                            "type": "string",
+                            "description": "queueId of the damage roll from the STRUCTURED ROLL QUEUE. ALWAYS provide this when the amount came from a player's roll — the server uses the authoritative rolled total."
+                        }
+                    },
+                    "required": ["target", "amount", "source"]
+                }
+            },
+            {
                 "name": "start_combat",
                 "description": "Initialize combat when a fight begins. Call this to set up enemies - the system will roll initiative for enemies automatically. After calling this, you MUST ask players to roll initiative with '🎲 Roll Initiative' - combat won't fully start until they roll.",
                 "input_schema": {
@@ -359,7 +580,9 @@ class ClaudeProvider extends BaseAIProvider {
                                     "name": { "type": "string", "description": "Enemy name (e.g., 'Goblin', 'Orc Warrior')" },
                                     "hp": { "type": "integer", "description": "Hit points" },
                                     "ac": { "type": "integer", "description": "Armor class" },
-                                    "initiative_bonus": { "type": "integer", "description": "Initiative modifier (usually DEX mod)" }
+                                    "initiative_bonus": { "type": "integer", "description": "Initiative modifier (usually DEX mod)" },
+                                    "monster_ref": { "type": "string", "description": "SRD monster slug (e.g., 'goblin', 'orc') so the server persists the full stat block. Provide whenever the enemy is based on an SRD monster." },
+                                    "starting_zone": { "type": "string", "enum": ["engaged", "near", "far", "distant"], "description": "Starting range band (default 'far'). 'engaged' = already in melee with the party." }
                                 },
                                 "required": ["name"]
                             }
@@ -375,6 +598,47 @@ class ClaudeProvider extends BaseAIProvider {
                         }
                     },
                     "required": ["enemies"]
+                }
+            },
+            {
+                "name": "move_combatant",
+                "description": "Move a combatant to a different range band during combat. Bands: engaged (melee) → near (~30ft) → far (~60-90ft) → distant (long range). One band = normal move, two bands = Dash. The server validates the move and reports opportunity attacks. Call this whenever anyone changes position — melee attacks require both combatants engaged.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "combatant": {
+                            "type": "string",
+                            "description": "Name of the combatant moving"
+                        },
+                        "to_zone": {
+                            "type": "string",
+                            "enum": ["engaged", "near", "far", "distant"],
+                            "description": "Destination range band"
+                        },
+                        "disengage": {
+                            "type": "boolean",
+                            "description": "True if using the Disengage action (no opportunity attacks)"
+                        }
+                    },
+                    "required": ["combatant", "to_zone"]
+                }
+            },
+            {
+                "name": "transact",
+                "description": "Buy or sell an item at a shop/vendor. The server looks up the canonical SRD price, applies the vendor modifier, does the gold math, and moves the item — never use update_character gold_change for purchases. Insufficient gold returns an error so you can narrate the refusal.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "character": { "type": "string", "description": "Who is buying/selling" },
+                        "action": { "type": "string", "enum": ["buy", "sell"], "description": "Transaction direction" },
+                        "item_name": { "type": "string", "description": "Display name of the item (e.g., 'Longsword', 'Healing Potion')" },
+                        "base_item": { "type": "string", "description": "SRD equipment slug for price lookup (e.g., 'longsword', 'potion-of-healing'). Provide whenever the item is standard equipment." },
+                        "quantity": { "type": "integer", "minimum": 1, "description": "How many (default 1)" },
+                        "price_modifier": { "type": "number", "description": "Vendor markup/discount multiplier, 0.25-3.0 (default 1.0 buy, applied to the 50% base when selling)" },
+                        "unit_price": { "type": "number", "description": "Price per unit in gold — ONLY honored for items with no SRD entry (custom/sci-fi gear)" },
+                        "reason": { "type": "string", "description": "Context (e.g., 'Bob's Brilliant Axes', 'fence in the docks')" }
+                    },
+                    "required": ["character", "action", "item_name"]
                 }
             },
             {
@@ -398,6 +662,24 @@ class ClaudeProvider extends BaseAIProvider {
                         }
                     },
                     "required": ["outcome"]
+                }
+            },
+            {
+                "name": "award_experience",
+                "description": "Award D&D 5e experience for non-combat objectives, discoveries, investigation breakthroughs, or milestones. Use end_combat.xp_awarded for combat XP.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "total_xp": {
+                            "type": "integer",
+                            "description": "Total XP to divide among the active party"
+                        },
+                        "reason": {
+                            "type": "string",
+                            "description": "Why this XP is being awarded"
+                        }
+                    },
+                    "required": ["total_xp", "reason"]
                 }
             },
             {
@@ -425,14 +707,42 @@ class ClaudeProvider extends BaseAIProvider {
                         "reason": {
                             "type": "string",
                             "description": "Why the roll is needed (e.g., 'to notice the hidden trap', 'to hit the goblin')"
+                        },
+                        "advantage": {
+                            "type": "string",
+                            "enum": ["advantage", "disadvantage", "normal"],
+                            "description": "Situational advantage/disadvantage from YOUR judgment — physiology, equipment, positioning, preparation (e.g., a four-armed character climbing). Conditions like poisoned are applied automatically; this is for everything else."
+                        },
+                        "advantage_reason": {
+                            "type": "string",
+                            "description": "Why advantage/disadvantage applies (e.g., 'four arms gripping the ladder')"
                         }
                     },
                     "required": ["character", "roll_type"]
                 }
             },
             {
+                "name": "update_quest",
+                "description": "Create or update a quest in the structured quest log. Call when a new quest/objective is accepted, when meaningful progress happens, and when a quest completes or fails. The quest log is injected into your context every turn — keeping it current is how story threads survive long campaigns.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "string", "description": "Lowercase quest identifier (e.g., 'missing-caravan'). Use an existing id to update." },
+                        "title": { "type": "string", "description": "Short quest title" },
+                        "status": { "type": "string", "enum": ["active", "completed", "failed"], "description": "Quest status (default 'active')" },
+                        "priority": { "type": "string", "enum": ["immediate", "high", "medium", "campaign", "low"], "description": "Urgency for prompt ordering" },
+                        "location": { "type": "string", "description": "Where the quest is anchored" },
+                        "summary": { "type": "string", "description": "One-line description of the quest" },
+                        "next_steps": { "type": "array", "items": { "type": "string" }, "description": "Concrete next objectives" },
+                        "stakes": { "type": "string", "description": "What happens if ignored/failed" },
+                        "note": { "type": "string", "description": "Progress note appended to the quest's update timeline (e.g., 'found the wagon tracks heading north')" }
+                    },
+                    "required": ["id", "title"]
+                }
+            },
+            {
                 "name": "update_npc",
-                "description": "Register a new NPC or update an existing one. Call this when introducing a named NPC for the first time, or when an NPC's status/location changes significantly (e.g., dies, moves to new area, changes allegiance).",
+                "description": "Register a new NPC or update an existing one. Call this when introducing a named NPC for the first time, or when an NPC's status/location changes significantly. Use tier='crew' to promote an NPC to ship crew (they'll appear in SHIP CREW prompt section and be referenced in ship scenes).",
                 "input_schema": {
                     "type": "object",
                     "properties": {
@@ -464,9 +774,122 @@ class ClaudeProvider extends BaseAIProvider {
                         "notes": {
                             "type": "string",
                             "description": "Brief notes about the NPC relevant to ongoing story"
+                        },
+                        "tier": {
+                            "type": "string",
+                            "enum": ["npc", "crew"],
+                            "description": "NPC tier. 'crew' = ship crew who live/work aboard and appear in SHIP CREW prompt section. 'npc' = everyone else. Promote to 'crew' when someone joins the ship's complement."
+                        },
+                        "station": {
+                            "type": "string",
+                            "description": "Ship crew station or role aboard (e.g., 'weapons', 'helm', 'engineering', 'medic'). Only relevant for tier='crew'."
                         }
                     },
                     "required": ["id", "name"]
+                }
+            },
+            {
+                "name": "update_ship",
+                "description": "Update The Ardent's ship state. Use after combat damage, repairs, travel, system failures, cargo changes, or story events. Only include fields you're changing — omit everything else.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "hull_change": {
+                            "type": "integer",
+                            "description": "Hull HP delta. Negative for damage, positive for repair. E.g., -12 for 12 hull damage."
+                        },
+                        "hull_status": {
+                            "type": "string",
+                            "enum": ["nominal", "damaged", "critical", "destroyed"],
+                            "description": "Override hull status (auto-derived from HP if omitted)"
+                        },
+                        "shields_change": {
+                            "type": "integer",
+                            "description": "Shield HP delta. Negative for damage, positive for recharge/repair."
+                        },
+                        "shields_status": {
+                            "type": "string",
+                            "enum": ["nominal", "damaged", "critical", "destroyed"],
+                            "description": "Override shield status"
+                        },
+                        "system_updates": {
+                            "type": "array",
+                            "description": "Update one or more ship systems",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "system": {
+                                        "type": "string",
+                                        "enum": ["engines", "weapons", "shields_sys", "sensors", "comms", "life_support", "cargo_bay"],
+                                        "description": "Which system to update"
+                                    },
+                                    "status": {
+                                        "type": "string",
+                                        "enum": ["operational", "damaged", "disabled", "destroyed"],
+                                        "description": "New status for this system"
+                                    },
+                                    "add_upgrade": {
+                                        "type": "string",
+                                        "description": "Upgrade name to add"
+                                    },
+                                    "remove_upgrade": {
+                                        "type": "string",
+                                        "description": "Upgrade name to remove"
+                                    },
+                                    "notes": {
+                                        "type": "string",
+                                        "description": "Update system notes"
+                                    }
+                                },
+                                "required": ["system"]
+                            }
+                        },
+                        "add_conditions": {
+                            "type": "array",
+                            "items": { "type": "string" },
+                            "description": "Ship conditions to add (e.g., 'Hull Breach', 'Stealth Mode')"
+                        },
+                        "remove_conditions": {
+                            "type": "array",
+                            "items": { "type": "string" },
+                            "description": "Ship conditions to remove"
+                        },
+                        "fuel_change": {
+                            "type": "integer",
+                            "description": "Fuel cell delta. Negative for consumption, positive for refueling."
+                        },
+                        "supplies_change": {
+                            "type": "integer",
+                            "description": "Supply days delta."
+                        },
+                        "add_cargo": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "name": { "type": "string" },
+                                    "quantity": { "type": "integer" },
+                                    "description": { "type": "string" }
+                                },
+                                "required": ["name"]
+                            },
+                            "description": "Cargo items to add"
+                        },
+                        "remove_cargo": {
+                            "type": "array",
+                            "items": { "type": "string" },
+                            "description": "Cargo item names to remove"
+                        },
+                        "location": {
+                            "type": "string",
+                            "description": "New ship location"
+                        },
+                        "ship_status": {
+                            "type": "string",
+                            "enum": ["docked", "in_transit", "in_combat", "adrift", "destroyed"],
+                            "description": "Overall ship status"
+                        }
+                    }
                 }
             }
         ];
@@ -481,8 +904,8 @@ class ClaudeProvider extends BaseAIProvider {
             }
         }
 
-        // Enhanced system prompt with D&D 5e instructions
-        const enhancedSystem = system + `
+        // Static D&D 5e rules — fully stable text, so it leads the cached prefix
+        const COMBAT_RULES = `
 
 ═══════════════════════════════════════════════════════════
 D&D 5E COMBAT MECHANICS - COMPREHENSIVE IMPLEMENTATION
@@ -500,6 +923,32 @@ CRITICAL DICE ROLL RULES - FOLLOW EXACTLY OR FAIL:
 - CORRECT: "Setup narrative... 🎲 Roll Perception (DC 15) to notice the trap" [STOP HERE]
 - WRONG: "🎲 Roll Perception (DC 15)... You notice the trap and..." - DO NOT DESCRIBE OUTCOMES
 
+SITUATIONAL ADVANTAGE & DISADVANTAGE (your call as DM — actually use it):
+- Grant ADVANTAGE when physiology, equipment, positioning, or preparation gives a real edge:
+  a four-armed character climbing or grappling, bracing a weapon on cover, striking from hiding, the right tool for the job.
+- Grant DISADVANTAGE for genuinely hampered attempts: rushed, one-handed, bad light, improvised tools.
+- Declare it IN the roll line so it takes mechanical effect: "🎲 Roll Perception (DC 15) with advantage — the catwalk gives a clear view over the whole bay"
+  (or set the advantage field when calling request_roll).
+- Don't acknowledge an edge in prose and then roll it flat — if it's worth narrating, it's usually worth advantage.
+- NEVER double-dip: an edge grants advantage OR lowers the DC, not both. Set the DC for the task as if a baseline
+  character were attempting it, then apply advantage for this character's edge. (Same for penalties: disadvantage OR a higher DC.)
+- DC CALIBRATION (price the TASK, not the character): trivial = no roll | easy 10 (ladder, routine climb) |
+  moderate 15 (sheer surface with handholds, slick or unstable) | hard 20 (overhang, under fire, no real holds) | nearly impossible 25.
+  A skilled/equipped character beats easy DCs through their modifier and advantage — not through a discounted DC.
+- LITMUS TEST: if the reason after your DC mentions the character's traits ("easier for them", "their gear/anatomy helps"),
+  you have priced the character into the DC — wrong. Re-derive the DC for an unremarkable humanoid attempting the same task,
+  then express the character's edge ONLY as advantage.
+
+ROLL CADENCE — ONE CHECK PER PLAYER ACTION (CRITICAL):
+- One player action = at most ONE roll. NEVER chain a second check onto the outcome of the first.
+- After a roll resolves: narrate the outcome FULLY, then STOP at a player decision point. The next roll
+  comes from the player's NEXT action — not from you inventing a follow-up check.
+- Routine acts need NO roll (moving carefully down an empty corridor, reading an obvious clue, listening at
+  a quiet junction). Roll only when failure would be interesting and the stakes are real.
+- A continuation that ends with yet another "🎲 ROLL NEEDED" when the player hasn't acted is a FAILURE MODE —
+  it traps the player in a roll loop instead of letting them play.
+- Conditions (poisoned, prone, etc.) are applied automatically by the server — this rule is for everything else.
+
 ───────────────────────────────────────────────────────────
 TOOL USAGE - CRITICAL FOR GAME STATE
 ───────────────────────────────────────────────────────────
@@ -511,15 +960,17 @@ LOOKUP TOOLS (for accurate mechanics):
 ✓ Character examines/uses equipment → call get_item_details
 
 STATE MUTATION TOOLS:
-✗ DO NOT call update_character for hp_change or gold_change — players manage their own HP and credits
+✓ Damage or healing (ANY combatant, enemies included) → call apply_damage with target, amount, source.
+  When the amount came from a roll in the STRUCTURED ROLL QUEUE, pass its queueId as roll_ref —
+  the server uses the authoritative rolled total and does all HP math. NEVER recompute or invent HP values.
+✓ Gold/credits change (rewards, fees, theft) → call update_character with gold_change and a clear reason in narration.
+✓ Buying/selling at shops → call transact (server looks up the SRD price, checks affordability, moves gold + item).
+  NEVER use gold_change for purchases. Selling nets 50% of value. State the server-computed price in narration.
 ✓ Character gains condition (Prone, Poisoned, etc.) → call update_character with add_conditions
 ✓ Character loses condition → call update_character with remove_conditions
 ✓ Character gains/loses items → call update_character with add_items/remove_items
-
-PLAYER-MANAGED STATS: HP and credits are edited by the player, not the DM.
-When damage occurs, narrate it clearly: "The blast hits Dax for 8 damage" — the player will update their HP.
-When costs occur, state the amount: "The repair costs 500 credits" — the player will deduct it.
-The PARTY STATUS section above shows the player's current values — trust those numbers.
+Every change is shown to the player as an audit card and can be undone — the player can also still edit their own sheet.
+The PARTY STATUS section shows server-tracked authoritative values — trust those numbers.
 
 ITEM FORMAT FOR add_items:
 - Standard equipment: {name: "Rusty Scimitar", baseItem: "scimitar", category: "weapon", value: 25}
@@ -537,8 +988,14 @@ NPC REGISTRY TOOL:
 ✓ NPC dies, moves, or changes allegiance → call update_npc to update their entry
 ✓ Do NOT register unnamed/generic NPCs (e.g., "a guard", "the bartender") — only named characters
 
+QUEST LOG TOOL:
+✓ Party accepts a quest/objective → call update_quest with id, title, summary, next_steps, stakes
+✓ Meaningful progress → call update_quest with the same id and a 'note'
+✓ Quest resolves → call update_quest with status 'completed' or 'failed'
+The quest ledger is re-injected into your context every turn — it is your long-term story memory. Keep it current.
+
 CRITICAL RULES:
-1. Narrate damage/costs clearly so the player can update their sheet — do NOT call update_character for HP or credits
+1. Narrate damage clearly, then call apply_damage — the server does the math and shows an undoable audit card
 2. NEVER start combat without calling start_combat
 3. NEVER end combat without calling end_combat
 4. ALWAYS register new named NPCs with update_npc on first introduction
@@ -604,18 +1061,13 @@ TURN STRUCTURE (each participant gets):
 ACTION ECONOMY - CRITICAL RULES
 ───────────────────────────────────────────────────────────
 
-MOVEMENT:
-- Characters can move up to their speed (usually 30 feet)
-- Can split movement: "Move 15 feet, attack, move 15 feet more"
-- Difficult terrain costs 2 feet per 1 foot moved
-- Climbing/swimming costs 2 feet per 1 foot (unless special speed)
-- Standing up from prone costs HALF movement
-
-OPPORTUNITY ATTACKS:
-- Trigger: Enemy moves OUT OF your reach (not just within reach)
-- Uses your Reaction (only one per round)
-- Make ONE melee attack
-- Avoided by: Disengage action, teleporting, being forcibly moved
+MOVEMENT AND POSITIONING (ZONE-TRACKED — MECHANICALLY ENFORCED):
+Combat positions use four range bands shown in the initiative order: engaged (melee) → near (~30ft) → far (~60-90ft) → distant (long range).
+- ANY position change → call move_combatant. One band = move; two bands = Dash (uses the action).
+- Melee attacks require BOTH combatants at 'engaged' — the server rejects invalid moves/attacks; if a tool call fails, fix and retry within the same response.
+- Ranged attacks work to 'far'; at 'distant' they have disadvantage.
+- The server detects opportunity attacks when someone leaves 'engaged' without Disengage and tells you who reacts — resolve those reaction attacks before continuing.
+- Standing up from prone costs half movement; difficult terrain may cost an extra band of movement (your call, narrate it).
 
 BONUS ACTION SPELL RESTRICTION:
 CRITICAL: If ANY spell (including cantrip) is cast as a bonus action, the ONLY other spell that can be cast that turn is a cantrip with casting time of 1 action.
@@ -810,48 +1262,14 @@ Include narrative flavor with mechanics:
 ✓ "Taking her full action, Kira unleashes Fire Bolt, a mote of flame streaking from her fingertip!"
 
 ───────────────────────────────────────────────────────────
-CONDITIONS AND STATUS EFFECTS
+CONDITIONS AND STATUS EFFECTS (MECHANICALLY ENFORCED)
 ───────────────────────────────────────────────────────────
 
-COMMON CONDITIONS (apply mechanical effects):
-
-PRONE:
-- Disadvantage on attack rolls
-- Attacks against from within 5 feet have advantage
-- Attacks against from more than 5 feet have disadvantage
-- Standing up costs half movement
-
-GRAPPLED:
-- Speed becomes 0
-- Ends if grappler is incapacitated or forced away
-
-RESTRAINED:
-- Speed becomes 0
-- Attack rolls have disadvantage
-- Attack rolls against have advantage
-- Disadvantage on Dex saves
-
-PARALYZED/STUNNED/UNCONSCIOUS:
-- Can't take actions or reactions
-- Auto-fail Strength and Dexterity saves
-- Attack rolls against have advantage
-- Hits from within 5 feet are automatic criticals (unconscious/paralyzed)
-
-BLINDED:
-- Auto-fail sight-based checks
-- Attack rolls have disadvantage
-- Attack rolls against have advantage
-
-POISONED:
-- Disadvantage on attack rolls and ability checks
-
-FRIGHTENED:
-- Disadvantage on checks and attacks while source in sight
-- Can't move closer to source
-
-Track conditions and remind players of effects:
-✓ "You're prone, so attacks against you from nearby enemies have advantage."
-✓ "You're restrained by the web - your speed is 0 and attacks against you have advantage."
+Conditions are enforced by the server, not by you:
+- Apply/remove them via update_character (use duration_rounds for timed effects — they expire automatically at turn starts).
+- Roll requests in the STRUCTURED ROLL QUEUE arrive pre-annotated with advantage/disadvantage computed from active conditions. Honor the annotation; do not re-derive it.
+- Your job is NARRATION: describe how the poison burns, why the prone fighter struggles — the math is handled.
+- Paralyzed/stunned/unconscious creatures can't act; grappled/restrained creatures can't move (speed 0).
 
 ───────────────────────────────────────────────────────────
 XP AWARDS AND ENCOUNTER RESOLUTION
@@ -923,6 +1341,24 @@ ENDING COMBAT:
 END D&D 5E COMBAT MECHANICS
 ═══════════════════════════════════════════════════════════`;
 
+        // Prompt caching: split the context-built prompt on the cache sentinels
+        // into [stable | semi-stable | volatile] system blocks. The static rules
+        // lead the stable block so the big prefix is byte-identical every turn
+        // (cache reads cost ~0.1x). Prompts without sentinels (legacy/phase-2
+        // paths) are sent as a single UNCACHED block — marking volatile content
+        // cacheable would pay the 1.25x write premium with zero reads.
+        const sections = system.split(PROMPT_CACHE_BREAK.trim()).map(s => s.replace(/^\n+|\n+$/g, ''));
+        let systemPayload;
+        if (sections.length >= 3) {
+            systemPayload = [
+                { type: 'text', text: COMBAT_RULES + '\n\n' + sections[0], cache_control: { type: 'ephemeral' } },
+                { type: 'text', text: sections[1], cache_control: { type: 'ephemeral' } },
+                { type: 'text', text: sections.slice(2).join('\n') }
+            ].filter(block => block.text.trim().length > 0);
+        } else {
+            systemPayload = system + COMBAT_RULES;
+        }
+
         const response = await fetch('https://api.anthropic.com/v1/messages', {
             method: 'POST',
             headers: {
@@ -932,7 +1368,7 @@ END D&D 5E COMBAT MECHANICS
             },
             body: JSON.stringify({
                 model: this.modelName,
-                system: enhancedSystem,
+                system: systemPayload,
                 messages: messages,
                 max_tokens: 2000,
                 temperature: 0.7,
@@ -967,7 +1403,7 @@ END D&D 5E COMBAT MECHANICS
                 console.log(`📝 Pre-tool text captured (${preToolText.length} chars)`);
             }
 
-            const { toolResults, stateMutations } = await this.handleToolUse(data.content);
+            const { toolResults, stateMutations } = await this.handleToolUse(data.content, campaignId);
             allStateMutations.push(...stateMutations);
 
             // Continue conversation with tool results
@@ -980,7 +1416,7 @@ END D&D 5E COMBAT MECHANICS
             }];
 
             // Recursive call to get final response (with tools enabled to allow more tool calls)
-            const finalResult = await this.generateResponseWithTools(enhancedSystem, followUpMessages, apiKey, filteredTools);
+            const finalResult = await this.generateResponseWithTools(systemPayload, followUpMessages, apiKey, filteredTools, campaignId);
 
             // Merge state mutations from recursive calls
             if (finalResult.stateMutations) {
@@ -1015,6 +1451,8 @@ END D&D 5E COMBAT MECHANICS
                 responseLength: content.length,
                 inputTokens: data.usage?.input_tokens,
                 outputTokens: data.usage?.output_tokens,
+                cacheRead: data.usage?.cache_read_input_tokens || 0,
+                cacheWrite: data.usage?.cache_creation_input_tokens || 0,
                 stopReason: data.stop_reason,
                 stateMutations: allStateMutations.length
             });
@@ -1031,7 +1469,7 @@ END D&D 5E COMBAT MECHANICS
     }
 
     // Helper for recursive tool use calls
-    async generateResponseWithTools(system, messages, apiKey, tools) {
+    async generateResponseWithTools(system, messages, apiKey, tools, campaignId) {
         const fetch = require('node-fetch');
 
         const response = await fetch('https://api.anthropic.com/v1/messages', {
@@ -1071,7 +1509,7 @@ END D&D 5E COMBAT MECHANICS
                 .replace(/\*\*DM \([^)]+\)\*\*/g, '')
                 .trim();
 
-            const { toolResults, stateMutations } = await this.handleToolUse(data.content);
+            const { toolResults, stateMutations } = await this.handleToolUse(data.content, campaignId);
             allStateMutations.push(...stateMutations);
 
             const followUpMessages = [...messages, {
@@ -1082,7 +1520,7 @@ END D&D 5E COMBAT MECHANICS
                 content: toolResults
             }];
 
-            const finalResult = await this.generateResponseWithTools(system, followUpMessages, apiKey, tools);
+            const finalResult = await this.generateResponseWithTools(system, followUpMessages, apiKey, tools, campaignId);
             if (finalResult.stateMutations) {
                 allStateMutations.push(...finalResult.stateMutations);
             }
@@ -1129,7 +1567,7 @@ END D&D 5E COMBAT MECHANICS
         throw new Error('No content in Claude response');
     }
 
-    async handleToolUse(contentBlocks) {
+    async handleToolUse(contentBlocks, campaignId) {
         const toolResults = [];
         const stateMutations = [];  // Track state-changing tool calls for later processing
 
@@ -1155,6 +1593,93 @@ END D&D 5E COMBAT MECHANICS
                         stateMutations.push({ type: 'update_character', input: block.input });
                         result = { success: true, message: `Character ${block.input.character} update registered` };
                         console.log(`📝 State mutation: update_character for ${block.input.character}`, block.input);
+                    } else if (block.name === 'apply_damage') {
+                        stateMutations.push({ type: 'apply_damage', input: block.input });
+                        const verb = block.input.is_healing ? 'healing' : 'damage';
+                        result = { success: true, message: `${block.input.amount} ${verb} to ${block.input.target} registered (server validates against roll${block.input.roll_ref ? ` ${block.input.roll_ref}` : ''})` };
+                        console.log(`💥 State mutation: apply_damage - ${block.input.amount} ${verb} to ${block.input.target} (${block.input.source})`);
+                    } else if (block.name === 'move_combatant') {
+                        // Executed SYNCHRONOUSLY so the DM gets validity + opportunity
+                        // attack feedback inside the tool loop and can self-correct.
+                        // Absolute band moves are idempotent, so retries are safe.
+                        const context = campaignId ? await getCampaignContext(campaignId) : null;
+                        if (!context?.combatState?.positions) {
+                            result = { success: false, message: 'No zone tracking active (combat not started or legacy combat) — narrate the movement instead' };
+                        } else {
+                            const moveResult = zoneTracker.moveCombatant(
+                                context.combatState,
+                                block.input.combatant,
+                                block.input.to_zone,
+                                { disengage: block.input.disengage === true }
+                            );
+                            if (!moveResult.ok) {
+                                result = { success: false, message: moveResult.reason };
+                                console.log(`🚫 move_combatant rejected: ${block.input.combatant} → ${block.input.to_zone}: ${moveResult.reason}`);
+                            } else {
+                                const oaText = moveResult.opportunityAttackers.length > 0
+                                    ? ` PROVOKES OPPORTUNITY ATTACKS from: ${moveResult.opportunityAttackers.map(a => a.name).join(', ')} — resolve these reaction attacks now (request_roll for players, roll yourself for enemies).`
+                                    : '';
+                                result = {
+                                    success: true,
+                                    message: `${block.input.combatant} moved ${moveResult.from} → ${moveResult.to}${moveResult.requiresDash ? ' (Dash action used)' : ''}.${oaText}`
+                                };
+                                stateMutations.push({ type: 'move_combatant', input: block.input, moveResult });
+                                console.log(`🏃 move_combatant: ${block.input.combatant} ${moveResult.from} → ${moveResult.to}${oaText ? ' [OA provoked]' : ''}`);
+                            }
+                        }
+                    } else if (block.name === 'transact') {
+                        // Price + affordability resolved SYNCHRONOUSLY so the DM can
+                        // narrate refusals / haggling within the same response.
+                        const { character, action, item_name, base_item, quantity = 1, price_modifier, unit_price } = block.input;
+                        const qty = Math.max(1, Number(quantity) || 1);
+                        const modifier = Math.min(3, Math.max(0.25, Number(price_modifier) || 1));
+                        let unitGp = null;
+                        let priceSource = 'llm';
+
+                        if (base_item) {
+                            try {
+                                const details = await this.rulesService.getItemDetails(base_item);
+                                if (details?.cost?.quantity) {
+                                    unitGp = details.cost.quantity * (COIN_GP_VALUES[details.cost.unit] ?? 1);
+                                    priceSource = 'srd';
+                                }
+                            } catch (e) {
+                                console.log(`📦 transact: no SRD price for '${base_item}', falling back to unit_price`);
+                            }
+                        }
+                        if (unitGp === null) {
+                            unitGp = Math.max(0, Number(unit_price) || 0);
+                        }
+
+                        const isSell = action === 'sell';
+                        // Selling nets 50% of canonical value by default
+                        const effectiveUnit = isSell ? unitGp * 0.5 * modifier : unitGp * modifier;
+                        const total = Math.round(effectiveUnit * qty);
+
+                        const context = campaignId ? await getCampaignContext(campaignId) : null;
+                        const { charData } = context ? context.findCharacterEntry(character) : { charData: null };
+
+                        if (!charData) {
+                            result = { success: false, message: `Character '${character}' not found` };
+                        } else if (unitGp === 0 && !isSell) {
+                            result = { success: false, message: `No price available for '${item_name}' — provide base_item (SRD slug) or unit_price` };
+                        } else {
+                            const resourceKey = charData.credits !== undefined ? 'credits' : 'gold';
+                            const balance = charData[resourceKey] || 0;
+                            if (!isSell && balance < total) {
+                                result = { success: false, message: `${charData.name || character} has ${balance} ${resourceKey} but needs ${total} — narrate that they can't afford it` };
+                                console.log(`💸 transact rejected: ${character} ${balance}/${total} ${resourceKey}`);
+                            } else if (isSell && !(charData.inventory || []).some(i => (typeof i === 'string' ? i : i.name).toLowerCase() === item_name.toLowerCase())) {
+                                result = { success: false, message: `${charData.name || character} does not have '${item_name}' to sell` };
+                            } else {
+                                stateMutations.push({ type: 'transact', input: block.input, computed: { total, unitGp: Math.round(effectiveUnit * 100) / 100, qty, priceSource } });
+                                result = {
+                                    success: true,
+                                    message: `${isSell ? 'Sale' : 'Purchase'} registered: ${qty}x ${item_name} for ${total} ${resourceKey} total (${priceSource === 'srd' ? 'SRD price' : 'custom price'}${modifier !== 1 ? `, x${modifier} vendor modifier` : ''}). State this price in your narration.`
+                                };
+                                console.log(`💰 transact: ${character} ${action}s ${qty}x ${item_name} @ ${total} total (${priceSource})`);
+                            }
+                        }
                     } else if (block.name === 'start_combat') {
                         stateMutations.push({ type: 'start_combat', input: block.input });
                         result = { success: true, message: `Combat initialized with ${block.input.enemies?.length || 0} enemies` };
@@ -1163,14 +1688,26 @@ END D&D 5E COMBAT MECHANICS
                         stateMutations.push({ type: 'end_combat', input: block.input });
                         result = { success: true, message: `Combat ended: ${block.input.outcome}` };
                         console.log(`🏁 State mutation: end_combat (${block.input.outcome})`);
+                    } else if (block.name === 'award_experience') {
+                        stateMutations.push({ type: 'award_experience', input: block.input });
+                        result = { success: true, message: `XP award registered: ${block.input.total_xp} XP` };
+                        console.log(`⭐ State mutation: award_experience (${block.input.total_xp} XP)`);
                     } else if (block.name === 'request_roll') {
                         stateMutations.push({ type: 'request_roll', input: block.input });
                         result = { success: true, message: `Roll requested: ${block.input.roll_type} for ${block.input.character}` };
                         console.log(`🎲 State mutation: request_roll - ${block.input.roll_type} for ${block.input.character}`);
+                    } else if (block.name === 'update_quest') {
+                        stateMutations.push({ type: 'update_quest', input: block.input });
+                        result = { success: true, message: `Quest '${block.input.title}' (${block.input.id}) update registered` };
+                        console.log(`📜 State mutation: update_quest - ${block.input.id}`, block.input);
                     } else if (block.name === 'update_npc') {
                         stateMutations.push({ type: 'update_npc', input: block.input });
                         result = { success: true, message: `NPC ${block.input.name} (${block.input.id}) registered` };
                         console.log(`👤 State mutation: update_npc - ${block.input.name}`, block.input);
+                    } else if (block.name === 'update_ship') {
+                        stateMutations.push({ type: 'update_ship', input: block.input });
+                        result = { success: true, message: 'Ship update registered' };
+                        console.log(`🚀 State mutation: update_ship`, block.input);
                     } else {
                         result = { error: `Unknown tool: ${block.name}` };
                         console.warn(`⚠️ Unknown tool requested: ${block.name}`);
@@ -1569,7 +2106,7 @@ class GPT4MiniProvider extends BaseAIProvider {
         super('gpt4mini', 'gpt-4o-mini');
     }
 
-    async generateResponse(system, messages) {
+    async generateResponse(system, messages, _campaignId, options = {}) {
         const startTime = Date.now();
         const fetch = require('node-fetch');
         const apiKey = process.env.OPENAI_API_KEY;
@@ -1596,8 +2133,10 @@ class GPT4MiniProvider extends BaseAIProvider {
                     { role: 'system', content: system },
                     ...messages
                 ],
-                max_tokens: 500,  // Short responses for verification
-                temperature: 0.3  // Low temperature for deterministic output
+                max_tokens: options.maxTokens || 500,
+                temperature: 0.3,  // Low temperature for deterministic output
+                // JSON mode is the default (Pass A verification); summaries use plain text
+                ...(options.plainText ? {} : { response_format: { type: 'json_object' } })
             })
         });
 
@@ -2088,6 +2627,135 @@ class IntelligentContextManager {
         });
     }
 
+    getCampaignEntityPatterns() {
+        const base = {
+            npcs: [
+                'elder miriam',
+                'ewan',
+                'thornhaven guard',
+                'silverpeak ranger',
+                'kira',
+                'thorne',
+                'riven',
+                'innkeeper',
+                'travelling merchant',
+                'shadowed figure',
+                'druid',
+                'warden'
+            ],
+            locations: [
+                'thornhaven',
+                'laughing griffin',
+                'silverpeak',
+                'whispering woods',
+                'moonwell',
+                'ancient ruins',
+                'village square',
+                'temple',
+                'catacombs',
+                'mountain pass',
+                'forest glade',
+                'caravan trail'
+            ],
+            items: [
+                'longsword',
+                'warhammer',
+                'dagger',
+                'shortbow',
+                'holy symbol',
+                'spellbook',
+                'focus',
+                'potion',
+                'gold',
+                'map',
+                'amulet',
+                'arcane crystal',
+                'scroll',
+                'ancient relic'
+            ]
+        };
+
+        if (getCampaignFeatures(this.campaignId).genre !== 'scifi') {
+            return base;
+        }
+
+        const patterns = {
+            npcs: [
+                'dax',
+                'dax stargazer',
+                'chen',
+                'dr. yuen',
+                'yuen',
+                'director holbrook',
+                'holbrook',
+                'commander torres',
+                'torres',
+                'vance',
+                'osprey team',
+                'miranda kellerman',
+                'kellerman',
+                'jonathan park',
+                'park',
+                'zara okafor',
+                'okafor'
+            ],
+            locations: [
+                'titan station',
+                'security command center',
+                'dock 7',
+                'dock 19',
+                'sub-level 4',
+                'sector 9',
+                'level 4',
+                'weyland liaison office',
+                'ues wanderer',
+                'the ardent',
+                'ardent'
+            ],
+            items: [
+                'weyland encrypted data packet',
+                'data packet',
+                'relay node',
+                'hardline relay',
+                'primary sample recovery unit',
+                'shielded device',
+                'plasma injector',
+                'portable tech kit',
+                'datapad',
+                'docking registry transfer',
+                'project lachesis',
+                'lachesis',
+                'helix applied research',
+                'weyland biosystems',
+                'protocol seven'
+            ]
+        };
+
+        Object.values(this.campaignState?.characters || {}).forEach(char => {
+            if (char?.name) patterns.npcs.push(char.name.toLowerCase());
+        });
+        Object.values(this.campaignState?.npcs || {}).forEach(npc => {
+            if (npc?.name) patterns.npcs.push(npc.name.toLowerCase());
+            if (npc?.location) patterns.locations.push(npc.location.toLowerCase());
+        });
+        if (this.campaignState?.ship?.name) {
+            patterns.locations.push(this.campaignState.ship.name.toLowerCase());
+        }
+        if (this.campaignState?.ship?.location) {
+            patterns.locations.push(this.campaignState.ship.location.toLowerCase());
+        }
+        (this.campaignState?.quests?.active || []).forEach(quest => {
+            if (quest?.location) patterns.locations.push(quest.location.toLowerCase());
+            if (quest?.title) patterns.items.push(quest.title.toLowerCase());
+        });
+
+        return {
+            npcs: [...new Set(patterns.npcs.filter(Boolean))],
+            locations: [...new Set(patterns.locations.filter(Boolean))],
+            items: [...new Set(patterns.items.filter(Boolean))]
+        };
+    }
+
     extractMetadata(text, isHistorical = false) {
         const metadata = {
             keywords: [],
@@ -2101,22 +2769,10 @@ class IntelligentContextManager {
         };
         
         const lowerText = text.toLowerCase();
+        const entityPatterns = this.getCampaignEntityPatterns();
         
         // Extract NPCs
-        const npcPatterns = [
-            'elder miriam',
-            'ewan',
-            'thornhaven guard',
-            'silverpeak ranger',
-            'kira',
-            'thorne',
-            'riven',
-            'innkeeper',
-            'travelling merchant',
-            'shadowed figure',
-            'druid',
-            'warden'
-        ];
+        const npcPatterns = entityPatterns.npcs;
         npcPatterns.forEach(npc => {
             if (lowerText.includes(npc)) {
                 metadata.npcs.push(npc);
@@ -2124,20 +2780,7 @@ class IntelligentContextManager {
         });
         
         // Extract locations
-        const locationPatterns = [
-            'thornhaven',
-            'laughing griffin',
-            'silverpeak',
-            'whispering woods',
-            'moonwell',
-            'ancient ruins',
-            'village square',
-            'temple',
-            'catacombs',
-            'mountain pass',
-            'forest glade',
-            'caravan trail'
-        ];
+        const locationPatterns = entityPatterns.locations;
         locationPatterns.forEach(loc => {
             if (lowerText.includes(loc)) {
                 metadata.locations.push(loc);
@@ -2145,22 +2788,7 @@ class IntelligentContextManager {
         });
         
         // Extract items
-        const itemPatterns = [
-            'longsword',
-            'warhammer',
-            'dagger',
-            'shortbow',
-            'holy symbol',
-            'spellbook',
-            'focus',
-            'potion',
-            'gold',
-            'map',
-            'amulet',
-            'arcane crystal',
-            'scroll',
-            'ancient relic'
-        ];
+        const itemPatterns = entityPatterns.items;
         itemPatterns.forEach(item => {
             if (lowerText.includes(item)) {
                 metadata.items.push(item);
@@ -3218,28 +3846,154 @@ class IntelligentContextManager {
     }
 
     // ==================== PROMPT BUILDING ====================
-    async buildSmartPrompt(playerAction, context, mode = 'ic') {
-        let prompt = `You are the Dungeon Master. Maintain continuity with the story.\n\n`;
+    buildCanonicalSceneReminder() {
+        const scene = this.campaignState?.current_scene;
+        if (!scene) return '';
 
-        // Add mode-specific instructions
+        const sceneJson = JSON.stringify({
+            scene_id: scene.scene_id,
+            location: scene.location,
+            npcs_present: scene.npcs_present || [],
+            npcs_departed: scene.npcs_departed || [],
+            situation: scene.situation || '',
+            last_action: scene.last_action || '',
+            pending: scene.pending || 'none'
+        }, null, 2);
+
+        return `═══════════════════════════════════════════════════════════════════
+CANONICAL_CURRENT_SCENE (FINAL AUTHORITY - THIS IS WHERE WE ARE NOW)
+═══════════════════════════════════════════════════════════════════
+\`\`\`json
+${sceneJson}
+\`\`\`
+
+BACKGROUND MEMORIES ARE LOWER PRIORITY THAN THIS BLOCK.
+YOUR RESPONSE MUST:
+1. Begin with: SceneCheck: #${scene.scene_id} | ${scene.location}
+2. Continue the story from THIS scene only - never reference or return to earlier scenes
+3. If you cannot continue from scene #${scene.scene_id}, output: SCENE_ERROR: [reason]
+
+SCENE TRANSITIONS:
+- You may ONLY change locations if the narrative naturally leads there
+- To change scenes, you MUST include at END of your response:
+  [SCENE_TRANSITION: new_location="<location>" npcs_present=["..."] reason="<why>"]
+- Silent location changes are FORBIDDEN - always use SCENE_TRANSITION
+- The system will update scene_id automatically when you emit SCENE_TRANSITION
+
+Any response without SceneCheck header will be REJECTED and regenerated.
+═══════════════════════════════════════════════════════════════════`;
+    }
+
+    buildContinuityAnchors() {
+        if (!this.campaignState) return '';
+
+        let section = '';
+
+        const activeQuests = Array.isArray(this.campaignState.quests?.active)
+            ? this.campaignState.quests.active
+            : [];
+        if (activeQuests.length > 0) {
+            const priorityRank = {
+                immediate: 0,
+                high: 1,
+                medium: 2,
+                campaign: 3,
+                low: 4
+            };
+            const questLines = activeQuests
+                .slice()
+                .sort((a, b) => (priorityRank[a.priority] ?? 9) - (priorityRank[b.priority] ?? 9))
+                .slice(0, 8)
+                .map(quest => {
+                    const status = quest.status ? ` [${quest.status}]` : '';
+                    const location = quest.location ? ` @ ${quest.location}` : '';
+                    const nextStep = Array.isArray(quest.next_steps) && quest.next_steps.length > 0
+                        ? ` Next: ${quest.next_steps[0]}`
+                        : '';
+                    const stakes = quest.stakes ? ` Stakes: ${quest.stakes}` : '';
+                    const lastUpdate = Array.isArray(quest.updates) && quest.updates.length > 0
+                        ? quest.updates[quest.updates.length - 1]
+                        : null;
+                    const latestNote = lastUpdate
+                        ? ` Latest${lastUpdate.scene ? ` (scene #${lastUpdate.scene})` : ''}: ${lastUpdate.note}`
+                        : '';
+                    return `- ${quest.title}${status}${location}: ${quest.summary || ''}${nextStep}${stakes}${latestNote}`;
+                })
+                .join('\n');
+
+            section += `## ACTIVE QUEST LEDGER (honor these unresolved hooks; maintain via update_quest)\n${questLines}\n\n`;
+        }
+
+        const relationshipBeats = this.campaignState.relationship_beats || {};
+        const relationshipLines = Object.entries(relationshipBeats)
+            .filter(([, beat]) => beat)
+            .map(([key, beat]) => `- ${key.replace(/_/g, ' / ')}: ${beat}`)
+            .join('\n');
+        if (relationshipLines) {
+            section += `## DAX CHARACTER CONTINUITY (roleplay these dynamics)\n${relationshipLines}\n\n`;
+        }
+
+        const keyNpcs = this.campaignState.key_npcs || {};
+        const keyNpcLines = Object.values(keyNpcs)
+            .filter(npc => npc && npc.name)
+            .map(npc => {
+                const priority = npc.priority ? ` [${npc.priority}]` : '';
+                const role = npc.current_role ? `: ${npc.current_role}` : '';
+                const continuity = npc.continuity ? ` | ${npc.continuity}` : '';
+                return `- ${npc.name}${priority}${role}${continuity}`;
+            })
+            .join('\n');
+        if (keyNpcLines) {
+            section += `## DAX PRIORITY NPC ROLES\n${keyNpcLines}\n\n`;
+        }
+
+        return section;
+    }
+
+    async buildSmartPrompt(playerAction, context, mode = 'ic') {
+        // Assembled stable → semi-stable → volatile, joined by cache sentinels.
+        // The Claude provider splits on the sentinels into prompt-cache blocks;
+        // stable-first ordering turns the bulk of input tokens into 0.1x cache
+        // reads instead of full-price re-reads every turn.
+        let stable = `You are the Dungeon Master. Maintain continuity with the story.\n\n`;
+        let semi = '';
+        let volatile = '';
+
+        // ── STABLE: campaign core prompt + long-past summaries ──
+        stable += this.CORE_FACTS + '\n\n';
+        const arcSummaries = this.campaignState?.arcSummaries || [];
+        if (arcSummaries.length > 0) {
+            stable += `## STORY SO FAR (older arcs, condensed — for callbacks and continuity)\n`;
+            stable += arcSummaries.map(a => `- [scenes #${a.fromScene}–#${a.toScene}] ${a.summary}`).join('\n');
+            stable += '\n\n';
+        }
+        const archiveSummaries = (this.campaignState?.archiveSummaries || []).slice(-3);
+        if (archiveSummaries.length > 0) {
+            stable += `## EARLIER EVENTS (ARCHIVED — long past, for callbacks/continuity only)\n`;
+            stable += archiveSummaries.map(s => `- ${s.summary}`).join('\n');
+            stable += '\n\n';
+        }
+
+        // ── VOLATILE: mode-specific instructions ──
         if (mode === 'dm-question') {
-            prompt += `**ABOVE-TABLE MODE** (this is NOT an in-character action — do NOT advance the scene or narrate anything):
+            volatile += `**ABOVE-TABLE MODE** (this is NOT an in-character action — do NOT advance the scene or narrate anything):
 The player is asking a metagame question from across the table. Be casual and brief — a sentence or two, like a friend.
 - If they ask whether a roll is appropriate: just say the check type and DC, plus advantage/disadvantage if relevant.
 - If they send a roll result: just state what info they'd know. Plain facts only, 2-3 sentences max. No scene-setting, no NPC reactions, no "you recall..." prose.
 - Do NOT use any tools. Do NOT describe the scene. Do NOT move the story forward.
+- No story sign-offs or status lines ("awaiting player action", "what do you do?", "the scene continues..."). This is table talk — answer the question and stop.
 Example responses: "Tech check DC 14, you'd have advantage." / "With a 21: yeah, the data's air-gapped now that it's off Osprey's network. No remote wipe possible."\n\n`;
         } else if (mode === 'ooc') {
-            prompt += `**OUT-OF-CHARACTER MODE**: The player is talking to you meta/casually, not role-playing. Respond in a friendly, conversational tone like "Sure! I'll give them weapons" or "Yep, makes sense - added!". Be casual and brief. Still extract any game state changes they request, but skip the dramatic narrative.\n\n`;
+            volatile += `**OUT-OF-CHARACTER MODE**: The player is talking to you meta/casually, not role-playing. Respond in a friendly, conversational tone. Be casual and brief. Do NOT use tools, update state, advance the scene, or treat this as canon. If the player wants a real state change, tell them to make it in-character or use the sheet controls.\n\n`;
         } else {
             // IC mode - default behavior
-            prompt += `**IN-CHARACTER MODE**: This is a canon player action that advances the story and affects game state.\n\n`;
+            volatile += `**IN-CHARACTER MODE**: This is a canon player action that advances the story and affects game state.\n\n`;
         }
 
         // Add combat mode instructions if active
         if (this.combatState.active && this.combatState.initiativeOrder.length > 0) {
             const currentCombatant = this.combatState.initiativeOrder[this.combatState.currentTurn];
-            prompt += `⚔️  **COMBAT MODE ACTIVE - Round ${this.combatState.round}**
+            volatile += `⚔️  **COMBAT MODE ACTIVE - Round ${this.combatState.round}**
 Current Turn: ${currentCombatant.name}
 
 **COMBAT FOCUS:**
@@ -3262,21 +4016,57 @@ ${this.combatState.initiativeOrder.map((c, i) => {
     // Get conditions from combatant or from character state
     const charData = c.isPlayer && this.campaignState?.characters?.[c.id || c.name.toLowerCase()];
     const conditions = c.conditions?.length ? c.conditions : (charData?.conditions || charData?.buffs || []);
-    const condStr = conditions.length > 0 ? ` [${conditions.join(', ')}]` : '';
-    return `${i === this.combatState.currentTurn ? '→' : ' '} ${c.initiative}: ${c.name} (HP: ${c.hp?.current || '?'}/${c.hp?.max || '?'}, AC: ${c.ac || '?'})${condStr}`;
+    const condParts = conditions.map(cond => {
+        const name = conditionEffects.conditionName(cond);
+        const rounds = typeof cond === 'object' && cond?.duration ? ` ${cond.duration.remaining ?? cond.duration.value}r` : '';
+        return `${name}${rounds}`;
+    });
+    const condStr = condParts.length > 0 ? ` [${condParts.join(', ')}]` : '';
+    const band = this.combatState.positions ? zoneTracker.getBand(this.combatState, c.name) : null;
+    const zoneStr = band !== null ? ` @${zoneTracker.bandName(band)}` : '';
+    return `${i === this.combatState.currentTurn ? '→' : ' '} ${c.initiative}: ${c.name} (HP: ${c.hp?.current || '?'}/${c.hp?.max || '?'}, AC: ${c.ac || '?'})${zoneStr}${condStr}`;
 }).join('\n')}
+${this.combatState.positions ? `
+**Range Bands** (engaged=melee, near≈30ft, far≈60-90ft, distant=long range):
+Melee requires BOTH combatants at 'engaged'. Use move_combatant for ALL position changes — the server validates and reports opportunity attacks.` : ''}
 
-`;
+	`;
         }
 
-        // Add party status with full character detail for DM awareness
+        const rollQueue = Array.isArray(this.combatState?.rollQueue) ? this.combatState.rollQueue : [];
+        const activeRollEntries = rollQueue.filter(entry =>
+            entry && ['pending', 'partial', 'complete'].includes(entry.status)
+        ).slice(-5);
+        if (activeRollEntries.length > 0) {
+            const rollLines = activeRollEntries.map(entry => {
+                const participants = (entry.participants || []).map(participant => {
+                    const result = participant.result
+                        ? ` = ${participant.result.total} (${participant.result.formula || 'd20'}${participant.result.natural !== null && participant.result.natural !== undefined ? ` nat ${participant.result.natural}` : ''})`
+                        : '';
+                    const adv = participant.advantage && participant.advantage !== 'normal'
+                        ? ` [${participant.advantage.toUpperCase()}${Array.isArray(participant.advantageReasons) && participant.advantageReasons.length ? ': ' + participant.advantageReasons.join(', ') : ''}]`
+                        : '';
+                    return `${participant.name}: ${participant.status}${result}${adv}`;
+                }).join('; ');
+                return `- [${entry.status}] (queueId: ${entry.queueId}) ${entry.reason || entry.metadata?.rawRequest || 'Roll requested'} | ${participants}`;
+            }).join('\n');
+            volatile += `## STRUCTURED ROLL QUEUE (authoritative roll results)\n${rollLines}\nUse completed roll results here to narrate outcomes — pass the queueId as roll_ref when calling apply_damage for a rolled amount. Advantage/disadvantage flags are computed from active conditions; honor them. Do not ask the player to reroll a completed queue entry.\n\n`;
+        }
+
+        // ── SEMI-STABLE: party/NPC/ship/quest state (changes on state updates) ──
         if (this.campaignState?.characters) {
             const partyStatus = Object.entries(this.campaignState.characters).map(([id, char]) => {
-                const conditions = char.conditions || char.buffs || [];
+                const conditions = (char.conditions || char.buffs || []).map(c => conditionEffects.conditionName(c)).filter(Boolean);
                 const condStr = conditions.length > 0 ? `\n  Conditions: **${conditions.join(', ')}**` : '\n  Conditions: none';
                 const hp = char.hp?.current !== undefined ? `${char.hp.current}/${char.hp.max}` : '?';
                 const profBonus = char.proficiencyBonus || 2;
                 const credits = char.credits !== undefined ? char.credits.toLocaleString() : '?';
+                const level = char.level || xpCalculator.getLevelForXP(char.experience?.current || char.xp || 0);
+                const xp = char.experience?.current ?? char.xp ?? 0;
+                const nextLevelXP = char.experience?.nextLevel ?? xpCalculator.getNextLevelXP(level);
+                const xpStr = nextLevelXP
+                    ? `${xp.toLocaleString()}/${nextLevelXP.toLocaleString()} XP`
+                    : `${xp.toLocaleString()} XP (max level)`;
 
                 // Build skills line with computed modifiers
                 let skillsLine = '';
@@ -3310,6 +4100,7 @@ ${this.combatState.initiativeOrder.map((c, i) => {
                 let inventoryLine = '';
                 if (char.inventory && char.inventory.length > 0) {
                     const items = char.inventory.map(item => {
+                        if (typeof item === 'string') return item;
                         const equip = item.equipped ? ' (equipped)' : '';
                         return `${item.name}${equip}`;
                     });
@@ -3318,54 +4109,142 @@ ${this.combatState.initiativeOrder.map((c, i) => {
 
                 const role = char.companion ? ' [DM companion]' : ' [Player]';
                 const pronouns = char.pronouns ? ` (${char.pronouns})` : '';
-                return `- ${char.name || id}${pronouns}${role}: HP ${hp} | Credits: ${credits}${skillsLine}${savesLine}${inventoryLine}${condStr}`;
+                return `- ${char.name || id}${pronouns}${role}: Level ${level} (${xpStr}) | Prof +${profBonus} | HP ${hp} | Credits: ${credits}${skillsLine}${savesLine}${inventoryLine}${condStr}`;
             }).join('\n');
 
             if (partyStatus) {
-                prompt += `## PARTY STATUS (player-managed — trust these values):\n${partyStatus}\n\n`;
+                semi += `## PARTY STATUS (server-tracked — authoritative):\n${partyStatus}\n\n`;
                 // Remind DM to roleplay conditions
                 const activeConditions = Object.values(this.campaignState.characters)
                     .flatMap(c => c.conditions || c.buffs || [])
+                    .map(c => conditionEffects.conditionName(c))
                     .filter(Boolean);
                 if (activeConditions.length > 0) {
-                    prompt += `**IMPORTANT: Characters have active conditions (${[...new Set(activeConditions)].join(', ')}). Incorporate these into narration and apply mechanical effects!**\n\n`;
+                    semi += `**IMPORTANT: Characters have active conditions (${[...new Set(activeConditions)].join(', ')}). Incorporate these into narration and apply mechanical effects!**\n\n`;
                 }
             }
 
-            // NPC registry — persistent reference for pronouns, roles, and status
+            // NPC registry — split by tier: ship crew vs regular NPCs
             if (this.campaignState.npcs) {
-                const npcEntries = Object.values(this.campaignState.npcs);
-                if (npcEntries.length > 0) {
-                    const npcLines = npcEntries.map(npc => {
+                const allNpcs = Object.values(this.campaignState.npcs);
+                const crewNpcs = allNpcs.filter(npc => npc.tier === 'crew');
+                const sideNpcs = allNpcs.filter(npc => npc.tier !== 'crew');
+
+                // Ship crew — these live/work aboard and should be referenced in ship scenes
+                if (crewNpcs.length > 0) {
+                    const crewLines = crewNpcs.map(npc => {
+                        const pronouns = npc.pronouns && npc.pronouns !== 'unknown' ? ` (${npc.pronouns})` : '';
+                        const station = npc.station ? ` [${npc.station}]` : '';
+                        const notes = npc.notes ? ` | ${npc.notes}` : '';
+                        return `- ${npc.name}${pronouns}: ${npc.role}${station}${notes}`;
+                    }).join('\n');
+                    semi += `## SHIP CREW (aboard ${this.campaignState.ship?.name || 'the ship'} — include in ship scenes, use correct pronouns):\n${crewLines}\n\n`;
+                }
+
+                // Regular NPCs
+                if (sideNpcs.length > 0) {
+                    const npcLines = sideNpcs.map(npc => {
                         const pronouns = npc.pronouns && npc.pronouns !== 'unknown' ? ` (${npc.pronouns})` : '';
                         const status = npc.status === 'dead' ? ' [DEAD]' : '';
+                        // Temporal anchor: facts are "as of" the scene they were recorded —
+                        // older facts may have been overtaken by events
+                        const asOf = npc.last_updated_scene ? ` [as of scene #${npc.last_updated_scene}]` : '';
                         const loc = npc.location ? ` — ${npc.location}` : '';
                         const notes = npc.notes ? ` | ${npc.notes}` : '';
-                        return `- ${npc.name}${pronouns}${status}: ${npc.role}${loc}${notes}`;
+                        // Factual interaction history (template-generated, never directive)
+                        const recentHistory = Array.isArray(npc.history) && npc.history.length > 0
+                            ? ` | seen: ${npc.history.slice(-2).join('; ')}`
+                            : '';
+                        return `- ${npc.name}${pronouns}${status}: ${npc.role}${loc}${asOf}${notes}${recentHistory}`;
                     }).join('\n');
-                    prompt += `## KEY NPCs (use correct pronouns, respect status):\n${npcLines}\n\n`;
+                    semi += `## KEY NPCs (status/location are "as of" the noted scene — events since may have changed them):\n${npcLines}\n\n`;
                 }
+            }
+
+            // Ship status — inject if ship exists with mechanical data
+            if (this.campaignState.ship && this.campaignState.ship.hull) {
+                const ship = this.campaignState.ship;
+                const hullPct = ship.hull.max > 0 ? Math.round((ship.hull.current / ship.hull.max) * 100) : 0;
+                const shieldPct = ship.shields.max > 0 ? Math.round((ship.shields.current / ship.shields.max) * 100) : 0;
+                const damagedSystems = Object.entries(ship.systems || {})
+                    .filter(([, sys]) => sys.status !== 'operational')
+                    .map(([key, sys]) => `${sys.label || key} [${sys.status.toUpperCase()}]`);
+                const condStr = ship.conditions?.length ? ` | CONDITIONS: ${ship.conditions.join(', ')}` : '';
+                const sysStr = damagedSystems.length > 0 ? `\n  Damaged: ${damagedSystems.join(', ')}` : '\n  All systems operational';
+                // Power allocation — show per-system so DM can react to player choices
+                const powerLines = Object.entries(ship.systems || {})
+                    .map(([key, sys]) => `${sys.label}: ${sys.power_allocated}/${sys.power_max}`)
+                    .join(', ');
+                const unpowered = Object.entries(ship.systems || {})
+                    .filter(([, sys]) => sys.power_allocated === 0 && sys.status === 'operational')
+                    .map(([, sys]) => sys.label);
+                const crewStations = Object.entries(ship.crew_stations || {})
+                    .map(([station, crew]) => `${station}: ${crew || 'unassigned'}`)
+                    .join(', ');
+                semi += `## SHIP STATUS — ${ship.name} (${ship.class}):\n`;
+                semi += `  Location: ${ship.location || 'Unknown'} | Status: ${ship.status || 'unknown'}\n`;
+                semi += `  Hull: ${ship.hull.current}/${ship.hull.max} (${hullPct}%) | Shields: ${ship.shields.current}/${ship.shields.max} (${shieldPct}%)${condStr}\n`;
+                semi += `  Fuel: ${ship.fuel.current}/${ship.fuel.max} ${ship.fuel.unit}${sysStr}\n`;
+                semi += `  Power (${ship.power.total} total): ${powerLines}\n`;
+                if (crewStations) {
+                    semi += `  Crew Stations: ${crewStations}\n`;
+                    semi += `  Use station assignments to frame ship checks, assistance, complications, and who notices threats first.\n`;
+                }
+                if (unpowered.length > 0) {
+                    semi += `  ⚠ UNPOWERED (treat as offline): ${unpowered.join(', ')}\n`;
+                }
+                semi += '\n';
             }
         }
 
-        // Add core facts
-        prompt += this.CORE_FACTS + '\n\n';
+        semi += this.buildContinuityAnchors();
 
+        // Recent-scene summaries: the middle zoom level between verbatim recent
+        // events (volatile block) and condensed arcs (stable block)
+        const recentScenes = (this.campaignState?.sceneSummaries || []).slice(-8);
+        if (recentScenes.length > 0) {
+            semi += `## RECENT SCENES (already happened — do not replay)\n`;
+            semi += recentScenes.map(s => `- Scene #${s.scene_id} @ ${s.location}: ${s.summary}`).join('\n');
+            semi += '\n\n';
+        }
+
+        // Last finished session recap ("previously on")
+        const finishedSessions = (this.campaignState?.sessions || []).filter(s => s.endedAt && s.summary);
+        const lastSession = finishedSessions[finishedSessions.length - 1];
+        if (lastSession) {
+            semi += `## PREVIOUS SESSION RECAP\n${lastSession.summary}\n\n`;
+        }
+
+        // Historical context is slow-moving — keep it in the semi-stable block
+        if (context.historical && context.historical.length > 0) {
+            semi += `## BACKGROUND CONTEXT:\n`;
+            semi += context.historical.map(event =>
+                `${(event.type || 'ENTRY').toUpperCase()}: ${event.content?.substring(0, 200) || '[No content]'}${event.content?.length > 200 ? '...' : ''}`
+            ).join('\n\n');
+            semi += '\n\n';
+        }
+
+        // ── VOLATILE: recent events (tiered verbatim), relevant context, action ──
         // Add immediate context (recent history) - MOST RECENT FIRST with strong scene markers
         if (context.immediate && context.immediate.length > 0) {
-            prompt += `## ═══ CURRENT SCENE (THIS IS NOW) ═══\n`;
-            prompt += `**CRITICAL: Stay in this scene. Do NOT jump to past events from RAG memories.**\n\n`;
-            prompt += context.immediate.slice().reverse().map((event, idx) => {
+            volatile += `## ═══ CURRENT SCENE (THIS IS NOW) ═══\n`;
+            volatile += `**CRITICAL: Stay in this scene. Do NOT jump to past events from RAG memories.**\n\n`;
+            volatile += context.immediate.slice().reverse().map((event, idx) => {
                 const marker = idx === 0 ? '🔴 [NOW]' : `[${idx+1} ago]`;
-                return `${marker} ${(event.type || 'ENTRY').toUpperCase()}: ${event.content.substring(0, 500)}${event.content.length > 500 ? '...' : ''}`;
+                // Tiered verbatim: the newest exchanges go in (near-)FULL — head-truncating
+                // them deletes exactly where new information lives (NPC replies and roll
+                // outcomes land in the TAIL of DM responses) and caused "the NPC never
+                // answered" amnesia one turn after the answer was given.
+                const cap = idx < 3 ? 3000 : 500;
+                return `${marker} ${(event.type || 'ENTRY').toUpperCase()}: ${event.content.substring(0, cap)}${event.content.length > cap ? '...' : ''}`;
             }).join('\n\n');
-            prompt += '\n\n';
+            volatile += '\n\n';
         }
 
         // Add specific context if any
         if (context.specific && context.specific.length > 0) {
-            prompt += `## RELEVANT CONTEXT:\n`;
-            prompt += context.specific.map(item => {
+            volatile += `## RELEVANT CONTEXT:\n`;
+            volatile += context.specific.map(item => {
                 if (item.content) {
                     // Regular event with content
                     return `${(item.type || 'ENTRY').toUpperCase()}: ${item.content.substring(0, 300)}${item.content.length > 300 ? '...' : ''}`;
@@ -3382,21 +4261,12 @@ ${this.combatState.initiativeOrder.map((c, i) => {
                     return `${(item.type || 'UNKNOWN').toUpperCase()}: [Complex structure]`;
                 }
             }).join('\n\n');
-            prompt += '\n\n';
+            volatile += '\n\n';
         }
 
-        // Add historical context
-        if (context.historical && context.historical.length > 0) {
-            prompt += `## BACKGROUND CONTEXT:\n`;
-            prompt += context.historical.map(event =>
-                `${(event.type || 'ENTRY').toUpperCase()}: ${event.content?.substring(0, 200) || '[No content]'}${event.content?.length > 200 ? '...' : ''}`
-            ).join('\n\n');
-            prompt += '\n\n';
-        }
-
-        prompt += `CURRENT PLAYER ACTION: ${playerAction}\n\n`;
-        prompt += 'Respond as the DM. You have recent history and any relevant past context above.\n';
-        prompt += 'For dice rolls, use format: 🎲 Roll [Skill] (DC [number]) to [action]\n\n';
+        volatile += `CURRENT PLAYER ACTION: ${playerAction}\n\n`;
+        volatile += 'Respond as the DM. You have recent history and any relevant past context above.\n';
+        volatile += 'For dice rolls, use format: 🎲 Roll [Skill] (DC [number]) to [action]\n\n';
 
         // ANTI-TIMEWARP: Add canonical current scene block at the very end (recency bias)
         if (this.campaignState?.current_scene) {
@@ -3412,7 +4282,7 @@ ${this.combatState.initiativeOrder.map((c, i) => {
                 pending: scene.pending || 'none'
             }, null, 2);
             
-            prompt += `
+            volatile += `
 ═══════════════════════════════════════════════════════════════════
 CANONICAL_CURRENT_SCENE (AUTHORITATIVE - THIS IS WHERE WE ARE NOW)
 ═══════════════════════════════════════════════════════════════════
@@ -3437,7 +4307,8 @@ Any response without SceneCheck header will be REJECTED and regenerated.
 `;
         }
 
-        return prompt;
+        // stable | semi | volatile, with cache sentinels for the provider to split on
+        return stable + PROMPT_CACHE_BREAK + semi + PROMPT_CACHE_BREAK + volatile;
     }
 
 
@@ -3456,6 +4327,11 @@ Any response without SceneCheck header will be REJECTED and regenerated.
         try {
             console.log('\n📝 Processing:', playerAction.substring(0, 50) + '...');
             console.log('🎭 Message mode:', mode);
+
+            // Ledger entries applied during this action (filled by sendToAI → processStateMutations)
+            this._lastAppliedMutations = [];
+            // request_roll tool inputs collected this action (fallback roll prompts)
+            this._toolRollRequests = [];
 
             // CRITICAL: For campaigns that require RAG, verify service health before processing
             // Without RAG, long-term memory is lost and catastrophic continuity errors can occur
@@ -3641,7 +4517,7 @@ FAILURE TO COMPLY WILL RESULT IN AN ERROR BEING SHOWN TO THE USER.
                         console.log(`   Player action: ${playerAction.substring(0, 100)}`);
                         console.log(`   Stripping transition marker but keeping narrative`);
                         // Strip the marker but don't update state
-                        response = response.replace(/\[SCENE_TRANSITION:[^\]]+\]/gi, '').trim();
+                        response = response.replace(/\[SCENE_TRANSITION:(?:[^\][]|\[[^\]]*\])*\]/gi, '').trim();
                     } else {
                         console.log(`📍 [SCENE_TRANSITION] Detected and AUTHORIZED`);
                         console.log(`   From: ${this.campaignState.current_scene.location}`);
@@ -3663,7 +4539,17 @@ FAILURE TO COMPLY WILL RESULT IN AN ERROR BEING SHOWN TO THE USER.
                         // Move current NPCs to departed
                         const previousLocation = this.campaignState.current_scene.location;
                         const previousNpcs = this.campaignState.current_scene.npcs_present || [];
-                        
+
+                        // Episodic memory: summarize the scene that is CLOSING
+                        // (fire-and-forget — must not delay the player response)
+                        const closingScene = {
+                            scene_id: this.campaignState.current_scene.scene_id,
+                            location: previousLocation,
+                            startedAt: this.campaignState.current_scene.startedAt || null
+                        };
+                        this.summarizeClosedScene(closingScene).catch(e =>
+                            console.warn('⚠️ Scene summary failed:', e.message));
+
                         // Update the scene
                         this.campaignState.current_scene.scene_id += 1;
                         this.campaignState.current_scene.location = newLocation;
@@ -3672,6 +4558,7 @@ FAILURE TO COMPLY WILL RESULT IN AN ERROR BEING SHOWN TO THE USER.
                         this.campaignState.current_scene.pending = null;
                         this.campaignState.current_scene.npcs_departed = previousNpcs;
                         this.campaignState.current_scene.npcs_present = newNpcs;
+                        this.campaignState.current_scene.startedAt = new Date().toISOString();
                         
                         // Sync with memory client
                         if (this.memoryClient) {
@@ -3685,7 +4572,7 @@ FAILURE TO COMPLY WILL RESULT IN AN ERROR BEING SHOWN TO THE USER.
                         console.log(`📊 Timewarp metrics:`, this.timewarpMetrics);
                         
                         // Strip the transition marker from the response
-                        response = response.replace(/\[SCENE_TRANSITION:[^\]]+\]/gi, '').trim();
+                        response = response.replace(/\[SCENE_TRANSITION:(?:[^\][]|\[[^\]]*\])*\]/gi, '').trim();
                     }
                 }
             } else {
@@ -3694,6 +4581,37 @@ FAILURE TO COMPLY WILL RESULT IN AN ERROR BEING SHOWN TO THE USER.
             }
 
             console.log(`🔍 After sendToAI - combatState.active:`, this.combatState?.active);
+
+            // CONTINUE-MODE RETREAD GUARD: a continuation must add new story, not
+            // re-narrate the previous beat. Detect verbatim retreads BEFORE saving
+            // to history and regenerate once with a hard correction.
+            if (mode === 'continue' && response) {
+                try {
+                    const histData = JSON.parse(await fs.readFile(this.paths.conversationHistory, 'utf8'));
+                    const lastDm = [...histData].reverse().find(e => e.role === 'assistant' && e.content);
+                    if (lastDm && isRetreadNarration(lastDm.content, response)) {
+                        console.log('🔁 [RETREAD] Continue re-narrated the previous beat — regenerating with correction');
+                        const correctionPrompt = prompt + `
+
+⛔ YOUR PREVIOUS DRAFT REPEATED EARLIER NARRATION VERBATIM — REJECTED.
+The story already contains everything up to: "...${lastDm.content.slice(-250).replace(/\s+/g, ' ')}"
+Write ONLY what happens NEXT, starting mid-flow after those words. No scene re-establishment,
+no restating prior sentences. End at a player decision point.`;
+                        let retry = await this.sendToAI(correctionPrompt, playerAction);
+                        if (retry) {
+                            retry = retry.replace(/^SceneCheck:\s*#\d+\s*\|\s*[^\n]+\n*/i, '').trim();
+                            if (!isRetreadNarration(lastDm.content, retry)) {
+                                response = retry;
+                                console.log('🔁 [RETREAD] Regeneration succeeded — using fresh continuation');
+                            } else {
+                                console.warn('🔁 [RETREAD] Retry also retreaded — keeping original (no loop)');
+                            }
+                        }
+                    }
+                } catch (e) {
+                    console.warn('⚠️ Retread guard failed:', e.message);
+                }
+            }
 
             // Check if we got a valid response
             if (!response) {
@@ -3718,7 +4636,9 @@ FAILURE TO COMPLY WILL RESULT IN AN ERROR BEING SHOWN TO THE USER.
                     type: 'roll_request',
                     rollRequest: phaseInfo.rollRequest,
                     phase: 'setup',
-                    setupNarrative: phaseInfo.setup
+                    setupNarrative: phaseInfo.setup,
+                    appliedMutations: this._lastAppliedMutations || [],
+                    toolRollRequests: this._toolRollRequests || []
                 };
             } else {
                             // Complete narrative - save normally with mode
@@ -3754,7 +4674,9 @@ FAILURE TO COMPLY WILL RESULT IN AN ERROR BEING SHOWN TO THE USER.
 
                             const result = {
                                 success: true,
-                                narrative: cleanNarrative
+                                narrative: cleanNarrative,
+                                appliedMutations: this._lastAppliedMutations || [],
+                                toolRollRequests: this._toolRollRequests || []
                             };
                 const nowCombatActive = !!(this.combatState?.active) && Array.isArray(this.combatState?.initiativeOrder) && this.combatState.initiativeOrder.length > 0;
 
@@ -3871,6 +4793,18 @@ FAILURE TO COMPLY WILL RESULT IN AN ERROR BEING SHOWN TO THE USER.
 
                     // Format 3: Simple "🎲 Roll [Check]"
                     match = line.match(/🎲\s*\*\*?(Roll\s+[^\n*]+?)\*\*?/i);
+                    if (match) {
+                        const sanitized = this.sanitizeRollCommand(match[1].trim());
+                        if (sanitized) {
+                            allRollRequests.push(sanitized);
+                            continue;
+                        }
+                    }
+
+                    // Format 4: Plain "🎲 Roll [Check]..." with NO asterisks at all
+                    // (formats 1-3 all require at least one '*' — \*\*? matches
+                    // one-or-two — so unbolded roll lines were silently dropped)
+                    match = line.match(/🎲\s*(Roll\s+[^\n]+)/i);
                     if (match) {
                         const sanitized = this.sanitizeRollCommand(match[1].trim());
                         if (sanitized) {
@@ -4008,7 +4942,7 @@ FAILURE TO COMPLY WILL RESULT IN AN ERROR BEING SHOWN TO THE USER.
                     const memories = await this.memoryClient.retrieveMemories(ragQuery, ragCount);
                     if (memories && memories.length > 0) {
                         const memoryContext = this.memoryClient.formatMemoriesForContext(memories);
-                        enhancedPrompt = systemPrompt + '\n\n' + memoryContext;
+                        enhancedPrompt = systemPrompt + '\n\n' + memoryContext + '\n\n' + this.buildCanonicalSceneReminder();
                         console.log(`🧠 Retrieved ${memories.length} relevant memories`);
                     }
                 } catch (error) {
@@ -4025,7 +4959,10 @@ FAILURE TO COMPLY WILL RESULT IN AN ERROR BEING SHOWN TO THE USER.
                 // Process state mutations from tool calls
                 if (aiResponse.stateMutations && aiResponse.stateMutations.length > 0) {
                     console.log(`🔧 Processing ${aiResponse.stateMutations.length} state mutations from AI tools`);
-                    await this.processStateMutations(aiResponse.stateMutations);
+                    const appliedEntries = await this.processStateMutations(aiResponse.stateMutations);
+                    if (Array.isArray(appliedEntries) && appliedEntries.length > 0) {
+                        this._lastAppliedMutations.push(...appliedEntries);
+                    }
                 }
                 return aiResponse.text;
             }
@@ -4046,12 +4983,66 @@ FAILURE TO COMPLY WILL RESULT IN AN ERROR BEING SHOWN TO THE USER.
      * This replaces the old extractStateChanges() approach
      */
     async processStateMutations(mutations) {
+        const appliedEntries = [];
         for (const mutation of mutations) {
             try {
                 switch (mutation.type) {
-                    case 'update_character':
-                        await this.applyCharacterUpdate(mutation.input);
+                    case 'update_character': {
+                        const entries = await this.applyCharacterUpdate(mutation.input);
+                        if (Array.isArray(entries)) appliedEntries.push(...entries);
                         break;
+                    }
+                    case 'apply_damage': {
+                        const entry = await this.applyDamageMutation(mutation.input);
+                        if (entry) appliedEntries.push(entry);
+                        break;
+                    }
+                    case 'move_combatant': {
+                        // Move already applied synchronously in handleToolUse — just ledger + persist
+                        const mr = mutation.moveResult;
+                        if (mr && mr.ok && mr.bandsMoved > 0) {
+                            const combatant = this.findCombatantInState(mutation.input.combatant);
+                            const entry = mutationLedger.createEntry(this.campaignState, {
+                                actor: 'dm', type: 'movement',
+                                target: { kind: combatant?.isPlayer ? 'character' : 'enemy', id: combatant?.uid || mutation.input.combatant, name: combatant?.name || mutation.input.combatant },
+                                before: mr.from, after: mr.to,
+                                reason: `${mr.requiresDash ? 'dashed' : 'moved'} ${mr.from} → ${mr.to}${mr.opportunityAttackers?.length ? ` (provoked: ${mr.opportunityAttackers.map(a => a.name).join(', ')})` : ''}`,
+                                refs: { round: this.combatState?.round, disengage: mutation.input.disengage === true }
+                            });
+                            appliedEntries.push(entry);
+                            await this.syncCombatRepresentations();
+                            await this.saveCampaignState();
+                        }
+                        break;
+                    }
+                    case 'transact': {
+                        const { character, action, item_name, base_item, reason } = mutation.input;
+                        const { total, unitGp, qty } = mutation.computed || {};
+                        if (total === undefined) break;
+                        const isSell = action === 'sell';
+                        const update = {
+                            character,
+                            gold_change: isSell ? total : -total
+                        };
+                        if (isSell) {
+                            // remove_items removes one match per entry — repeat for quantity
+                            update.remove_items = Array.from({ length: qty }, () => item_name);
+                        } else {
+                            update.add_items = [{
+                                name: item_name,
+                                baseItem: base_item || null,
+                                category: 'misc',
+                                quantity: qty,
+                                value: unitGp
+                            }];
+                        }
+                        const entries = await this.applyCharacterUpdate(update, {
+                            actor: 'dm',
+                            reason: `${isSell ? 'sold' : 'bought'} ${qty}x ${item_name} (${total} total)${reason ? ` — ${reason}` : ''}`
+                        });
+                        if (Array.isArray(entries)) appliedEntries.push(...entries);
+                        break;
+                    }
                     case 'start_combat':
                         await this.initiateCombatFromTool(mutation.input);
                         console.log(`🔍 After initiateCombatFromTool - combatState.active:`, this.combatState?.active);
@@ -4059,13 +5050,26 @@ FAILURE TO COMPLY WILL RESULT IN AN ERROR BEING SHOWN TO THE USER.
                     case 'end_combat':
                         await this.terminateCombatFromTool(mutation.input);
                         break;
+                    case 'award_experience':
+                        await this.awardPartyExperience(mutation.input.total_xp, mutation.input.reason || 'milestone');
+                        await this.saveCampaignState();
+                        break;
                     case 'request_roll':
-                        // Roll requests are handled separately by the roll queue system
-                        this.pendingRollRequest = mutation.input;
-                        console.log(`🎲 Pending roll request: ${mutation.input.roll_type} for ${mutation.input.character}`);
+                        // Collected per-action; the endpoint enqueues these as a
+                        // fallback when the narrative 🎲 line is missing/malformed
+                        // (the old pendingRollRequest stash was never consumed)
+                        if (!Array.isArray(this._toolRollRequests)) this._toolRollRequests = [];
+                        this._toolRollRequests.push(mutation.input);
+                        console.log(`🎲 Tool roll request: ${mutation.input.roll_type} for ${mutation.input.character}`);
                         break;
                     case 'update_npc':
                         await this.applyNpcUpdate(mutation.input);
+                        break;
+                    case 'update_quest':
+                        await this.applyQuestUpdate(mutation.input);
+                        break;
+                    case 'update_ship':
+                        await this.applyShipUpdate(mutation.input);
                         break;
                     default:
                         console.warn(`⚠️ Unknown mutation type: ${mutation.type}`);
@@ -4074,13 +5078,249 @@ FAILURE TO COMPLY WILL RESULT IN AN ERROR BEING SHOWN TO THE USER.
                 console.error(`❌ Error processing mutation ${mutation.type}:`, error);
             }
         }
+        return appliedEntries;
+    }
+
+    /**
+     * Find a character in campaign state, handling both fantasy (characters)
+     * and sci-fi (party) structures. Returns { charData, charKey } or nulls.
+     */
+    findCharacterEntry(name) {
+        const norm = (v) => (v ?? '').toString().trim().toLowerCase().replace(/[^a-z0-9]/g, '');
+        const wanted = norm(name);
+        if (!wanted) return { charData: null, charKey: null };
+        let partial = null;
+        for (const pool of [this.campaignState?.characters, this.campaignState?.party]) {
+            if (!pool || typeof pool !== 'object') continue;
+            for (const [key, data] of Object.entries(pool)) {
+                if (!data || typeof data !== 'object') continue;
+                if (norm(data.name) === wanted || norm(key) === wanted) {
+                    return { charData: data, charKey: key };
+                }
+                // Partial match fallback (e.g. 'kira' vs 'Kira Moonwhisper')
+                if (!partial && wanted.length >= 3 && (norm(data.name).includes(wanted) || norm(key).includes(wanted) || wanted.includes(norm(key)))) {
+                    partial = { charData: data, charKey: key };
+                }
+            }
+        }
+        return partial || { charData: null, charKey: null };
+    }
+
+    /**
+     * Find a combatant in this.combatState.initiativeOrder with fuzzy matching.
+     */
+    findCombatantInState(name) {
+        const order = Array.isArray(this.combatState?.initiativeOrder) ? this.combatState.initiativeOrder : [];
+        const norm = (v) => (v ?? '').toString().trim().toLowerCase().replace(/[^a-z0-9]/g, '');
+        const wanted = norm(name);
+        if (!wanted) return null;
+        return order.find(c => {
+            const cn = norm(c.name);
+            return cn === wanted || norm(c.uid) === wanted || norm(c.id) === wanted ||
+                (wanted.length >= 3 && (cn.includes(wanted) || wanted.includes(cn)));
+        }) || null;
+    }
+
+    /**
+     * Mirror a character's sheet HP into their combat participant entry
+     * (HP lives in both campaignState.characters[].hp and combatState.initiativeOrder).
+     */
+    syncCombatantHP(name, hp) {
+        const combatant = this.findCombatantInState(name);
+        if (!combatant || !hp || typeof hp !== 'object') return;
+        if (!combatant.hp || typeof combatant.hp !== 'object') {
+            combatant.hp = { current: hp.current, max: hp.max };
+        } else {
+            combatant.hp.current = hp.current;
+            if (hp.max !== undefined && hp.max !== null) combatant.hp.max = hp.max;
+        }
+        if (combatant.hp.current === 0 && !combatant.isDefeated) {
+            combatant.isDefeated = true;
+            console.log(`💀 [COMBAT] ${combatant.name} defeated (HP sync)`);
+        } else if (combatant.hp.current > 0 && combatant.isDefeated) {
+            combatant.isDefeated = false;
+        }
+    }
+
+    /**
+     * Push combat state mutations out to the combat manager + campaign state mirror
+     * so all three representations stay aligned.
+     */
+    async syncCombatRepresentations(persist = false) {
+        if (!this.combatState) return;
+        if (this.campaignState) {
+            this.campaignState.combat = JSON.parse(JSON.stringify(this.combatState));
+        }
+        if (combatManager && (this.combatState.active === true || this.combatState.active === 'pending')) {
+            try {
+                await combatManager.setCombatState(this.campaignId, this.combatState, persist);
+            } catch (e) {
+                console.warn('⚠️ Could not sync combat manager:', e.message);
+            }
+        }
+    }
+
+    /**
+     * After a turn advance, propagate auto-expired conditions (combat-manager
+     * tickConditions) to character sheets and the mutation ledger.
+     */
+    async processExpiredConditions(updatedCombatState) {
+        const expired = updatedCombatState?.lastExpiredConditions;
+        if (!Array.isArray(expired) || expired.length === 0) return;
+
+        for (const { combatantName, isPlayer, condition } of expired) {
+            const name = conditionEffects.conditionName(condition);
+            if (isPlayer) {
+                const { charData, charKey } = this.findCharacterEntry(combatantName);
+                if (charData && Array.isArray(charData.conditions)) {
+                    charData.conditions = charData.conditions.filter(c => conditionEffects.conditionName(c) !== name);
+                }
+                mutationLedger.createEntry(this.campaignState, {
+                    actor: 'system', type: 'condition_expired',
+                    target: { kind: 'character', id: charKey || combatantName, name: charData?.name || combatantName },
+                    before: name, reason: condition.source ? `from ${condition.source}` : 'duration ended',
+                    refs: { condition: name, round: updatedCombatState.round }
+                });
+            } else {
+                mutationLedger.createEntry(this.campaignState, {
+                    actor: 'system', type: 'condition_expired',
+                    target: { kind: 'enemy', id: combatantName, name: combatantName },
+                    before: name, reason: 'duration ended',
+                    refs: { condition: name, round: updatedCombatState.round }
+                });
+            }
+            console.log(`⏳ [LEDGER] Condition expired: ${name} on ${combatantName}`);
+        }
+
+        delete updatedCombatState.lastExpiredConditions;
+        await this.saveCampaignState();
+    }
+
+    /**
+     * Look up an authoritative roll total from the roll queue by queueId.
+     * Returns the most recently submitted completed participant total, or null.
+     */
+    getRollQueueTotal(queueId) {
+        if (!queueId) return null;
+        const rollQueue = Array.isArray(this.combatState?.rollQueue) ? this.combatState.rollQueue : [];
+        const entry = rollQueue.find(e => e.queueId === queueId);
+        if (!entry) return null;
+        const completed = (entry.participants || [])
+            .filter(p => p.result && p.result.total !== null && p.result.total !== undefined)
+            .sort((a, b) => new Date(b.result.submittedAt || 0) - new Date(a.result.submittedAt || 0));
+        return completed.length > 0 ? Number(completed[0].result.total) : null;
+    }
+
+    /**
+     * Apply damage/healing from the apply_damage tool.
+     * Server-authoritative math: roll_ref overrides the LLM's amount; absurd
+     * values are rejected. Writes both character sheet and combat copies.
+     */
+    async applyDamageMutation(input) {
+        const { target, is_healing, damage_type, source, roll_ref } = input;
+        let amount = Math.max(0, Number(input.amount) || 0);
+
+        // Roll queue is authoritative when referenced
+        const rolledTotal = this.getRollQueueTotal(roll_ref);
+        if (rolledTotal !== null) {
+            if (rolledTotal !== amount) {
+                console.warn(`⚠️ [LEDGER] apply_damage amount ${amount} != rolled total ${rolledTotal} (roll ${roll_ref}) — using rolled total`);
+            }
+            amount = Math.max(0, rolledTotal);
+        }
+
+        const { charData } = this.findCharacterEntry(target);
+        const combatant = this.findCombatantInState(target);
+
+        if (!charData && !combatant) {
+            console.warn(`⚠️ [LEDGER] apply_damage target not found: ${target}`);
+            return mutationLedger.createEntry(this.campaignState, {
+                actor: 'dm', type: 'hp_change',
+                target: { kind: 'character', id: target, name: target },
+                delta: is_healing ? amount : -amount,
+                reason: source || damage_type || null,
+                refs: { rollQueueId: roll_ref || undefined },
+                status: 'rejected'
+            });
+        }
+
+        // Sanity bound: reject absurd values (> 2x max HP of the target)
+        const maxHp = Number(charData?.hp?.max ?? combatant?.hp?.max);
+        if (Number.isFinite(maxHp) && maxHp > 0 && amount > maxHp * 2) {
+            console.warn(`⚠️ [LEDGER] apply_damage rejected: ${amount} exceeds 2x max HP (${maxHp}) of ${target}`);
+            const rejected = mutationLedger.createEntry(this.campaignState, {
+                actor: 'dm', type: 'hp_change',
+                target: { kind: charData ? 'character' : 'enemy', id: target, name: charData?.name || combatant?.name || target },
+                delta: is_healing ? amount : -amount,
+                reason: `${source || 'unknown'} (rejected: implausible amount)`,
+                refs: { rollQueueId: roll_ref || undefined, round: this.combatState?.round },
+                status: 'rejected'
+            });
+            await this.saveCampaignState();
+            return rejected;
+        }
+
+        const delta = is_healing ? amount : -amount;
+        let before;
+        let after;
+
+        if (charData && charData.hp && typeof charData.hp === 'object') {
+            before = charData.hp.current;
+            charData.hp.current = Math.max(0, Math.min(charData.hp.max, charData.hp.current + delta));
+            after = charData.hp.current;
+            this.syncCombatantHP(target, charData.hp);
+        } else if (charData && typeof charData.hp === 'number') {
+            before = charData.hp;
+            charData.hp = Math.max(0, charData.hp + delta);
+            after = charData.hp;
+        } else if (combatant) {
+            // Enemy (or combatant with no sheet)
+            if (!combatant.hp || typeof combatant.hp !== 'object') {
+                combatant.hp = { current: 10, max: 10 };
+            }
+            before = combatant.hp.current;
+            const max = Number.isFinite(Number(combatant.hp.max)) ? Number(combatant.hp.max) : Infinity;
+            combatant.hp.current = Math.max(0, Math.min(max, (Number(combatant.hp.current) || 0) + delta));
+            after = combatant.hp.current;
+            if (combatant.hp.current === 0 && !combatant.isDefeated) {
+                combatant.isDefeated = true;
+                console.log(`💀 [COMBAT] ${combatant.name} defeated!`);
+            } else if (combatant.hp.current > 0 && combatant.isDefeated) {
+                combatant.isDefeated = false;
+            }
+        }
+
+        const targetKind = charData ? 'character' : 'enemy';
+        const targetName = charData?.name || combatant?.name || target;
+        const reasonText = [source, damage_type].filter(Boolean).join(', ');
+
+        const entry = mutationLedger.createEntry(this.campaignState, {
+            actor: 'dm',
+            type: 'hp_change',
+            target: { kind: targetKind, id: combatant?.uid || combatant?.id || target, name: targetName },
+            delta,
+            before,
+            after,
+            reason: reasonText || (is_healing ? 'healing' : 'damage'),
+            refs: {
+                rollQueueId: roll_ref || undefined,
+                round: this.combatState?.round,
+                validated: rolledTotal !== null
+            }
+        });
+
+        console.log(`💥 [LEDGER] ${targetName}: HP ${before} → ${after} (${delta > 0 ? '+' : ''}${delta}) — ${reasonText || 'no source'}${rolledTotal !== null ? ' [roll-validated]' : ''}`);
+
+        await this.syncCombatRepresentations();
+        await this.saveCampaignState();
+        return entry;
     }
 
     /**
      * Apply NPC registry update from update_npc tool
      */
     async applyNpcUpdate(input) {
-        const { id, name, pronouns, role, status, location, notes } = input;
+        const { id, name, pronouns, role, status, location, notes, tier, station } = input;
 
         if (!this.campaignState.npcs) {
             this.campaignState.npcs = {};
@@ -4088,6 +5328,12 @@ FAILURE TO COMPLY WILL RESULT IN AN ERROR BEING SHOWN TO THE USER.
 
         const existing = this.campaignState.npcs[id];
         if (existing) {
+            // Factual status-change record (template only, capped)
+            if (status && status !== existing.status) {
+                if (!Array.isArray(existing.history)) existing.history = [];
+                existing.history.push(`status ${existing.status || 'unknown'}→${status}${this.campaignState.current_scene ? ` (scene #${this.campaignState.current_scene.scene_id})` : ''}`);
+                if (existing.history.length > 10) existing.history = existing.history.slice(-10);
+            }
             // Merge — only overwrite fields that were provided
             if (name) existing.name = name;
             if (pronouns) existing.pronouns = pronouns;
@@ -4095,7 +5341,10 @@ FAILURE TO COMPLY WILL RESULT IN AN ERROR BEING SHOWN TO THE USER.
             if (status) existing.status = status;
             if (location !== undefined) existing.location = location;
             if (notes) existing.notes = notes;
-            console.log(`👤 Updated NPC: ${existing.name} (${id})`);
+            if (tier) existing.tier = tier;
+            if (station !== undefined) existing.station = station;
+            existing.last_updated_scene = this.campaignState.current_scene?.scene_id ?? existing.last_updated_scene ?? null;
+            console.log(`👤 Updated NPC: ${existing.name} (${id})${tier ? ` [tier: ${tier}]` : ''}`);
         } else {
             this.campaignState.npcs[id] = {
                 name,
@@ -4103,81 +5352,356 @@ FAILURE TO COMPLY WILL RESULT IN AN ERROR BEING SHOWN TO THE USER.
                 role: role || 'Unknown',
                 status: status || 'alive',
                 location: location || null,
-                notes: notes || null
+                notes: notes || null,
+                tier: tier || 'npc',
+                station: station || null,
+                last_updated_scene: this.campaignState.current_scene?.scene_id ?? null
             };
-            console.log(`👤 Registered new NPC: ${name} (${id})`);
+            console.log(`👤 Registered new NPC: ${name} (${id}) [tier: ${tier || 'npc'}]`);
         }
 
         await this.saveCampaignState();
     }
 
     /**
+     * Apply quest log update from update_quest tool.
+     * Maintains the existing campaignState.quests {active, completed} structure
+     * that buildContinuityAnchors already injects into every prompt.
+     */
+    async applyQuestUpdate(input) {
+        const { id, title, status, priority, location, summary, next_steps, stakes, note } = input;
+        if (!this.campaignState.quests || typeof this.campaignState.quests !== 'object') {
+            this.campaignState.quests = { active: [], completed: [] };
+        }
+        const quests = this.campaignState.quests;
+        if (!Array.isArray(quests.active)) quests.active = [];
+        if (!Array.isArray(quests.completed)) quests.completed = [];
+
+        // Find in either list
+        let quest = quests.active.find(q => q.id === id) || quests.completed.find(q => q.id === id);
+        if (!quest) {
+            quest = { id, title, status: 'active', createdAt: new Date().toISOString(), updates: [] };
+            quests.active.push(quest);
+            console.log(`📜 New quest: ${title} (${id})`);
+        }
+
+        if (title) quest.title = title;
+        if (priority) quest.priority = priority;
+        if (location !== undefined) quest.location = location;
+        if (summary) quest.summary = summary;
+        if (Array.isArray(next_steps)) quest.next_steps = next_steps;
+        if (stakes !== undefined) quest.stakes = stakes;
+        if (note) {
+            if (!Array.isArray(quest.updates)) quest.updates = [];
+            quest.updates.push({
+                ts: new Date().toISOString(),
+                scene: this.campaignState.current_scene?.scene_id ?? null,
+                note
+            });
+            if (quest.updates.length > 20) quest.updates = quest.updates.slice(-20);
+        }
+
+        // Status transitions move the quest between lists
+        const newStatus = status || quest.status || 'active';
+        const wasActive = quests.active.includes(quest);
+        quest.status = newStatus;
+        if (newStatus !== 'active' && wasActive) {
+            quests.active = quests.active.filter(q => q !== quest);
+            quest.resolvedAt = new Date().toISOString();
+            quests.completed.push(quest);
+            console.log(`📜 Quest ${newStatus}: ${quest.title}`);
+        } else if (newStatus === 'active' && !wasActive) {
+            quests.completed = quests.completed.filter(q => q !== quest);
+            quests.active.push(quest);
+        }
+
+        await this.saveCampaignState();
+    }
+
+    /**
+     * Apply ship state update from update_ship tool
+     */
+    async applyShipUpdate(input) {
+        if (!this.campaignState.ship) {
+            console.warn('⚠️ update_ship called but no ship in campaign state');
+            return;
+        }
+        const ship = this.campaignState.ship;
+
+        // Hull damage/repair
+        if (input.hull_change !== undefined) {
+            ship.hull.current = Math.max(0, Math.min(ship.hull.max, ship.hull.current + input.hull_change));
+            if (!input.hull_status) {
+                const pct = ship.hull.max > 0 ? ship.hull.current / ship.hull.max : 0;
+                ship.hull.status = pct > 0.6 ? 'nominal' : pct > 0.25 ? 'damaged' : pct > 0 ? 'critical' : 'destroyed';
+            }
+            console.log(`🚀 Hull: ${ship.hull.current}/${ship.hull.max} (${ship.hull.status})`);
+        }
+        if (input.hull_status) ship.hull.status = input.hull_status;
+
+        // Shield damage/recharge
+        if (input.shields_change !== undefined) {
+            ship.shields.current = Math.max(0, Math.min(ship.shields.max, ship.shields.current + input.shields_change));
+            if (!input.shields_status) {
+                const pct = ship.shields.max > 0 ? ship.shields.current / ship.shields.max : 0;
+                ship.shields.status = pct > 0.5 ? 'nominal' : pct > 0 ? 'damaged' : 'destroyed';
+            }
+            console.log(`🚀 Shields: ${ship.shields.current}/${ship.shields.max} (${ship.shields.status})`);
+        }
+        if (input.shields_status) ship.shields.status = input.shields_status;
+
+        // System updates
+        if (input.system_updates && Array.isArray(input.system_updates)) {
+            for (const update of input.system_updates) {
+                const sys = ship.systems[update.system];
+                if (!sys) { console.warn(`⚠️ Unknown ship system: ${update.system}`); continue; }
+                if (update.status) sys.status = update.status;
+                if (update.notes !== undefined) sys.notes = update.notes;
+                if (update.add_upgrade && !sys.upgrades.includes(update.add_upgrade)) {
+                    sys.upgrades.push(update.add_upgrade);
+                }
+                if (update.remove_upgrade) {
+                    sys.upgrades = sys.upgrades.filter(u => u !== update.remove_upgrade);
+                }
+                console.log(`🚀 System ${update.system}: ${sys.status}`);
+            }
+        }
+
+        // Conditions
+        if (input.add_conditions) {
+            if (!ship.conditions) ship.conditions = [];
+            for (const cond of input.add_conditions) {
+                if (!ship.conditions.includes(cond)) ship.conditions.push(cond);
+            }
+        }
+        if (input.remove_conditions) {
+            ship.conditions = (ship.conditions || []).filter(c => !input.remove_conditions.includes(c));
+        }
+
+        // Fuel and supplies
+        if (input.fuel_change !== undefined) {
+            ship.fuel.current = Math.max(0, Math.min(ship.fuel.max, ship.fuel.current + input.fuel_change));
+        }
+        if (input.supplies_change !== undefined) {
+            ship.supplies.current = Math.max(0, Math.min(ship.supplies.max, ship.supplies.current + input.supplies_change));
+        }
+
+        // Cargo manifest
+        if (input.add_cargo) {
+            if (!ship.cargo_manifest) ship.cargo_manifest = [];
+            for (const item of input.add_cargo) {
+                const existing = ship.cargo_manifest.find(c => c.name === item.name);
+                if (existing) {
+                    existing.quantity = (existing.quantity || 1) + (item.quantity || 1);
+                } else {
+                    ship.cargo_manifest.push({ name: item.name, quantity: item.quantity || 1, description: item.description || null });
+                }
+            }
+        }
+        if (input.remove_cargo) {
+            ship.cargo_manifest = (ship.cargo_manifest || []).filter(c => !input.remove_cargo.includes(c.name));
+        }
+
+        // Ship-level status and location
+        if (input.location) ship.location = input.location;
+        if (input.ship_status) ship.status = input.ship_status;
+
+        await this.saveCampaignState();
+        console.log(`🚀 Ship "${ship.name}" state updated and saved`);
+    }
+
+    getProgressionCharacters() {
+        const characters = this.campaignState?.characters || this.campaignState?.party || {};
+        return Object.entries(characters)
+            .filter(([, char]) => char && typeof char === 'object' && char.noProgression !== true);
+    }
+
+    normalizeCharacterProgression(char) {
+        const existingXP = Number(char.experience?.current ?? char.xp ?? 0);
+        const existingLevel = Number(char.level || 0);
+        const baselineXP = existingLevel > 0 ? xpCalculator.getXPForLevel(existingLevel) : existingXP;
+        const totalXP = Math.max(existingXP, baselineXP);
+        const progress = xpCalculator.getLevelProgress(totalXP);
+
+        char.level = Math.max(existingLevel || 1, progress.level);
+        char.proficiencyBonus = xpCalculator.getProficiencyBonus(char.level);
+        char.experience = {
+            current: totalXP,
+            levelStart: xpCalculator.getXPForLevel(char.level),
+            nextLevel: xpCalculator.getNextLevelXP(char.level),
+            toNextLevel: progress.xpNeededForNext,
+            progressPct: progress.progressPct
+        };
+
+        return char.experience;
+    }
+
+    async awardPartyExperience(totalXP, source = 'combat') {
+        const numericXP = Math.max(0, Number(totalXP) || 0);
+        if (numericXP <= 0) {
+            return null;
+        }
+
+        const eligible = this.getProgressionCharacters();
+        if (eligible.length === 0) {
+            console.warn('⚠️ XP award skipped: no player-controlled characters found');
+            return null;
+        }
+
+        const xpEach = xpCalculator.distributeXP(numericXP, eligible.length);
+        const awards = [];
+
+        for (const [key, char] of eligible) {
+            const beforeXP = Number(char.experience?.current ?? char.xp ?? xpCalculator.getXPForLevel(char.level || 1));
+            const beforeLevel = Number(char.level || xpCalculator.getLevelForXP(beforeXP));
+            const nextXP = beforeXP + xpEach;
+            const nextProgress = xpCalculator.getLevelProgress(nextXP);
+
+            char.level = nextProgress.level;
+            char.proficiencyBonus = nextProgress.proficiencyBonus;
+            char.experience = {
+                current: nextXP,
+                levelStart: nextProgress.currentLevelXP,
+                nextLevel: nextProgress.nextLevelXP,
+                toNextLevel: nextProgress.xpNeededForNext,
+                progressPct: nextProgress.progressPct
+            };
+
+            awards.push({
+                characterId: key,
+                name: char.name || key,
+                xpAwarded: xpEach,
+                xpBefore: beforeXP,
+                xpAfter: nextXP,
+                levelBefore: beforeLevel,
+                levelAfter: nextProgress.level,
+                leveledUp: nextProgress.level > beforeLevel
+            });
+        }
+
+        if (!this.campaignState.progression) {
+            this.campaignState.progression = {};
+        }
+        if (!Array.isArray(this.campaignState.progression.xpEvents)) {
+            this.campaignState.progression.xpEvents = [];
+        }
+
+        const event = {
+            id: `xp-${Date.now()}`,
+            source,
+            totalXP: numericXP,
+            partySize: eligible.length,
+            xpEach,
+            awards,
+            createdAt: new Date().toISOString()
+        };
+        this.campaignState.progression.xpEvents.push(event);
+        this.campaignState.progression.lastAward = event;
+
+        console.log(`⭐ Awarded ${numericXP} XP (${xpEach} each) from ${source}`);
+        awards.forEach(award => {
+            console.log(`   ${award.name}: ${award.xpBefore} → ${award.xpAfter} XP, level ${award.levelBefore} → ${award.levelAfter}`);
+        });
+
+        return event;
+    }
+
+    /**
      * Apply character update from update_character tool
      */
-    async applyCharacterUpdate(input) {
+    async applyCharacterUpdate(input, options = {}) {
         const { character, hp_change, add_conditions, remove_conditions, gold_change, add_items, remove_items } = input;
+        const actor = options.actor || 'dm';
+        const reason = options.reason || input.reason || null;
+        const entries = [];
 
-        // Find character in campaign state (handle different campaign structures)
-        let charData = null;
-        let charKey = null;
-
-        // Try fantasy structure (characters object)
-        if (this.campaignState?.characters) {
-            for (const [key, data] of Object.entries(this.campaignState.characters)) {
-                if (data.name?.toLowerCase() === character.toLowerCase() ||
-                    key.toLowerCase() === character.toLowerCase()) {
-                    charData = data;
-                    charKey = key;
-                    break;
-                }
-            }
-        }
-
-        // Try sci-fi structure (party object)
-        if (!charData && this.campaignState?.party) {
-            for (const [key, data] of Object.entries(this.campaignState.party)) {
-                if (data.name?.toLowerCase() === character.toLowerCase() ||
-                    key.toLowerCase() === character.toLowerCase()) {
-                    charData = data;
-                    charKey = key;
-                    break;
-                }
-            }
-        }
+        const { charData, charKey } = this.findCharacterEntry(character);
 
         if (!charData) {
             console.warn(`⚠️ Character not found: ${character}`);
-            return;
+            return entries;
         }
 
         console.log(`📝 Updating character: ${charData.name || charKey}`);
+        const ledgerTarget = { kind: 'character', id: charKey, name: charData.name || charKey };
 
         // Apply HP change
         if (hp_change !== undefined && hp_change !== 0) {
+            let oldHp, newHp;
             if (charData.hp && typeof charData.hp === 'object') {
-                const oldHp = charData.hp.current;
+                oldHp = charData.hp.current;
                 charData.hp.current = Math.max(0, Math.min(charData.hp.max, charData.hp.current + hp_change));
-                console.log(`   HP: ${oldHp} → ${charData.hp.current} (${hp_change > 0 ? '+' : ''}${hp_change})`);
+                newHp = charData.hp.current;
+                this.syncCombatantHP(character, charData.hp);
             } else if (typeof charData.hp === 'number') {
-                const oldHp = charData.hp;
+                oldHp = charData.hp;
                 charData.hp = Math.max(0, charData.hp + hp_change);
-                console.log(`   HP: ${oldHp} → ${charData.hp} (${hp_change > 0 ? '+' : ''}${hp_change})`);
+                newHp = charData.hp;
+            }
+            if (oldHp !== undefined) {
+                console.log(`   HP: ${oldHp} → ${newHp} (${hp_change > 0 ? '+' : ''}${hp_change})`);
+                entries.push(mutationLedger.createEntry(this.campaignState, {
+                    actor, type: 'hp_change', target: ledgerTarget,
+                    delta: hp_change, before: oldHp, after: newHp,
+                    reason, refs: { round: this.combatState?.round }
+                }));
             }
         }
 
-        // Apply conditions
+        // Apply conditions (strings or {name, source, duration_rounds} objects)
         if (!charData.conditions) charData.conditions = [];
+        const condName = conditionEffects.conditionName;
         if (add_conditions && add_conditions.length > 0) {
             for (const cond of add_conditions) {
-                if (!charData.conditions.includes(cond)) {
-                    charData.conditions.push(cond);
-                    console.log(`   Added condition: ${cond}`);
+                const normalized = conditionEffects.normalizeCondition(cond, this.combatState?.round);
+                if (!normalized) continue;
+                const exists = charData.conditions.some(c => condName(c) === normalized.name);
+                if (!exists) {
+                    // Store plain strings for duration-less conditions (legacy compat)
+                    const stored = normalized.duration || normalized.source ? normalized : normalized.name;
+                    charData.conditions.push(stored);
+                    // Mirror into combat state so expiry/annotation see it
+                    const combatant = this.findCombatantInState(character);
+                    if (combatant && this.combatState?.conditions) {
+                        const key = combatant.uid || combatant.id || combatant.name;
+                        if (!Array.isArray(this.combatState.conditions[key])) this.combatState.conditions[key] = [];
+                        if (!this.combatState.conditions[key].some(c => condName(c) === normalized.name)) {
+                            this.combatState.conditions[key].push(stored);
+                            combatant.conditions = this.combatState.conditions[key];
+                        }
+                    }
+                    console.log(`   Added condition: ${normalized.name}${normalized.duration ? ` (${normalized.duration.value} rounds)` : ''}`);
+                    entries.push(mutationLedger.createEntry(this.campaignState, {
+                        actor, type: 'condition_add', target: ledgerTarget,
+                        after: normalized.name, reason: reason || normalized.source,
+                        refs: { condition: normalized.name, conditionObject: stored, round: this.combatState?.round }
+                    }));
                 }
             }
         }
         if (remove_conditions && remove_conditions.length > 0) {
-            charData.conditions = charData.conditions.filter(c => !remove_conditions.includes(c));
-            console.log(`   Removed conditions: ${remove_conditions.join(', ')}`);
+            const removeNames = remove_conditions.map(c => condName(c)).filter(Boolean);
+            for (const name of removeNames) {
+                const existing = charData.conditions.find(c => condName(c) === name);
+                if (existing) {
+                    entries.push(mutationLedger.createEntry(this.campaignState, {
+                        actor, type: 'condition_remove', target: ledgerTarget,
+                        before: name, reason,
+                        refs: { condition: name, conditionObject: existing, round: this.combatState?.round }
+                    }));
+                }
+            }
+            charData.conditions = charData.conditions.filter(c => !removeNames.includes(condName(c)));
+            // Mirror removal into combat state
+            const combatant = this.findCombatantInState(character);
+            if (combatant && this.combatState?.conditions) {
+                const key = combatant.uid || combatant.id || combatant.name;
+                if (Array.isArray(this.combatState.conditions[key])) {
+                    this.combatState.conditions[key] = this.combatState.conditions[key].filter(c => !removeNames.includes(condName(c)));
+                    combatant.conditions = this.combatState.conditions[key];
+                }
+            }
+            console.log(`   Removed conditions: ${removeNames.join(', ')}`);
         }
 
         // Apply gold/credits change
@@ -4186,6 +5710,11 @@ FAILURE TO COMPLY WILL RESULT IN AN ERROR BEING SHOWN TO THE USER.
             const oldVal = charData[resourceKey] || 0;
             charData[resourceKey] = Math.max(0, oldVal + gold_change);
             console.log(`   ${resourceKey}: ${oldVal} → ${charData[resourceKey]} (${gold_change > 0 ? '+' : ''}${gold_change})`);
+            entries.push(mutationLedger.createEntry(this.campaignState, {
+                actor, type: 'gold_change', target: ledgerTarget,
+                delta: gold_change, before: oldVal, after: charData[resourceKey],
+                reason, refs: { resourceKey }
+            }));
         }
 
         // Apply inventory changes
@@ -4193,7 +5722,7 @@ FAILURE TO COMPLY WILL RESULT IN AN ERROR BEING SHOWN TO THE USER.
         if (add_items && add_items.length > 0) {
             for (const item of add_items) {
                 // Handle both old string format and new object format
-                const itemObj = typeof item === 'string' 
+                const itemObj = typeof item === 'string'
                     ? { name: item, category: 'misc', quantity: 1, condition: 'good', equipped: false, value: 0, stackable: false, treasure: false }
                     : {
                         name: item.name,
@@ -4209,24 +5738,36 @@ FAILURE TO COMPLY WILL RESULT IN AN ERROR BEING SHOWN TO THE USER.
                     };
                 charData.inventory.push(itemObj);
                 console.log(`   Added item: ${itemObj.name}${itemObj.baseItem ? ` (${itemObj.baseItem})` : ''}${itemObj.custom ? ' [CUSTOM]' : ''}`);
+                entries.push(mutationLedger.createEntry(this.campaignState, {
+                    actor, type: 'item_add', target: ledgerTarget,
+                    after: itemObj.name, reason, refs: { item: itemObj }
+                }));
             }
         }
         if (remove_items && remove_items.length > 0) {
             // Remove by name match (handles both string and object items in inventory)
             for (const toRemove of remove_items) {
                 const removeName = typeof toRemove === 'string' ? toRemove : toRemove.name;
-                const idx = charData.inventory.findIndex(i => 
+                const idx = charData.inventory.findIndex(i =>
                     (typeof i === 'string' ? i : i.name).toLowerCase() === removeName.toLowerCase()
                 );
                 if (idx !== -1) {
                     const removed = charData.inventory.splice(idx, 1)[0];
-                    console.log(`   Removed item: ${typeof removed === 'string' ? removed : removed.name}`);
+                    const removedObj = typeof removed === 'string'
+                        ? { name: removed, category: 'misc', quantity: 1 }
+                        : removed;
+                    console.log(`   Removed item: ${removedObj.name}`);
+                    entries.push(mutationLedger.createEntry(this.campaignState, {
+                        actor, type: 'item_remove', target: ledgerTarget,
+                        before: removedObj.name, reason, refs: { item: removedObj }
+                    }));
                 }
             }
         }
 
         // Save updated state
         await this.updateCampaignState(this.campaignState);
+        return entries;
     }
 
     /**
@@ -4284,9 +5825,42 @@ FAILURE TO COMPLY WILL RESULT IN AN ERROR BEING SHOWN TO THE USER.
                 isPlayer: false,
                 initiative: initRoll,
                 hp: { current: enemy.hp || 20, max: enemy.hp || 20 },
-                ac: enemy.ac || 12
+                ac: enemy.ac || 12,
+                monster_ref: enemy.monster_ref || null
             };
         });
+
+        // Persist trimmed SRD stat blocks so enemy abilities survive across turns/restarts
+        for (const enemyInit of enemyInits) {
+            if (!enemyInit.monster_ref) continue;
+            try {
+                const stats = await rulesLookupService.getMonsterStats(enemyInit.monster_ref);
+                if (stats && !stats.error) {
+                    enemyInit.statBlock = {
+                        cr: stats.challenge_rating ?? null,
+                        speed: typeof stats.speed === 'object' ? (stats.speed.walk ?? null) : (stats.speed ?? null),
+                        abilities: stats.abilities || null,
+                        attacks: (stats.actions || []).slice(0, 4).map(a => ({
+                            name: a.name,
+                            toHit: a.attack_bonus ?? null,
+                            damage: Array.isArray(a.damage) && a.damage[0]?.damage_dice ? a.damage[0].damage_dice : null,
+                            desc: typeof a.desc === 'string' ? a.desc.slice(0, 200) : null
+                        }))
+                    };
+                    // Use SRD HP/AC if the DM didn't supply them
+                    if (!enemies.find(e => e.name === enemyInit.name)?.hp && stats.hit_points) {
+                        enemyInit.hp = { current: stats.hit_points, max: stats.hit_points };
+                    }
+                    if (!enemies.find(e => e.name === enemyInit.name)?.ac && stats.armor_class) {
+                        const acVal = Array.isArray(stats.armor_class) ? stats.armor_class[0]?.value : stats.armor_class;
+                        if (acVal) enemyInit.ac = acVal;
+                    }
+                    console.log(`   📖 Persisted stat block for ${enemyInit.name} (${enemyInit.monster_ref}, CR ${enemyInit.statBlock.cr})`);
+                }
+            } catch (e) {
+                console.warn(`⚠️ Could not fetch stat block for ${enemyInit.monster_ref}: ${e.message}`);
+            }
+        }
 
         // Set combat state as PENDING (awaiting player initiative rolls)
         this.combatState = {
@@ -4307,6 +5881,13 @@ FAILURE TO COMPLY WILL RESULT IN AN ERROR BEING SHOWN TO THE USER.
             combatType: combatType || 'random_encounter',  // For DMG loot generation
             startTime: new Date().toISOString()
         };
+
+        // Zone tracking: players start 'near', enemies 'far' (or their starting_zone)
+        for (let i = 0; i < enemyInits.length; i++) {
+            enemyInits[i].starting_zone = (enemies || [])[i]?.starting_zone || null;
+        }
+        zoneTracker.initPositions(this.combatState);
+        console.log(`📍 Zone positions initialized:`, Object.entries(this.combatState.positions).map(([k, p]) => `${p.name}@${zoneTracker.bandName(p.band)}`).join(', '));
 
         // Transition state machine to COMBAT_PENDING
         if (this.stateMachine && this.stateMachine.getCurrentState() === 'IDLE') {
@@ -4437,6 +6018,36 @@ FAILURE TO COMPLY WILL RESULT IN AN ERROR BEING SHOWN TO THE USER.
         console.log(`   Outcome: ${outcome}`);
         console.log(`   Summary: ${summary}`);
         if (xp_awarded) console.log(`   XP Awarded: ${xp_awarded}`);
+        const xpEvent = xp_awarded ? await this.awardPartyExperience(xp_awarded, 'combat') : null;
+
+        // Generate loot from defeated enemies BEFORE the combat state is wiped
+        if (outcome === 'victory') {
+            try {
+                const enemies = this.combatState?.participants?.enemies || [];
+                const defeated = enemies.map(e => ({
+                    name: e.name,
+                    cr: e.statBlock?.cr ?? e.cr ?? '1/4'  // default CR for untyped enemies
+                }));
+                if (defeated.length > 0) {
+                    const rawLoot = await lootGenerator.generateLoot(defeated, this.combatState?.combatType || 'random_encounter', this.campaignId);
+                    const offer = convertLootForOffer(rawLoot);
+                    if (offer && (offer.items.length > 0 || (offer.coins?.totalGP || 0) > 0)) {
+                        this.campaignState.pendingLoot = {
+                            ...offer,
+                            status: 'offered',
+                            combatType: this.combatState?.combatType || 'random_encounter',
+                            defeatedEnemies: defeated.map(d => d.name),
+                            generatedAt: new Date().toISOString()
+                        };
+                        console.log(`💰 Loot generated (${this.campaignState.pendingLoot.lootId}): ${offer.coins?.totalGP || 0} GP, ${offer.items.length} item(s)`);
+                    } else {
+                        console.log(`💰 Loot roll came up empty (${rawLoot?.lootType || 'unknown'})`);
+                    }
+                }
+            } catch (e) {
+                console.warn('⚠️ Loot generation failed:', e.message);
+            }
+        }
 
         // Transition state machine to COMBAT_ENDED
         if (this.stateMachine) {
@@ -4489,12 +6100,12 @@ FAILURE TO COMPLY WILL RESULT IN AN ERROR BEING SHOWN TO THE USER.
                 rollQueue: []  // Clear stale roll requests
             };
             this.campaignState.combatMachineState = 'COMBAT_ENDED';
+            if (xpEvent) {
+                this.campaignState.combat.xpAward = xpEvent;
+            }
 
             // Persist to disk
-            await this.updateCampaignState({ 
-                combat: this.campaignState.combat,
-                combatMachineState: 'COMBAT_ENDED'
-            });
+            await this.saveCampaignState();
         }
 
         console.log(`🏁 Combat ended: ${outcome}`);
@@ -4567,6 +6178,7 @@ FAILURE TO COMPLY WILL RESULT IN AN ERROR BEING SHOWN TO THE USER.
         if (currentCombatant?.isPlayer) {
             console.log(`➡️  [TURN CHAIN] Player ${currentCombatant.name} finished their turn, advancing...`);
             const updatedState = await combatManager.nextTurn(this.campaignId);
+            await this.processExpiredConditions(updatedState);
             updateSharedCombatState(this, updatedState);
             currentIndex = updatedState.currentTurn;
             currentCombatant = updatedState.initiativeOrder[currentIndex];
@@ -4604,6 +6216,7 @@ FAILURE TO COMPLY WILL RESULT IN AN ERROR BEING SHOWN TO THE USER.
             if (wasNarrated) {
                 console.log(`➡️  [TURN CHAIN] Enemy ${enemyName}'s turn was narrated, advancing...`);
                 const updatedState = await combatManager.nextTurn(this.campaignId);
+                await this.processExpiredConditions(updatedState);
                 updateSharedCombatState(this, updatedState);
                 turnsAdvanced++;
             } else {
@@ -4665,16 +6278,14 @@ Respond with ONLY a JSON object (no markdown, no explanation):
                 responseText = verifyResponse.text;
             }
             
-            // Parse JSON response
-            const jsonMatch = responseText.match(/\{[\s\S]*?\}/);
-            if (!jsonMatch) {
+            const parsed = extractFirstJsonObject(responseText);
+            if (!isPlainObject(parsed)) {
                 // Parse failure = treat as INVALID (not valid!)
                 console.log('⚠️ [PASS A] Could not parse verification response - treating as INVALID');
                 this.timewarpMetrics.passAFails++;
                 return { valid: false, reason: 'Parse failed', aiUnderstood: 'unparseable response' };
             }
-            
-            const parsed = JSON.parse(jsonMatch[0]);
+
             const inferredLocation = (parsed.location || '').toLowerCase();
             const expectedLocation = scene.location.toLowerCase();
             
@@ -4868,9 +6479,11 @@ Respond with ONLY a JSON object (no markdown, no explanation):
             const textAfterDice = response.substring(diceEmojiIndex);
 
             // Check if it's asking for a roll (has "Roll" command after the emoji)
-            // and is near the end of the response (last 200 chars)
-            const isRollRequest = textAfterDice.match(/🎲\s*Roll\s+/i) &&
-                                  (response.length - diceEmojiIndex < 200);
+            // and is near the end of the response. Window is 400 chars because the
+            // DM often appends a short note after the roll line (e.g. advantage
+            // explanations) — 200 was too tight and silently dropped requests.
+            const isRollRequest = textAfterDice.match(/🎲\s*\*{0,2}Roll\s+/i) &&
+                                  (response.length - diceEmojiIndex < 400);
 
             // Check if it's part of initiative order display (has numbered list or "INITIATIVE ORDER")
             const isInitiativeDisplay = response.match(/INITIATIVE ORDER|TURN ORDER|Round \d+ begins/i);
@@ -5094,6 +6707,16 @@ What do you do?`;
     }
 
     async updateMemory(playerAction, dmResponse, sessionId, mode = 'ic') {
+        // Above-table modes are table talk, not story. Keep them out of
+        // indexedEvents entirely — that array feeds the "CURRENT SCENE (THIS IS
+        // NOW)" prompt block and Pass A scene verification, so indexing them
+        // bleeds side-chat into the DM's story context until restart.
+        // (saveConversationHistory already skips persistence for these modes.)
+        if (mode === 'dm-question' || mode === 'ooc') {
+            console.log(`📋 ${mode} mode: skipping memory indexing (table talk, not canon)`);
+            return;
+        }
+
         const newEvent = {
             index: this.indexedEvents.length,
             type: 'EXCHANGE',
@@ -5205,7 +6828,8 @@ What do you do?`;
             }
 
             for (let i = 0; i < steps; i++) {
-                await combatManager.nextTurn(this.campaignId);
+                const stepped = await combatManager.nextTurn(this.campaignId);
+                await this.processExpiredConditions(stepped);
             }
 
             const updatedState = combatManager.getCombatState(this.campaignId);
@@ -5223,20 +6847,17 @@ What do you do?`;
     }
 
     async saveConversationHistory(playerAction, dmResponse, mode = 'ic') {
-        // Above-table / dm-question mode: never persist to history or RAG
-        if (mode === 'dm-question') {
-            console.log('📋 dm-question mode: skipping history save');
+        // Above-table modes: never persist to history, RAG, or state extraction.
+        if (mode === 'dm-question' || mode === 'ooc') {
+            console.log(`📋 ${mode} mode: skipping history save`);
             return;
         }
 
-        // Prevent concurrent saves
+        // Prevent concurrent saves without dropping exchanges.
         if (this.saveInProgress) {
-            console.log('⏳ Save already in progress, queuing...');
-            // Wait briefly and retry once
-            await new Promise(resolve => setTimeout(resolve, 500));
-            if (this.saveInProgress) {
-                console.warn('⚠️ Save still in progress after wait, skipping');
-                return;
+            console.log('⏳ Save already in progress, waiting...');
+            while (this.saveInProgress) {
+                await new Promise(resolve => setTimeout(resolve, 100));
             }
         }
 
@@ -5256,23 +6877,33 @@ What do you do?`;
 
             const timestamp = new Date().toISOString();
 
-            // Validate and add player message
-            if (playerAction && playerAction.trim()) {
+            const isContinueMode = mode === 'continue';
+
+            // Session boundary: a long gap since the last entry closes the previous
+            // session (summary generated async) and opens a new one
+            await this.checkSessionBoundary(history, timestamp);
+
+            // Validate and add player message. Continue mode is a system-triggered
+            // DM beat, so keep the assistant response but do not persist the
+            // synthetic "[SYSTEM: Continue...]" action as player canon.
+            if (!isContinueMode && playerAction && playerAction.trim()) {
                 history.push({
                     role: 'player',
                     content: playerAction,
                     timestamp: timestamp,
                     mode: mode  // Store mode with message
                 });
+            } else if (isContinueMode) {
+                console.log('▶️ Continue mode: skipping synthetic player history entry');
             } else {
-                console.warn('⚠️  Rejected empty player message from being added to history');
+                // Silently skip empty player messages
             }
 
-            // Extract state changes for all modes (IC, dm-question, and OOC)
-            // OOC mode still extracts state for equipment/inventory management
+            // Extract state changes only for canonical story writes. Above-table
+            // modes return before this point so they cannot mutate campaign state.
             let stateChanges = null;
             console.log(`✅ ${mode} mode: Extracting state changes`);
-            stateChanges = await this.extractStateChanges(dmResponse, playerAction);
+            stateChanges = await this.extractStateChanges(dmResponse, isContinueMode ? '' : playerAction);
 
             // DISABLED 2026-01-12: Narrative-based combat detection disabled
             // Combat should ONLY start via start_combat tool call from AI
@@ -5306,7 +6937,7 @@ What do you do?`;
                     stateChanges: stateChanges // Store for rollback (null for OOC)
                 });
             } else {
-                console.warn('⚠️  Rejected empty DM response from being added to history');
+                // Silently skip empty DM responses
             }
 
             // Apply state changes if any were extracted
@@ -5316,13 +6947,15 @@ What do you do?`;
             }
 
             // Update current_scene.last_action for anti-timewarp tracking
-            if (this.campaignState?.current_scene && playerAction) {
-                // Summarize player action (first 100 chars)
-                const actionSummary = playerAction.length > 100 
-                    ? playerAction.substring(0, 100) + '...' 
-                    : playerAction;
-                this.campaignState.current_scene.last_action = actionSummary;
-                
+            if (this.campaignState?.current_scene) {
+                if (!isContinueMode && playerAction) {
+                    // Summarize player action (first 100 chars)
+                    const actionSummary = playerAction.length > 100
+                        ? playerAction.substring(0, 100) + '...'
+                        : playerAction;
+                    this.campaignState.current_scene.last_action = actionSummary;
+                }
+
                 // Check if DM response contains a roll request
                 if (dmResponse && dmResponse.includes('🎲') && dmResponse.match(/Roll\s+\w+/i)) {
                     const rollMatch = dmResponse.match(/🎲\s*(?:ROLL NEEDED:\s*)?Roll\s+([^\n(]+)/i);
@@ -5333,6 +6966,26 @@ What do you do?`;
                     this.campaignState.current_scene.pending = null;
                 }
                 
+                // Factual NPC interaction history: record presence per scene
+                // (template-generated only — never LLM text, never directives)
+                const scene = this.campaignState.current_scene;
+                if (this.campaignState.npcs && Array.isArray(scene.npcs_present)) {
+                    const presentNorm = scene.npcs_present.map(n => (n || '').toLowerCase());
+                    for (const [npcId, npc] of Object.entries(this.campaignState.npcs)) {
+                        if (!npc?.name) continue;
+                        const isPresent = presentNorm.some(p =>
+                            p.includes(npc.name.toLowerCase()) || npc.name.toLowerCase().includes(p) || p === npcId.toLowerCase()
+                        );
+                        if (!isPresent) continue;
+                        if (!Array.isArray(npc.history)) npc.history = [];
+                        const line = `scene #${scene.scene_id} @ ${scene.location}`;
+                        if (npc.history[npc.history.length - 1] !== line) {
+                            npc.history.push(line);
+                            if (npc.history.length > 10) npc.history = npc.history.slice(-10);
+                        }
+                    }
+                }
+
                 // Save updated scene state
                 await this.saveCampaignState();
             }
@@ -5356,7 +7009,9 @@ What do you do?`;
                     if (this.campaignState?.current_scene?.scene_id) {
                         this.memoryClient.setCurrentSceneId(this.campaignState.current_scene.scene_id);
                     }
-                    await this.memoryClient.addAction('player', playerAction);
+                    if (!isContinueMode && playerAction) {
+                        await this.memoryClient.addAction('player', playerAction);
+                    }
                     await this.memoryClient.addAction('assistant', dmResponse);
                     console.log('🧠 Actions recorded in RAG memory');
                 } catch (error) {
@@ -5364,12 +7019,15 @@ What do you do?`;
                 }
             }
 
-            // Keep last 1000 entries in the file
+            // Keep last 1000 entries in the file; overflow is archived (never silently
+            // dropped) and summarized into campaignState.archiveSummaries for the prompt
             if (history.length > 1000) {
+                const overflow = history.slice(0, history.length - 1000);
                 history = history.slice(-1000);
+                await this.archiveHistoryOverflow(overflow);
             }
 
-            await fs.writeFile(
+            await atomicWriteFile(
                 this.paths.conversationHistory,
                 JSON.stringify(history, null, 2)
             );
@@ -5381,16 +7039,234 @@ What do you do?`;
     }
 
     /**
+     * Archive trimmed history overflow to disk, then summarize it into
+     * campaignState.archiveSummaries (LLM call runs fire-and-forget so the
+     * player response isn't delayed). The disk archive guarantees no data loss
+     * even if summarization fails.
+     */
+    async archiveHistoryOverflow(overflow) {
+        if (!Array.isArray(overflow) || overflow.length === 0) return;
+
+        const archivePath = path.join(path.dirname(this.paths.conversationHistory), 'history-archive.json');
+        try {
+            let archive = [];
+            try {
+                archive = JSON.parse(await fs.readFile(archivePath, 'utf8'));
+            } catch { /* no archive yet */ }
+            archive.push(...overflow);
+            await atomicWriteFile(archivePath, JSON.stringify(archive, null, 2));
+            console.log(`🗄️ Archived ${overflow.length} trimmed history entries (archive total: ${archive.length})`);
+        } catch (e) {
+            console.error('❌ Failed to archive history overflow (entries lost!):', e.message);
+            return;
+        }
+
+        // Summarize asynchronously — don't block the player response
+        const fromTs = overflow[0]?.timestamp;
+        const toTs = overflow[overflow.length - 1]?.timestamp;
+        const text = overflow
+            .filter(e => e.mode !== 'ooc' && e.mode !== 'dm-question')
+            .map(e => `${e.role === 'assistant' ? 'DM' : 'PLAYER'}: ${(e.content || '').substring(0, 400)}`)
+            .join('\n')
+            .substring(0, 24000);
+
+        (async () => {
+            try {
+                const summary = await this.aiProvider.generateCheapResponse(
+                    'You summarize tabletop RPG session logs. Produce a tight factual summary (5-10 sentences) of the events below: key plot beats, NPCs met, items gained/lost, locations visited, promises made. No flavor prose.',
+                    [{ role: 'user', content: text }],
+                    { plainText: true, maxTokens: 700 }
+                );
+                const summaryText = typeof summary === 'object' ? summary.text : summary;
+                if (!summaryText) throw new Error('empty summary');
+                if (!Array.isArray(this.campaignState.archiveSummaries)) {
+                    this.campaignState.archiveSummaries = [];
+                }
+                this.campaignState.archiveSummaries.push({
+                    id: `arch-${Date.now()}`,
+                    range: { fromTs, toTs, count: overflow.length },
+                    summary: summaryText.trim(),
+                    createdAt: new Date().toISOString()
+                });
+                await this.saveCampaignState();
+                console.log(`🗄️ Archive summary generated (${overflow.length} entries → ${summaryText.length} chars)`);
+            } catch (e) {
+                console.warn('⚠️ Archive summarization failed (entries safe in history-archive.json):', e.message);
+            }
+        })();
+    }
+
+    // ==================== EPISODIC MEMORY PYRAMID ====================
+    // scene summaries (recent, detailed) → arc summaries (older, condensed).
+    // Together with verbatim recent events and session recaps this gives the
+    // DM continuity at every zoom level with bounded prompt cost.
+
+    /**
+     * Summarize a scene that just closed into campaignState.sceneSummaries.
+     * Fire-and-forget (cheap LLM). When scene summaries pile up, the oldest
+     * roll up into an arc summary.
+     */
+    async summarizeClosedScene(closedScene) {
+        if (!closedScene || closedScene.scene_id === undefined) return;
+
+        // Collect the canonical exchanges belonging to this scene
+        let history = [];
+        try {
+            history = JSON.parse(await fs.readFile(this.paths.conversationHistory, 'utf8'));
+        } catch { return; }
+
+        let entries = history.filter(e =>
+            e.mode !== 'ooc' && e.mode !== 'dm-question' &&
+            (!closedScene.startedAt || (e.timestamp && e.timestamp >= closedScene.startedAt))
+        );
+        // Legacy scenes have no startedAt — fall back to the recent window
+        if (!closedScene.startedAt) entries = entries.slice(-30);
+        if (entries.length === 0) return;
+
+        const text = entries
+            .map(e => `${e.role === 'assistant' ? 'DM' : 'PLAYER'}: ${(e.content || '').substring(0, 400)}`)
+            .join('\n')
+            .substring(0, 20000);
+
+        const summary = await this.aiProvider.generateCheapResponse(
+            'You summarize one SCENE of a tabletop RPG. 2-4 factual sentences: what happened, decisions made, information learned, items/state gained or lost. Include names. No prose flourish.',
+            [{ role: 'user', content: `Scene location: ${closedScene.location}\n\n${text}` }],
+            { plainText: true, maxTokens: 400 }
+        );
+        const summaryText = (typeof summary === 'object' ? summary.text : summary || '').trim();
+        if (!summaryText) return;
+
+        if (!Array.isArray(this.campaignState.sceneSummaries)) {
+            this.campaignState.sceneSummaries = [];
+        }
+        this.campaignState.sceneSummaries.push({
+            scene_id: closedScene.scene_id,
+            location: closedScene.location,
+            summary: summaryText,
+            ts: new Date().toISOString()
+        });
+        console.log(`🎬 Scene #${closedScene.scene_id} summarized (${closedScene.location})`);
+
+        // Roll the oldest scenes into an arc once we hold more than 12
+        if (this.campaignState.sceneSummaries.length > 12) {
+            await this.rollUpScenesIntoArc();
+        }
+
+        await this.saveCampaignState();
+    }
+
+    /**
+     * Condense the oldest 8 scene summaries into one arc summary.
+     */
+    async rollUpScenesIntoArc() {
+        const scenes = this.campaignState.sceneSummaries;
+        if (!Array.isArray(scenes) || scenes.length <= 12) return;
+
+        const toRoll = scenes.slice(0, 8);
+        const text = toRoll.map(s => `Scene #${s.scene_id} (${s.location}): ${s.summary}`).join('\n');
+
+        try {
+            const summary = await this.aiProvider.generateCheapResponse(
+                'You condense several RPG scene summaries into one ARC summary: a single tight paragraph covering the major plot developments, key NPC changes, and important acquisitions/losses. Keep names and concrete facts; drop minor detail.',
+                [{ role: 'user', content: text }],
+                { plainText: true, maxTokens: 400 }
+            );
+            const summaryText = (typeof summary === 'object' ? summary.text : summary || '').trim();
+            if (!summaryText) return;
+
+            if (!Array.isArray(this.campaignState.arcSummaries)) {
+                this.campaignState.arcSummaries = [];
+            }
+            this.campaignState.arcSummaries.push({
+                id: `arc-${this.campaignState.arcSummaries.length + 1}`,
+                fromScene: toRoll[0].scene_id,
+                toScene: toRoll[toRoll.length - 1].scene_id,
+                summary: summaryText,
+                ts: new Date().toISOString()
+            });
+            this.campaignState.sceneSummaries = scenes.slice(8);
+            console.log(`📚 Arc rolled up: scenes #${toRoll[0].scene_id}–#${toRoll[toRoll.length - 1].scene_id}`);
+        } catch (e) {
+            console.warn('⚠️ Arc roll-up failed (scene summaries kept):', e.message);
+        }
+    }
+
+    // ==================== SESSIONS & RECAP ====================
+
+    /**
+     * Detect a session boundary: >6h since the last history entry closes the
+     * previous session and starts a new one. Sessions power "previously on" recaps.
+     */
+    async checkSessionBoundary(history, nowIso) {
+        const SESSION_GAP_MS = 6 * 60 * 60 * 1000;
+        if (!Array.isArray(this.campaignState.sessions)) {
+            this.campaignState.sessions = [];
+        }
+        const sessions = this.campaignState.sessions;
+        const lastEntry = history[history.length - 1];
+        const current = sessions.find(s => !s.endedAt);
+
+        if (!current) {
+            sessions.push({ id: `session-${sessions.length + 1}`, startedAt: nowIso, endedAt: null, summary: null });
+            await this.saveCampaignState();
+            return;
+        }
+
+        if (lastEntry?.timestamp && (new Date(nowIso) - new Date(lastEntry.timestamp)) > SESSION_GAP_MS) {
+            console.log(`📅 Session boundary detected (>6h gap) — closing ${current.id}`);
+            await this.finalizeSession(current, history);
+            sessions.push({ id: `session-${sessions.length + 1}`, startedAt: nowIso, endedAt: null, summary: null });
+            await this.saveCampaignState();
+        }
+    }
+
+    /**
+     * Close a session and generate its summary (fire-and-forget LLM call).
+     */
+    async finalizeSession(session, history) {
+        session.endedAt = new Date().toISOString();
+        const entries = (history || []).filter(e =>
+            e.timestamp >= session.startedAt &&
+            (!session.endedAt || e.timestamp <= session.endedAt) &&
+            e.mode !== 'ooc' && e.mode !== 'dm-question'
+        );
+        if (entries.length === 0) {
+            session.summary = '(no canonical events this session)';
+            return;
+        }
+        const text = entries
+            .map(e => `${e.role === 'assistant' ? 'DM' : 'PLAYER'}: ${(e.content || '').substring(0, 400)}`)
+            .join('\n')
+            .substring(0, 24000);
+
+        (async () => {
+            try {
+                const summary = await this.aiProvider.generateCheapResponse(
+                    'You write "previously on" recaps for a tabletop RPG. Summarize this session in 4-8 vivid but factual sentences: what happened, who was met, what was decided, and where things stand now. Write in past tense, second person plural ("you").',
+                    [{ role: 'user', content: text }],
+                    { plainText: true, maxTokens: 600 }
+                );
+                const summaryText = typeof summary === 'object' ? summary.text : summary;
+                if (summaryText) {
+                    session.summary = summaryText.trim();
+                    await this.saveCampaignState();
+                    console.log(`📅 Session ${session.id} summarized (${entries.length} entries)`);
+                }
+            } catch (e) {
+                console.warn(`⚠️ Session summary failed for ${session.id}:`, e.message);
+            }
+        })();
+    }
+
+    /**
      * Save only a DM response to conversation history (no player message)
      * Used for "continue" functionality where we don't want to log the trigger
      */
     async saveDMResponseOnly(dmResponse) {
         if (this.saveInProgress) {
-            console.log('⏳ Save already in progress, queuing...');
-            await new Promise(resolve => setTimeout(resolve, 500));
-            if (this.saveInProgress) {
-                console.warn('⚠️ Save still in progress after wait, skipping');
-                return;
+            console.log('⏳ Save already in progress, waiting...');
+            while (this.saveInProgress) {
+                await new Promise(resolve => setTimeout(resolve, 100));
             }
         }
 
@@ -5429,10 +7305,10 @@ What do you do?`;
                     console.log('🔄 State changes applied:', stateChanges);
                 }
             } else {
-                console.warn('⚠️ Rejected empty DM response from being added to history');
+                // Silently skip empty DM responses
             }
 
-            await fs.writeFile(this.paths.conversationHistory, JSON.stringify(history, null, 2));
+            await atomicWriteFile(this.paths.conversationHistory, JSON.stringify(history, null, 2));
             console.log(`💾 Saved DM-only response to history (now ${history.length} entries)`);
 
             // Store to RAG if available
@@ -5548,19 +7424,26 @@ Critical Rules:
 
             console.log(`📊 Current state for extraction: party_credits=${this.campaignState.resources?.party_credits || 0}`);
 
-            const rawResponse = await this.aiProvider.generateResponse('You are a JSON extraction system. Return only valid JSON.', messages, this.campaignId);
+            // Cheap JSON-mode provider: this is a pure extraction task. The full
+            // Claude provider cost ~12k full-price tokens per turn here (rules +
+            // tools overhead) and, worse, ran with state-mutation TOOLS enabled —
+            // an extraction call could fire game mutations. Mini is 50x cheaper
+            // and tool-free. Mostly returns {} now that tools handle state anyway.
+            const rawResponse = await this.aiProvider.generateCheapResponse(
+                'You are a JSON extraction system. Return only valid JSON.',
+                messages,
+                { maxTokens: 1000 }
+            );
 
-            // Handle new response format { text, stateMutations } from ClaudeProvider
             const extractionResponse = typeof rawResponse === 'object' && rawResponse.text !== undefined
                 ? rawResponse.text
                 : rawResponse;
 
             console.log(`🤖 AI extraction response: ${extractionResponse.substring(0, 500)}`);
 
-            // Parse JSON from response
-            let jsonMatch = extractionResponse.match(/\{[\s\S]*\}/);
-            if (jsonMatch) {
-                const stateChanges = JSON.parse(jsonMatch[0]);
+            const parsedChanges = extractFirstJsonObject(extractionResponse);
+            if (parsedChanges) {
+                const stateChanges = validateExtractedStateChanges(parsedChanges);
                 console.log(`📋 Parsed state changes:`, JSON.stringify(stateChanges, null, 2));
                 return stateChanges;
             }
@@ -5995,33 +7878,47 @@ Critical Rules:
         }
     }
 
-    async rollbackStateChanges(removedEntries) {
+    async rollbackStateChanges(removedEntries, retainedHistory = null) {
         try {
-            // Process removed entries in reverse order to undo changes
-            for (let i = removedEntries.length - 1; i >= 0; i--) {
-                const entry = removedEntries[i];
-                if (!entry.stateChanges || Object.keys(entry.stateChanges).length === 0) continue;
-
-                const changes = entry.stateChanges;
-
-                // Reverse credits changes (would need original values, so we'll reload from backup)
-                // Instead of reversing, we'll rebuild state from remaining history
+            // Only rebuild when the removed entries actually carried state changes —
+            // pure-narrative rollbacks keep the current campaign state untouched.
+            const removedWithChanges = removedEntries.filter(e =>
+                e.stateChanges && Object.keys(e.stateChanges).length > 0
+            );
+            if (removedWithChanges.length === 0) {
+                console.log('🔄 Removed entries carry no state changes — keeping current campaign state (no rebuild)');
+                return;
             }
 
-            // Alternative approach: Rebuild state from scratch from remaining history
+            // A rebuild replays from initial-state.json. Without that baseline the
+            // fallback is a generic default template, which would CLOBBER rich
+            // campaign state — in that case keeping current state is the lesser evil.
+            const initialStatePath = path.join(__dirname, 'campaigns', this.campaignId, 'initial-state.json');
+            try {
+                await fs.access(initialStatePath);
+            } catch {
+                console.warn(`⚠️ Rollback removed ${removedWithChanges.length} state change(s) but ${this.campaignId} has no initial-state.json — keeping current state. Review manually: ${removedWithChanges.map(e => JSON.stringify(e.stateChanges).substring(0, 80)).join(' | ')}`);
+                return;
+            }
+
+            // Rebuild state from scratch from remaining history
             // This is more reliable than trying to reverse each change
-            await this.rebuildStateFromHistory();
+            await this.rebuildStateFromHistory(retainedHistory);
 
         } catch (error) {
             console.error('Failed to rollback state changes:', error);
         }
     }
 
-    async rebuildStateFromHistory() {
+    async rebuildStateFromHistory(retainedHistory = null) {
         try {
-            // Read the current (rolled back) conversation history
-            const data = await fs.readFile(this.paths.conversationHistory, 'utf8');
-            const history = JSON.parse(data);
+            // Use the caller's trimmed history when available so rollback never
+            // replays entries that have just been removed but not yet flushed.
+            let history = retainedHistory;
+            if (!Array.isArray(history)) {
+                const data = await fs.readFile(this.paths.conversationHistory, 'utf8');
+                history = JSON.parse(data);
+            }
 
             // Load the INITIAL campaign state (from campaign directory, not modified state file)
             let initialState;
@@ -6067,7 +7964,7 @@ Critical Rules:
 
     async saveIndices() {
         try {
-            await fs.writeFile(
+            await atomicWriteFile(
                 this.paths.searchIndex,
                 JSON.stringify(this.searchIndices, null, 2)
             );
@@ -6079,7 +7976,7 @@ Critical Rules:
 
     async saveCampaignState() {
         try {
-            await fs.writeFile(
+            await atomicWriteFile(
                 this.paths.campaignState,
                 JSON.stringify(this.campaignState, null, 2)
             );
@@ -6092,7 +7989,7 @@ Critical Rules:
         if (updates && typeof updates === 'object') {
             this.campaignState = { ...this.campaignState, ...updates };
             try {
-                await fs.writeFile(
+                await atomicWriteFile(
                     this.paths.campaignState,
                     JSON.stringify(this.campaignState, null, 2)
                 );
@@ -6296,6 +8193,17 @@ const ABILITY_PATTERNS = [
     { key: 'cha', label: 'Charisma', patterns: ['charisma', 'cha'] }
 ];
 
+// 5e skill → governing ability, for roll requests that name only the skill
+// (e.g. "Roll Athletics (DC 13)" with no "(Strength)" parenthetical)
+const SKILL_ABILITY_MAP = {
+    athletics: 'str',
+    acrobatics: 'dex', stealth: 'dex', 'sleight of hand': 'dex',
+    arcana: 'int', history: 'int', investigation: 'int', nature: 'int', religion: 'int',
+    technology: 'int', engineering: 'int', hacking: 'int',
+    'animal handling': 'wis', insight: 'wis', medicine: 'wis', perception: 'wis', survival: 'wis',
+    deception: 'cha', intimidation: 'cha', performance: 'cha', persuasion: 'cha'
+};
+
 function normalizeParticipantKey(value) {
     return (value || '').toString().trim().toLowerCase();
 }
@@ -6371,7 +8279,13 @@ function generateRollQueueId() {
 
 async function getSharedCombatStateWithQueue(context, campaignId) {
     let combatState = combatManager.getCombatState(campaignId);
-    if (!combatState || typeof combatState !== 'object' || Object.keys(combatState).length === 0) {
+    const hasAddressableCombatState = combatState && typeof combatState === 'object' && (
+        combatState.active ||
+        combatState.pending ||
+        (Array.isArray(combatState.initiativeOrder) && combatState.initiativeOrder.length > 0) ||
+        (Array.isArray(combatState.rollQueue) && combatState.rollQueue.length > 0)
+    );
+    if (!hasAddressableCombatState) {
         try {
             combatState = await combatManager.loadCombatState(campaignId);
         } catch (error) {
@@ -6526,7 +8440,7 @@ function collectCampaignParticipants(context, combatState) {
     return { players, enemies };
 }
 
-function deriveParticipantsForRoll(context, combatState, rollRequest, explicitParticipants) {
+function deriveParticipantsForRoll(context, combatState, rollRequest, explicitParticipants, actingCharacter = null) {
     const { players, enemies } = collectCampaignParticipants(context, combatState);
     const allParticipants = [...players, ...enemies];
     const selections = new Map();
@@ -6567,6 +8481,22 @@ function deriveParticipantsForRoll(context, combatState, rollRequest, explicitPa
 
     if (!selections.size && /enemy|enemies|opponent|foe/i.test(normalizedRequest)) {
         enemies.forEach(selectDescriptor);
+    }
+
+    // No one named in the roll text: unless it's explicitly a group check, the
+    // roll belongs to the character whose action provoked it — enrolling the
+    // whole party strands the entry waiting on rolls nobody will make.
+    if (!selections.size) {
+        const isGroupCheck = /\b(everyone|everybody|all of you|each of you|the (?:whole )?party|group check|together)\b/i.test(normalizedRequest);
+        if (!isGroupCheck && actingCharacter) {
+            const actingKey = normalizeParticipantKey(actingCharacter);
+            const match = allParticipants.find(candidate => {
+                const aliases = new Set(candidate.aliases || []);
+                [candidate.participantId, candidate.id, candidate.name].forEach(token => aliases.add(normalizeParticipantKey(token)));
+                return aliases.has(actingKey) || [...aliases].some(a => a && (a.includes(actingKey) || actingKey.includes(a)));
+            });
+            if (match) selectDescriptor(match);
+        }
     }
 
     if (!selections.size) {
@@ -6867,6 +8797,21 @@ function parseRollRequestDetails(rollRequest = '') {
         }
     }
 
+    // Skill-only requests ("Roll Athletics (DC 13)") — derive the ability from
+    // the skill name so the player's modifier can still be computed
+    if (!details.abilityKey) {
+        for (const [skill, abilityKey] of Object.entries(SKILL_ABILITY_MAP)) {
+            if (lower.includes(skill)) {
+                details.abilityKey = abilityKey;
+                const pattern = ABILITY_PATTERNS.find(p => p.key === abilityKey);
+                details.ability = pattern?.label || abilityKey;
+                details.metadata.abilityLabel = details.ability;
+                details.metadata.derivedFromSkill = skill;
+                break;
+            }
+        }
+    }
+
     details.metadata.checkType = details.type;
 
     return details;
@@ -6913,6 +8858,7 @@ async function enqueueRollQueueEntry(context, campaignId, combatState, options) 
                 ability: participant.ability ?? options.ability ?? null,
                 dc: participant.dc ?? options.dc ?? null,
                 advantage: participant.advantage || options.advantage || 'normal',
+                advantageReasons: participant.advantageReasons || undefined,
                 status: ROLL_PARTICIPANT_STATUS.PENDING,
                 result: null,
                 notes: participant.notes || null,
@@ -7252,7 +9198,8 @@ async function removeRollQueueEntry(context, campaignId, combatState, queueId) {
     const rollQueue = ensureRollQueueArray(combatState);
     const index = rollQueue.findIndex(entry => entry.queueId === queueId);
     if (index === -1) {
-        throw new Error('Queue entry not found');
+        console.warn('🗑️  [ROLL QUEUE] Entry already removed:', queueId);
+        return null;
     }
 
     const [removed] = rollQueue.splice(index, 1);
@@ -7263,6 +9210,159 @@ async function removeRollQueueEntry(context, campaignId, combatState, queueId) {
         reason: removed?.reason
     });
     return removed;
+}
+
+/**
+ * Compute advantage/disadvantage for a roll participant from their active
+ * conditions (combat map + character sheet) and the target's conditions.
+ */
+function computeParticipantAdvantage(context, combatState, participantName, rollTypeText, combatAction) {
+    const norm = (v) => (v ?? '').toString().trim().toLowerCase().replace(/[^a-z0-9]/g, '');
+    const conditionsFor = (name) => {
+        const wanted = norm(name);
+        if (!wanted) return [];
+        const merged = [];
+        // Combat-state conditions (keyed by uid)
+        const condMap = combatState?.conditions || {};
+        for (const [key, conds] of Object.entries(condMap)) {
+            if (norm(key) === wanted || norm(key).includes(wanted) || wanted.includes(norm(key))) {
+                if (Array.isArray(conds)) merged.push(...conds);
+                break;
+            }
+        }
+        // Character sheet conditions (non-combat or out-of-sync)
+        const { charData } = context.findCharacterEntry ? context.findCharacterEntry(name) : { charData: null };
+        if (charData && Array.isArray(charData.conditions)) {
+            for (const c of charData.conditions) {
+                const cName = conditionEffects.conditionName(c);
+                if (!merged.some(m => conditionEffects.conditionName(m) === cName)) merged.push(c);
+            }
+        }
+        return merged;
+    };
+
+    const targetName = combatAction?.target || combatAction?.targetName || null;
+    return conditionEffects.computeRollModifiers({
+        rollType: rollTypeText,
+        rollerConditions: conditionsFor(participantName),
+        targetConditions: targetName ? conditionsFor(targetName) : []
+    });
+}
+
+/**
+ * Auto-roll DM-controlled companions on a freshly queued roll request.
+ * Enemies already auto-resolve; companions (controlledBy:'dm') were left
+ * pending forever since they never roll through the UI — stranding entries
+ * at 'partial'. Results land in the roll queue so the DM weaves them into
+ * narration (the player only ever sees the outcome in prose).
+ */
+async function autoRollCompanionParticipants(context, campaignId, combatState, entry, details) {
+    if (!entry || !Array.isArray(entry.participants)) return;
+
+    let rolled = 0;
+    for (const participant of entry.participants) {
+        if (participant.status !== ROLL_PARTICIPANT_STATUS.PENDING) continue;
+        const { charData } = context.findCharacterEntry ? context.findCharacterEntry(participant.name) : { charData: null };
+        if (!charData || (charData.controlledBy !== 'dm' && charData.companion !== true)) continue;
+
+        // Modifier: ability mod + proficiency when the request names a proficient skill
+        const abilityKey = participant.ability || details?.abilityKey || null;
+        const abilityScore = abilityKey && charData.abilities ? Number(charData.abilities[abilityKey]) : NaN;
+        let modifier = Number.isFinite(abilityScore) ? Math.floor((abilityScore - 10) / 2) : 0;
+        // Match the character's own skill names against the request text — regex
+        // captures broke on wording like "Roll Perception with advantage (DC 13)"
+        const reasonLower = (entry.reason || '').toLowerCase();
+        const skillEntry = Object.entries(charData.skills || {}).find(([name, s]) =>
+            reasonLower.includes(name.toLowerCase()) && (!s?.ability || !abilityKey || s.ability === abilityKey)
+        );
+        if (skillEntry && skillEntry[1]?.proficient) {
+            modifier += charData.proficiencyBonus || 2;
+        }
+
+        const r1 = Math.floor(Math.random() * 20) + 1;
+        const r2 = Math.floor(Math.random() * 20) + 1;
+        let natural = r1;
+        if (participant.advantage === 'advantage') natural = Math.max(r1, r2);
+        else if (participant.advantage === 'disadvantage') natural = Math.min(r1, r2);
+
+        try {
+            await recordParticipantResult(context, campaignId, combatState, entry.queueId, {
+                participantId: participant.participantId,
+                total: natural + modifier,
+                natural,
+                modifier,
+                formula: `1d20${modifier ? `${modifier > 0 ? '+' : ''}${modifier}` : ''}`,
+                rolls: participant.advantage && participant.advantage !== 'normal' ? [r1, r2] : [r1],
+                auto: true,
+                submittedBy: 'auto-companion'
+            });
+            rolled++;
+            console.log(`🎲 [AUTO] Companion ${participant.name} rolled ${natural + modifier} (d20:${natural}${modifier ? `${modifier > 0 ? '+' : ''}${modifier}` : ''})${participant.advantage && participant.advantage !== 'normal' ? ` [${participant.advantage}]` : ''}`);
+        } catch (e) {
+            console.warn(`⚠️ Companion auto-roll failed for ${participant.name}:`, e.message);
+        }
+    }
+
+    if (rolled > 0) {
+        await persistCombatStateWithQueue(context, campaignId, combatState);
+    }
+}
+
+/**
+ * Enqueue a roll prompt from a request_roll TOOL call. Fallback for when the
+ * DM's narrative 🎲 line is missing or malformed — the tool input is structured
+ * (character/roll_type/dc/reason), so we build canonical text and reuse the
+ * narrative pipeline (details parsing, condition annotation, companion auto-roll).
+ */
+/**
+ * Merge advantage declared via the request_roll TOOL into entries that were
+ * created from the narrative 🎲 line. The DM's structured intent wins when the
+ * prose omitted the "with advantage" wording.
+ */
+async function mergeToolAdvantageIntoEntries(context, campaignId, queuedRollEntries, toolRollRequests) {
+    if (!Array.isArray(queuedRollEntries) || queuedRollEntries.length === 0) return;
+    if (!Array.isArray(toolRollRequests) || toolRollRequests.length === 0) return;
+
+    const norm = v => (v || '').toString().toLowerCase().replace(/[^a-z0-9]/g, '');
+    let merged = false;
+
+    for (const toolReq of toolRollRequests) {
+        if (!toolReq.advantage || toolReq.advantage === 'normal') continue;
+        for (const entry of queuedRollEntries) {
+            for (const p of (entry.participants || [])) {
+                const nameMatch = !toolReq.character ||
+                    norm(p.name).includes(norm(toolReq.character)) || norm(toolReq.character).includes(norm(p.name));
+                if (nameMatch && (!p.advantage || p.advantage === 'normal')) {
+                    p.advantage = toolReq.advantage;
+                    p.advantageReasons = [`${toolReq.advantage} (${toolReq.advantage_reason || 'DM ruling'})`];
+                    if (!entry.advantage || entry.advantage === 'normal') entry.advantage = toolReq.advantage;
+                    merged = true;
+                    console.log(`🎯 [QUEUE] Tool-declared ${toolReq.advantage} merged for ${p.name}: ${toolReq.advantage_reason || 'DM ruling'}`);
+                }
+            }
+        }
+    }
+
+    if (merged) {
+        const queueState = await getSharedCombatStateWithQueue(context, campaignId);
+        await persistCombatStateWithQueue(context, campaignId, queueState);
+    }
+}
+
+async function enqueueRollRequestFromTool(context, campaignId, input) {
+    if (!input || !input.roll_type) return null;
+    const reasonPart = input.reason
+        ? ` ${/^to\s/i.test(input.reason.trim()) ? input.reason.trim() : `to ${input.reason.trim()}`}`
+        : '';
+    const advPart = input.advantage && input.advantage !== 'normal'
+        ? ` with ${input.advantage}${input.advantage_reason ? ` (${input.advantage_reason})` : ''}`
+        : '';
+    const rollText = `Roll ${input.roll_type}${input.dc ? ` (DC ${input.dc})` : ''}${input.target_ac ? ` (vs AC ${input.target_ac})` : ''}${advPart}${reasonPart}`;
+    return enqueueRollRequestFromNarrative(context, campaignId, rollText, {
+        requestedBy: 'dm',
+        source: 'request_roll-tool',
+        participants: input.character ? [{ name: input.character }] : undefined
+    });
 }
 
 async function enqueueRollRequestFromNarrative(context, campaignId, rollRequest, options = {}) {
@@ -7295,7 +9395,7 @@ async function enqueueRollRequestFromNarrative(context, campaignId, rollRequest,
         combatAction = await enrichCombatActionMetadata(combatAction, context, combatState);
     }
 
-    const derivedParticipants = deriveParticipantsForRoll(context, combatState, rollRequest, options.participants);
+    const derivedParticipants = deriveParticipantsForRoll(context, combatState, rollRequest, options.participants, options.actingCharacter || null);
 
     if (!derivedParticipants.length) {
         console.log('⚠️  Roll request detected but no participants resolved', { campaignId, rollRequest });
@@ -7310,7 +9410,7 @@ async function enqueueRollRequestFromNarrative(context, campaignId, rollRequest,
         return null;
     }
 
-    return enqueueRollQueueEntry(context, campaignId, combatState, {
+    const queuedEntry = await enqueueRollQueueEntry(context, campaignId, combatState, {
         reason: rollRequest,
         type: details.type,
         requestedBy: options.requestedBy || 'dm',
@@ -7327,18 +9427,38 @@ async function enqueueRollRequestFromNarrative(context, campaignId, rollRequest,
             autoCreated: true,
             combatAction
         },
-        participants: derivedParticipants.map(descriptor => ({
-            participantId: descriptor.participantId,
-            id: descriptor.id,
-            name: descriptor.name,
-            entityType: descriptor.entityType,
-            ability: descriptor.abilityKey || descriptor.ability || details.abilityKey,
-            dc: descriptor.dc ?? details.dc ?? null,
-            advantage: descriptor.advantage || details.advantage || 'normal',
-            aliases: descriptor.aliases
-        })),
+        participants: derivedParticipants.map(descriptor => {
+            // Conditions pre-annotate advantage/disadvantage (narrative override wins)
+            let advantage = descriptor.advantage || details.advantage || 'normal';
+            let advantageReasons;
+            if (advantage === 'normal') {
+                const computed = computeParticipantAdvantage(context, combatState, descriptor.name, rollRequest, combatAction);
+                if (computed.advantage !== 'normal' || computed.autofail) {
+                    advantage = computed.advantage;
+                    advantageReasons = computed.reasons;
+                    console.log(`🎯 [CONDITIONS] ${descriptor.name} rolls with ${computed.advantage}: ${computed.reasons.join('; ')}`);
+                }
+            }
+            return {
+                participantId: descriptor.participantId,
+                id: descriptor.id,
+                name: descriptor.name,
+                entityType: descriptor.entityType,
+                ability: descriptor.abilityKey || descriptor.ability || details.abilityKey,
+                dc: descriptor.dc ?? details.dc ?? null,
+                advantage,
+                advantageReasons,
+                aliases: descriptor.aliases
+            };
+        }),
         timeoutSeconds: options.timeoutSeconds || null
     });
+
+    // DM-run companions roll immediately (in secret) — their results appear in
+    // the queue for the DM to narrate; only true player rolls stay pending
+    await autoRollCompanionParticipants(context, campaignId, combatState, queuedEntry, details);
+
+    return queuedEntry;
 }
 
 app.use(cors());
@@ -7357,9 +9477,32 @@ app.use(express.json({
 
 // ==================== CAMPAIGN-SPECIFIC ROUTING (MUST BE BEFORE STATIC FILES) ====================
 
+function redirectToDaxPlay(req, res) {
+    res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.set('Pragma', 'no-cache');
+    res.set('Expires', '0');
+    res.set('X-DND-Live-UI', 'drawer-ui');
+    res.redirect(302, `/dnd/play/?campaign=dax&v=${Date.now()}`);
+}
+
+app.get('/dnd/live-check', (req, res) => {
+    res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.json({
+        ui: 'live drawer ui',
+        server: 'dnd',
+        pid: process.pid,
+        cwd: process.cwd(),
+        time: new Date().toISOString()
+    });
+});
+
 // Serve the main game interface with campaign routing
 app.get('/dnd/game.html', async (req, res) => {
     const campaignId = req.query.campaign || 'default';
+    if (campaignId === 'default' || campaignId === 'dax') {
+        redirectToDaxPlay(req, res);
+        return;
+    }
 
     // Check if campaign has its own HTML file
     const campaignHtmlPath = path.join(__dirname, 'campaigns', campaignId, 'index.html');
@@ -7376,10 +9519,9 @@ app.get('/dnd/game.html', async (req, res) => {
     }
 });
 
-// Serve splash page
-app.get('/dnd/', (req, res) => {
-    res.sendFile(path.join(__dirname, 'index.html'));
-});
+// Send the old splash route to the current React UI to avoid two divergent versions.
+app.get(['/dnd', '/dnd/', '/dnd/index.html'], redirectToDaxPlay);
+app.get(['/dnd/campaigns/dax', '/dnd/campaigns/dax/', '/dnd/campaigns/dax/index.html'], redirectToDaxPlay);
 
 // Static files (after routing)
 // Serve shared resources at /dnd/shared/
@@ -7388,10 +9530,21 @@ app.use('/dnd/shared', express.static(path.join(__dirname, 'shared')));
 // Serve campaign-specific resources at /dnd/campaigns/
 app.use('/dnd/campaigns', express.static(path.join(__dirname, 'campaigns')));
 
-// Serve new Gemini UI at /dnd/play/
-app.use('/dnd/play', express.static(path.join(__dirname, 'dist')));
+// Serve new Gemini UI at /dnd/play/ without browser/proxy caching while the UI is changing rapidly.
+app.use('/dnd/play', express.static(path.join(__dirname, 'dist'), {
+    etag: false,
+    lastModified: false,
+    setHeaders: (res) => {
+        res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+        res.setHeader('Pragma', 'no-cache');
+        res.setHeader('Expires', '0');
+    }
+}));
 // SPA fallback for /dnd/play routes
 app.get('/dnd/play/*', (req, res) => {
+    res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.set('Pragma', 'no-cache');
+    res.set('Expires', '0');
     res.sendFile(path.join(__dirname, 'dist', 'index.html'));
 });
 
@@ -7401,6 +9554,41 @@ app.use('/dnd', express.static(__dirname));
 // ==================== MAIN GAME ENDPOINTS ====================
 
 // Process player action with intelligent context - Handler function
+/**
+ * Build the roll-queue payload sent to the frontend. Must carry reason/ability/
+ * DC/advantage — the UI uses these for the banner text, the player's roll
+ * modifier, and advantage display. (A slim id-only payload caused "Roll
+ * requested" banners and flat unmodified rolls.)
+ */
+function buildRollQueueEntryPayload(entry, totalEntries = 1) {
+    if (!entry) return null;
+    return {
+        queueId: entry.queueId,
+        status: entry.status,
+        requestedAt: entry.requestedAt,
+        reason: entry.reason || null,
+        type: entry.type || null,
+        dc: entry.dc ?? null,
+        ability: entry.ability || null,
+        advantage: entry.advantage || 'normal',
+        metadata: { rawRequest: entry.metadata?.rawRequest || entry.reason || null },
+        participants: (entry.participants || []).map(p => ({
+            participantId: p.participantId,
+            id: p.id || null,
+            name: p.name,
+            entityType: p.entityType,
+            status: p.status,
+            ability: p.ability || null,
+            dc: p.dc ?? null,
+            advantage: p.advantage || 'normal',
+            advantageReasons: p.advantageReasons || undefined,
+            aliases: p.aliases || undefined,
+            result: p.result ? { total: p.result.total, natural: p.result.natural, modifier: p.result.modifier, auto: p.result.auto } : null
+        })),
+        totalEntries
+    };
+}
+
 async function handleActionRequest(req, res) {
     const { action, character, campaignState, sessionId, useRealClaude, mode, campaignId, campaign } = req.body;
 
@@ -7519,6 +9707,33 @@ async function handleActionRequest(req, res) {
             }
         }
 
+        // Stale roll requests: a new IC action that isn't a roll submission
+        // supersedes any still-open roll request — cancel them so the banner
+        // clears and the DM stops seeing an unanswered roll in its context.
+        const isSystemAction = (characterName || '').toUpperCase() === 'SYSTEM' || /^\[SYSTEM\]/i.test(actionWithContext);
+        if (sanitizedMode === 'ic' && !isDiceRoll && !isSystemAction) {
+            try {
+                const queueState = await getSharedCombatStateWithQueue(context, activeCampaignId);
+                const openEntries = (queueState.rollQueue || []).filter(e =>
+                    e.status === ROLL_QUEUE_STATUS.PENDING || e.status === ROLL_QUEUE_STATUS.PARTIAL
+                );
+                if (openEntries.length > 0) {
+                    for (const entry of openEntries) {
+                        entry.status = ROLL_QUEUE_STATUS.CANCELLED;
+                        entry.cancelledAt = new Date().toISOString();
+                        entry.cancelReason = 'superseded by new player action';
+                        (entry.participants || []).forEach(p => {
+                            if (p.status === ROLL_PARTICIPANT_STATUS.PENDING) p.status = ROLL_PARTICIPANT_STATUS.CANCELLED;
+                        });
+                    }
+                    await persistCombatStateWithQueue(context, activeCampaignId, queueState);
+                    console.log(`🎲 [QUEUE] Cancelled ${openEntries.length} superseded roll request(s) (new action arrived without a roll)`);
+                }
+            } catch (e) {
+                console.warn('⚠️ Failed to supersede stale roll requests:', e.message);
+            }
+        }
+
         // Process with intelligent retrieval, passing mode parameter
         const result = await context.processPlayerAction(
             actionWithContext,
@@ -7535,7 +9750,8 @@ async function handleActionRequest(req, res) {
                 try {
                     const queuedEntry = await enqueueRollRequestFromNarrative(context, activeCampaignId, rollRequestText.trim(), {
                         requestedBy: character?.name || character?.id || 'dm',
-                        source: 'narrative'
+                        source: 'narrative',
+                        actingCharacter: (typeof character === 'string' ? character : character?.name) || null
                     });
                     if (queuedEntry) {
                         queuedRollEntries.push(queuedEntry);
@@ -7546,22 +9762,27 @@ async function handleActionRequest(req, res) {
             }
         }
 
-        // For backward compatibility, keep the first entry payload
-        const rollQueueEntryPayload = queuedRollEntries.length > 0
-            ? {
-                queueId: queuedRollEntries[0].queueId,
-                status: queuedRollEntries[0].status,
-                requestedAt: queuedRollEntries[0].requestedAt,
-                participants: queuedRollEntries[0].participants.map(p => ({
-                    participantId: p.participantId,
-                    name: p.name,
-                    entityType: p.entityType,
-                    status: p.status
-                })),
-                // Include info about multiple entries
-                totalEntries: queuedRollEntries.length
+        // Fallback: request_roll tool fired but no narrative 🎲 line produced an
+        // entry — enqueue from the structured tool input so the prompt still appears
+        if (queuedRollEntries.length === 0 && Array.isArray(result.toolRollRequests) && result.toolRollRequests.length > 0) {
+            for (const toolReq of result.toolRollRequests) {
+                try {
+                    const entry = await enqueueRollRequestFromTool(context, activeCampaignId, toolReq);
+                    if (entry) {
+                        queuedRollEntries.push(entry);
+                        console.log(`🎲 [QUEUE] Enqueued from request_roll tool (narrative line missing): ${entry.reason}`);
+                    }
+                } catch (error) {
+                    console.error('⚠️  Failed to enqueue tool roll request:', error.message);
+                }
             }
-            : null;
+        }
+
+        // Tool-declared advantage takes effect even when the 🎲 line omitted it
+        await mergeToolAdvantageIntoEntries(context, activeCampaignId, queuedRollEntries, result.toolRollRequests);
+
+        // For backward compatibility, keep the first entry payload
+        const rollQueueEntryPayload = buildRollQueueEntryPayload(queuedRollEntries[0], queuedRollEntries.length);
 
         // Handle both old and new two-phase response formats
         if (result.type === 'roll_request') {
@@ -7574,7 +9795,8 @@ async function handleActionRequest(req, res) {
                 setupNarrative: result.setupNarrative,
                 campaignState: context.campaignState,
                 contextActive: true,
-                rollQueueEntry: rollQueueEntryPayload
+                rollQueueEntry: rollQueueEntryPayload,
+                appliedMutations: result.appliedMutations || []
             });
         } else {
             // Traditional complete narrative
@@ -7618,6 +9840,10 @@ async function handleActionRequest(req, res) {
                 handoffData: result.handoffData,  // Include full combat handoff with initiativeOrder
                 rollRequest: result.rollRequest,  // Include roll request if found in narrative
                 rollQueueEntry: rollQueueEntryPayload,
+                appliedMutations: result.appliedMutations || [],  // Ledger entries for audit cards
+                lootOffered: context.campaignState?.pendingLoot?.status === 'offered'
+                    ? context.campaignState.pendingLoot
+                    : undefined,
                 // New fields for pending combat
                 pendingCombat: combatPending ? {
                     enemies: combatState.participants?.enemies || [],
@@ -7652,6 +9878,194 @@ const actionRoutes = [
 ];
 actionRoutes.forEach(route => app.post(route, checkLockdown('dnd'), handleActionRequest));
 
+// Distribute (or skip) pending loot — closes the loop the frontend already calls
+const distributeLootRoutes = [
+    '/api/dnd/distribute-loot',
+    '/dnd-api/dnd/distribute-loot',
+    '/dnd/api/dnd/distribute-loot'
+];
+distributeLootRoutes.forEach(route => app.post(route, checkLockdown('dnd'), async (req, res) => {
+    try {
+        const { lootId, assignments, skip } = req.body;
+        const activeCampaignId = req.body.campaignId || req.body.campaign || 'default';
+        const validation = validateCampaignId(activeCampaignId);
+        if (!validation.valid) {
+            return res.status(400).json({ error: validation.error });
+        }
+
+        const context = await getCampaignContext(activeCampaignId);
+        if (!context.isLoaded) {
+            return res.status(503).json({ error: 'System still loading...' });
+        }
+
+        const pending = context.campaignState?.pendingLoot;
+        if (!pending || pending.lootId !== lootId) {
+            return res.status(400).json({ error: `No pending loot with id '${lootId}'` });
+        }
+        if (pending.status !== 'offered') {
+            return res.status(400).json({ error: `Loot already ${pending.status}` });
+        }
+
+        if (skip) {
+            pending.status = 'skipped';
+            pending.resolvedAt = new Date().toISOString();
+            await context.updateCampaignState(context.campaignState);
+            console.log(`💰 Loot ${lootId} skipped`);
+            return res.json({ success: true, message: 'Loot skipped' });
+        }
+
+        // Apply item assignments
+        const assignmentList = Array.isArray(assignments) ? assignments : [];
+        for (const assignment of assignmentList) {
+            const lootItem = (pending.items || []).find(i => i.name === assignment.item);
+            await context.applyCharacterUpdate({
+                character: assignment.assignedTo,
+                add_items: [{
+                    name: assignment.item,
+                    category: lootTypeToCategory(lootItem?.type),
+                    quantity: assignment.quantity || lootItem?.quantity || 1,
+                    value: lootItem?.sellValue || 0,
+                    custom: lootItem?.type === 'quest_item' || lootItem?.type === 'magic_item'
+                }]
+            }, { actor: 'system', reason: `loot from ${pending.defeatedEnemies?.join(', ') || 'combat'}` });
+        }
+
+        // Split coins evenly across player-controlled party members
+        const totalGP = pending.coins?.totalGP || 0;
+        if (totalGP > 0) {
+            const partyEntries = context.getProgressionCharacters();
+            if (partyEntries.length > 0) {
+                const share = Math.floor(totalGP / partyEntries.length);
+                let remainder = totalGP - share * partyEntries.length;
+                for (const [key] of partyEntries) {
+                    const amount = share + (remainder > 0 ? 1 : 0);
+                    if (remainder > 0) remainder--;
+                    if (amount > 0) {
+                        await context.applyCharacterUpdate({
+                            character: key,
+                            gold_change: amount
+                        }, { actor: 'system', reason: 'loot share (split evenly)' });
+                    }
+                }
+            }
+        }
+
+        pending.status = 'distributed';
+        pending.resolvedAt = new Date().toISOString();
+        pending.assignments = assignmentList;
+        await context.updateCampaignState(context.campaignState);
+
+        console.log(`💰 Loot ${lootId} distributed: ${assignmentList.length} item(s), ${totalGP} GP split`);
+        res.json({
+            success: true,
+            message: 'Loot distributed',
+            updatedCharacters: context.campaignState.characters || context.campaignState.party || {}
+        });
+    } catch (error) {
+        console.error('Distribute loot error:', error);
+        res.status(500).json({ error: error.message });
+    }
+}));
+
+// End the current session manually (generates a recap summary)
+const sessionEndRoutes = ['/api/dnd/session/end', '/dnd-api/dnd/session/end', '/dnd/api/dnd/session/end'];
+sessionEndRoutes.forEach(route => app.post(route, checkLockdown('dnd'), async (req, res) => {
+    try {
+        const activeCampaignId = req.body.campaignId || req.body.campaign || 'default';
+        const validation = validateCampaignId(activeCampaignId);
+        if (!validation.valid) return res.status(400).json({ error: validation.error });
+
+        const context = await getCampaignContext(activeCampaignId);
+        if (!context.isLoaded) return res.status(503).json({ error: 'System still loading...' });
+
+        const sessions = context.campaignState?.sessions || [];
+        const current = sessions.find(s => !s.endedAt);
+        if (!current) return res.status(400).json({ error: 'No open session to end' });
+
+        let history = [];
+        try {
+            history = JSON.parse(await fs.readFile(context.paths.conversationHistory, 'utf8'));
+        } catch { /* empty */ }
+
+        await context.finalizeSession(current, history);
+        await context.updateCampaignState(context.campaignState);
+        console.log(`📅 Session ${current.id} ended manually`);
+        res.json({ success: true, session: current, note: 'Summary generates asynchronously — fetch /session/recap shortly' });
+    } catch (error) {
+        console.error('Session end error:', error);
+        res.status(500).json({ error: error.message });
+    }
+}));
+
+// "Previously on..." — recap of the most recent finished session
+const sessionRecapRoutes = ['/api/dnd/session/recap', '/dnd-api/dnd/session/recap', '/dnd/api/dnd/session/recap'];
+sessionRecapRoutes.forEach(route => app.get(route, async (req, res) => {
+    try {
+        const activeCampaignId = req.query.campaign || req.query.campaignId || 'default';
+        const validation = validateCampaignId(activeCampaignId);
+        if (!validation.valid) return res.status(400).json({ error: validation.error });
+
+        const context = await getCampaignContext(activeCampaignId);
+        const sessions = (context.campaignState?.sessions || []).filter(s => s.endedAt && s.summary);
+        const last = sessions[sessions.length - 1];
+        res.json({
+            recap: last?.summary || null,
+            sessionId: last?.id || null,
+            endedAt: last?.endedAt || null,
+            sessionCount: (context.campaignState?.sessions || []).length
+        });
+    } catch (error) {
+        console.error('Session recap error:', error);
+        res.status(500).json({ error: error.message });
+    }
+}));
+
+// Undo a ledgered mutation (audit-card undo button)
+const mutationUndoRoutes = [
+    '/api/dnd/mutation/:mutationId/undo',
+    '/dnd-api/dnd/mutation/:mutationId/undo',
+    '/dnd/api/dnd/mutation/:mutationId/undo'
+];
+mutationUndoRoutes.forEach(route => app.post(route, checkLockdown('dnd'), async (req, res) => {
+    try {
+        const { mutationId } = req.params;
+        const activeCampaignId = req.body.campaignId || req.body.campaign || 'default';
+        const validation = validateCampaignId(activeCampaignId);
+        if (!validation.valid) {
+            return res.status(400).json({ error: validation.error });
+        }
+
+        const context = await getCampaignContext(activeCampaignId);
+        if (!context.isLoaded) {
+            return res.status(503).json({ error: 'System still loading...' });
+        }
+
+        const entry = mutationLedger.findEntry(context.campaignState, mutationId);
+        if (!entry) {
+            return res.status(404).json({ error: `Mutation '${mutationId}' not found` });
+        }
+
+        const result = mutationLedger.revertEntry(entry, context.campaignState, context.combatState);
+        if (!result.ok) {
+            return res.status(400).json({ error: result.reason });
+        }
+
+        await context.syncCombatRepresentations();
+        await context.updateCampaignState(context.campaignState);
+
+        console.log(`↩️  [LEDGER] Undid mutation ${mutationId}: ${entry.type} on ${entry.target?.name}`);
+        res.json({
+            success: true,
+            entry,
+            characters: context.campaignState.characters || context.campaignState.party || {},
+            combat: context.campaignState.combat || null
+        });
+    } catch (error) {
+        console.error('Mutation undo error:', error);
+        res.status(500).json({ error: error.message });
+    }
+}));
+
 // Continue story endpoint - triggers DM to continue without logging a player message
 // Now uses processPlayerAction to get full anti-timewarp pipeline
 const continueRoutes = ['/api/dnd/continue', '/dnd-api/dnd/continue'];
@@ -7674,9 +10088,21 @@ continueRoutes.forEach(route => app.post(route, checkLockdown('dnd'), async (req
 
         // Use processPlayerAction with a special "continue" action
         // This gets us: Pass A verification, SceneCheck validation, retries, scene transitions
-        const continueAction = '[SYSTEM: Continue the story from where you left off. Do NOT repeat what just happened. Pick up EXACTLY where the narrative ended and move the story forward naturally. Introduce new developments, NPC dialogue, environmental details, or dramatic tension as appropriate.]';
+        // Anchor on the literal tail of the last DM message — generic "don't repeat"
+        // instructions produced near-verbatim re-narrations that crept the story forward
+        let lastDmTail = '';
+        try {
+            const hist = JSON.parse(await fs.readFile(context.paths.conversationHistory, 'utf8'));
+            for (let i = hist.length - 1; i >= 0; i--) {
+                if (hist[i].role === 'assistant' && hist[i].content) {
+                    lastDmTail = hist[i].content.slice(-280).replace(/\s+/g, ' ').trim();
+                    break;
+                }
+            }
+        } catch { /* no history yet */ }
+        const continueAction = `[SYSTEM: Continue the story. Your previous narration ended with: "...${lastDmTail}". Begin AFTER those words, mid-flow — do NOT re-describe the scene, restate prior sentences, or re-narrate any beat already written. If a completed roll is in the STRUCTURED ROLL QUEUE, resolve its outcome. Then advance events to the next meaningful player decision point and STOP there. Do not request another roll unless the fiction genuinely forces one.]`;
         
-        const result = await context.processPlayerAction(continueAction, 'continue-session', 'ic');
+        const result = await context.processPlayerAction(continueAction, 'continue-session', 'continue');
         
         // Handle hard-fail case
         if (result.success === false) {
@@ -7692,15 +10118,42 @@ continueRoutes.forEach(route => app.post(route, checkLockdown('dnd'), async (req
             });
         }
         
-        // For "continue", we don't want to save the system prompt as a player message
-        // The narrative is already saved by processPlayerAction, but we need to clean up
-        // Actually, processPlayerAction already handles saving - and we want the DM response saved
-        // But we don't want "[SYSTEM: Continue...]" in history. Let's fix that:
-        // 
-        // For now, since processPlayerAction saves to history, the continue action will be logged.
-        // TODO: Add a flag to processPlayerAction to skip saving player message for system actions
-
         console.log(`✅ Continue story complete (${(result.narrative || '').length} chars)`);
+
+        // Continue responses can request rolls too — queue them exactly like
+        // the action endpoint does (this path previously skipped enqueueing,
+        // so narrated roll requests never produced a prompt)
+        const queuedRollEntries = [];
+        const rollRequests = result.rollRequests || (result.rollRequest ? [result.rollRequest] : []);
+        for (const rollRequestText of rollRequests) {
+            if (typeof rollRequestText === 'string' && rollRequestText.trim()) {
+                try {
+                    const queuedEntry = await enqueueRollRequestFromNarrative(context, activeCampaignId, rollRequestText.trim(), {
+                        requestedBy: 'dm',
+                        source: 'narrative-continue'
+                    });
+                    if (queuedEntry) queuedRollEntries.push(queuedEntry);
+                } catch (error) {
+                    console.error('⚠️  Failed to enqueue roll request from continue response:', error.message);
+                }
+            }
+        }
+        // Fallback: request_roll tool fired without a parseable narrative line
+        if (queuedRollEntries.length === 0 && Array.isArray(result.toolRollRequests) && result.toolRollRequests.length > 0) {
+            for (const toolReq of result.toolRollRequests) {
+                try {
+                    const entry = await enqueueRollRequestFromTool(context, activeCampaignId, toolReq);
+                    if (entry) {
+                        queuedRollEntries.push(entry);
+                        console.log(`🎲 [QUEUE] Enqueued from request_roll tool (continue, narrative line missing): ${entry.reason}`);
+                    }
+                } catch (error) {
+                    console.error('⚠️  Failed to enqueue tool roll request (continue):', error.message);
+                }
+            }
+        }
+
+        await mergeToolAdvantageIntoEntries(context, activeCampaignId, queuedRollEntries, result.toolRollRequests);
 
         res.json({
             success: true,
@@ -7708,7 +10161,9 @@ continueRoutes.forEach(route => app.post(route, checkLockdown('dnd'), async (req
             campaignState: context.campaignState,
             timewarpMetrics: context.timewarpMetrics,
             currentScene: context.campaignState?.current_scene,
-            rollRequest: result.rollRequest
+            rollRequest: result.rollRequest,
+            rollQueueEntry: buildRollQueueEntryPayload(queuedRollEntries[0], queuedRollEntries.length),
+            appliedMutations: result.appliedMutations || []
         });
 
     } catch (error) {
@@ -7819,7 +10274,13 @@ app.post('/api/dnd/scene', async (req, res) => {
         
         // Increment scene_id if transitioning to a new scene
         if (increment_scene) {
+            context.summarizeClosedScene({
+                scene_id: scene.scene_id,
+                location: scene.location,
+                startedAt: scene.startedAt || null
+            }).catch(e => console.warn('⚠️ Scene summary failed:', e.message));
             scene.scene_id += 1;
+            scene.startedAt = new Date().toISOString();
             console.log(`📍 Scene transition: Now at scene #${scene.scene_id}`);
         }
         
@@ -8575,6 +11036,7 @@ combatNextTurnRoutes.forEach(route => app.post(route, async (req, res) => {
         }
 
         const combatState = await combatManager.nextTurn(activeCampaignId);
+        await context.processExpiredConditions(combatState);
         const sharedState = updateSharedCombatState(context, combatState);
 
         console.log(`⚔️ Combat turn advanced - Round ${sharedState.round}, Turn ${sharedState.currentTurn + 1}/${sharedState.initiativeOrder.length}`);
@@ -8770,18 +11232,15 @@ combatActionRoutes.forEach(route => app.post(route, async (req, res) => {
         // Check if turn should advance
         if (response.toLowerCase().includes('turn complete')) {
             combatState = await combatManager.nextTurn(activeCampaignId);
+            await context.processExpiredConditions(combatState);
         }
 
         // Update conversation history (with validation)
         if (action && action.trim()) {
             conversationHistory.push({ role: 'user', content: action });
-        } else {
-            console.warn('⚠️  Rejected empty user action from combat history');
         }
         if (response && response.trim()) {
             conversationHistory.push({ role: 'assistant', content: response });
-        } else {
-            console.warn('⚠️  Rejected empty assistant response from combat history');
         }
         combatState.conversationHistory = conversationHistory;
         await combatManager.saveCombatState(activeCampaignId, combatState);
@@ -8822,38 +11281,66 @@ app.post('/api/dnd/clear-history', async (req, res) => {
 
 // ==================== BACKUP & RECOVERY ====================
 
-// Create backup
-app.post('/api/dnd/backup', async (req, res) => {
-    const { reason = 'manual' } = req.body;
+// Create campaign-scoped backup
+app.post(['/api/dnd/backup', '/dnd-api/dnd/backup'], async (req, res) => {
+    const { reason = 'manual', campaignId, campaign } = req.body;
+    const activeCampaignId = campaignId || campaign || 'default';
+    const validation = validateCampaignId(activeCampaignId);
+    if (!validation.valid) {
+        return res.status(400).json({ error: validation.error });
+    }
     
     try {
+        const context = await getCampaignContext(activeCampaignId);
         const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-        const backupPath = `./backups/backup-${reason}-${timestamp}`;
+        const safeReason = String(reason || 'manual').replace(/[^a-zA-Z0-9_-]/g, '-').slice(0, 60) || 'manual';
+        const backupPath = path.join('.', 'backups', activeCampaignId, `backup-${safeReason}-${timestamp}`);
         
-        await fs.mkdir('./backups', { recursive: true });
         await fs.mkdir(backupPath, { recursive: true });
         
-        // Backup all critical files
-        const filesToBackup = [
-            'campaign-state.json',
-            'conversation-history.json',
-            'SEARCH_INDEX.json',
-            'FULL_CAMPAIGN_MEMORY.json'
-        ];
+        const fileMap = [
+            ['campaign-state.json', context.paths.campaignState],
+            ['conversation-history.json', context.paths.conversationHistory],
+            ['SEARCH_INDEX.json', context.paths.searchIndex],
+            ['FULL_CAMPAIGN_MEMORY.json', context.paths.fullCampaign],
+            ['combat-state.json', path.join(__dirname, 'campaigns', activeCampaignId, 'combat-state.json')],
+            [`${activeCampaignId}.db`, path.join(__dirname, 'database', `${activeCampaignId}.db`)]
+        ].filter(([, sourcePath]) => sourcePath != null);
+        const manifest = {
+            campaign: activeCampaignId,
+            reason: safeReason,
+            createdAt: new Date().toISOString(),
+            files: []
+        };
         
-        for (const file of filesToBackup) {
+        for (const [backupName, sourcePath] of fileMap) {
+            if (!sourcePath) continue;
             try {
-                const data = await fs.readFile(`./${file}`, 'utf8');
-                await fs.writeFile(`${backupPath}/${file}`, data);
+                const data = await fs.readFile(sourcePath);
+                await atomicWriteFile(path.join(backupPath, backupName), data);
+                const stats = await fs.stat(sourcePath);
+                manifest.files.push({
+                    name: backupName,
+                    source: sourcePath,
+                    bytes: stats.size
+                });
             } catch (err) {
-                // File might not exist yet
+                if (err.code !== 'ENOENT') {
+                    throw err;
+                }
             }
         }
+
+        await atomicWriteFile(
+            path.join(backupPath, 'manifest.json'),
+            JSON.stringify(manifest, null, 2)
+        );
         
         console.log(`📦 Backup created: ${backupPath}`);
-        res.json({ success: true, path: backupPath });
+        res.json({ success: true, path: backupPath, manifest });
         
     } catch (error) {
+        console.error('Backup failed:', error);
         res.status(500).json({ error: 'Backup failed' });
     }
 });
@@ -8899,9 +11386,41 @@ aiProviderRoutes.forEach(route => {
 
         const currentProvider = context.aiProvider.getCurrentProvider();
         const capabilities = {
-            claude: { available: true },
-            deepseek: { available: !!process.env.DEEPSEEK_API_KEY },
-            gpt4: { available: !!process.env.OPENAI_API_KEY }
+            claude: {
+                available: true,
+                model: 'claude-sonnet-4-6',
+                supportsTools: true,
+                supportsJsonSchema: true,
+                recommendedForCampaign: true
+            },
+            deepseek: {
+                available: !!process.env.DEEPSEEK_API_KEY,
+                model: 'deepseek-chat',
+                supportsTools: false,
+                supportsJsonSchema: false,
+                recommendedForCampaign: false
+            },
+            gpt4: {
+                available: !!process.env.OPENAI_API_KEY,
+                model: 'gpt-4o',
+                supportsTools: false,
+                supportsJsonSchema: true,
+                recommendedForCampaign: false
+            },
+            gpt5: {
+                available: !!process.env.OPENAI_API_KEY,
+                model: 'gpt-5',
+                supportsTools: false,
+                supportsJsonSchema: true,
+                recommendedForCampaign: false
+            },
+            gemini: {
+                available: !!process.env.GOOGLE_API_KEY,
+                model: 'gemini-3-pro-preview',
+                supportsTools: false,
+                supportsJsonSchema: true,
+                recommendedForCampaign: false
+            }
         };
 
         res.json({
@@ -8958,19 +11477,101 @@ app.post('/api/dnd/rollback', async (req, res) => {
         // Trim history to rollback point
         const rolledBackHistory = currentHistory.slice(0, index + 1);
 
-        // ROLLBACK STATE CHANGES: Reverse all state changes after rollback point
-        const removedEntries = currentHistory.slice(index + 1);
-        await context.rollbackStateChanges(removedEntries);
-
         // Save rolled back history to file
-        await fs.writeFile(
+        await atomicWriteFile(
             context.paths.conversationHistory,
             JSON.stringify(rolledBackHistory, null, 2)
         );
 
+        // Meta-state (audit log, sessions, archive summaries) must survive the
+        // rebuild — it records real-world play, not in-fiction state.
+        const preservedMeta = {
+            mutationLog: context.campaignState?.mutationLog,
+            sessions: context.campaignState?.sessions,
+            archiveSummaries: context.campaignState?.archiveSummaries,
+            pendingLoot: context.campaignState?.pendingLoot
+        };
+
+        // ROLLBACK STATE CHANGES: rebuild from the exact retained history that
+        // was just written, never from the pre-rollback file contents.
+        const removedEntries = currentHistory.slice(index + 1);
+        await context.rollbackStateChanges(removedEntries, rolledBackHistory);
+
+        // Restore preserved meta-state onto the rebuilt campaign state
+        for (const [key, value] of Object.entries(preservedMeta)) {
+            if (value !== undefined) context.campaignState[key] = value;
+        }
+
+        // Reconcile side-state the replay doesn't cover:
+        // 1. Ledger entries newer than the rollback point are now fictional
+        const rollbackCutoff = rolledBackHistory[rolledBackHistory.length - 1]?.timestamp;
+        if (rollbackCutoff && Array.isArray(context.campaignState?.mutationLog)) {
+            let marked = 0;
+            for (const entry of context.campaignState.mutationLog) {
+                if (entry.status === 'applied' && entry.ts > rollbackCutoff) {
+                    entry.status = 'rolled_back';
+                    marked++;
+                }
+            }
+            if (marked > 0) console.log(`↩️  Marked ${marked} ledger entries rolled_back`);
+        }
+        // 2. Pending loot offered after the cutoff is stale
+        if (context.campaignState?.pendingLoot?.status === 'offered' &&
+            rollbackCutoff && context.campaignState.pendingLoot.generatedAt > rollbackCutoff) {
+            console.log(`↩️  Dropping stale pendingLoot ${context.campaignState.pendingLoot.lootId}`);
+            delete context.campaignState.pendingLoot;
+        }
+        // 3. RAG action buffer may hold removed turns — flush it
+        if (context.memoryClient && Array.isArray(context.memoryClient.actionBuffer)) {
+            const dropped = context.memoryClient.actionBuffer.length;
+            context.memoryClient.actionBuffer = [];
+            if (dropped > 0) console.log(`↩️  Flushed ${dropped} buffered RAG actions`);
+        }
+        // 4. Roll-queue entries created after the cutoff are now fictional — cancel them
+        //    so the DM doesn't see roll results for events that no longer happened.
+        //    EXCEPTION: an entry whose request text appears in the RETAINED narrative
+        //    belongs to the kept message (its enqueue lands ms after the history write,
+        //    so a pure timestamp cutoff would orphan the kept message's roll prompt).
+        if (rollbackCutoff) {
+            try {
+                const retainedTail = rolledBackHistory.slice(-3)
+                    .filter(e => e.role === 'assistant' && e.content)
+                    .map(e => e.content)
+                    .join('\n');
+                const belongsToRetained = (entry) => {
+                    const txt = (entry.metadata?.rawRequest || entry.reason || '').trim();
+                    return txt.length > 20 && retainedTail.includes(txt.substring(0, 80));
+                };
+                const queueState = await getSharedCombatStateWithQueue(context, campaignId);
+                let cancelled = 0;
+                for (const entry of (queueState.rollQueue || [])) {
+                    if (entry.status !== ROLL_QUEUE_STATUS.CANCELLED && entry.requestedAt > rollbackCutoff && belongsToRetained(entry)) {
+                        console.log(`↩️  Keeping roll entry ${entry.queueId} — its request text is in the retained narrative`);
+                        continue;
+                    }
+                    if (entry.status !== ROLL_QUEUE_STATUS.CANCELLED && entry.requestedAt > rollbackCutoff) {
+                        entry.status = ROLL_QUEUE_STATUS.CANCELLED;
+                        entry.cancelledAt = new Date().toISOString();
+                        entry.cancelReason = 'rolled back';
+                        (entry.participants || []).forEach(p => {
+                            if (p.status === ROLL_PARTICIPANT_STATUS.PENDING) p.status = ROLL_PARTICIPANT_STATUS.CANCELLED;
+                        });
+                        cancelled++;
+                    }
+                }
+                if (cancelled > 0) {
+                    await persistCombatStateWithQueue(context, campaignId, queueState);
+                    console.log(`↩️  Cancelled ${cancelled} post-rollback roll queue entries`);
+                }
+            } catch (e) {
+                console.warn('⚠️ Roll-queue rollback reconciliation failed:', e.message);
+            }
+        }
+        await context.saveCampaignState();
+
         // ROLLBACK FIX: Regenerate emergency export from rolled-back conversation
         const exportContent = context.generateEmergencyExportFromConversation(rolledBackHistory);
-        await fs.writeFile(context.paths.emergencyExport, exportContent);
+        await atomicWriteFile(context.paths.emergencyExport, exportContent);
 
         // Clear existing memory before reload (prevents duplication)
         context.indexedEvents = [];
@@ -9480,7 +12081,7 @@ const characterPatchRoutes = ['/api/dnd/character/:characterId', '/dnd-api/dnd/c
 characterPatchRoutes.forEach(route => app.patch(route, async (req, res) => {
     try {
         const { characterId } = req.params;
-        const { campaign, hp_current, hp_max, credits } = req.body;
+        const { campaign, hp_current, hp_max, credits, experience, level } = req.body;
         const activeCampaignId = campaign || process.env.DEFAULT_CAMPAIGN || 'default';
 
         const context = await getCampaignContext(activeCampaignId);
@@ -9493,16 +12094,62 @@ characterPatchRoutes.forEach(route => app.patch(route, async (req, res) => {
             return res.status(404).json({ error: `Character '${characterId}' not found` });
         }
 
-        // Apply player edits
+        // Apply player edits (ledgered as actor:'player' — manual override path)
+        const ledgerTarget = { kind: 'character', id: characterId, name: charData.name || characterId };
         if (hp_current !== undefined && charData.hp) {
+            const before = charData.hp.current;
             charData.hp.current = Math.max(0, Math.min(charData.hp.max, parseInt(hp_current)));
+            if (charData.hp.current !== before) {
+                mutationLedger.createEntry(context.campaignState, {
+                    actor: 'player', type: 'hp_change', target: ledgerTarget,
+                    delta: charData.hp.current - before, before, after: charData.hp.current,
+                    reason: 'manual sheet edit'
+                });
+                context.syncCombatantHP(characterId, charData.hp);
+            }
         }
         if (hp_max !== undefined && charData.hp) {
             charData.hp.max = Math.max(1, parseInt(hp_max));
             charData.hp.current = Math.min(charData.hp.current, charData.hp.max);
         }
         if (credits !== undefined) {
+            const before = charData.credits || 0;
             charData.credits = Math.max(0, parseInt(credits));
+            if (charData.credits !== before) {
+                mutationLedger.createEntry(context.campaignState, {
+                    actor: 'player', type: 'gold_change', target: ledgerTarget,
+                    delta: charData.credits - before, before, after: charData.credits,
+                    reason: 'manual sheet edit'
+                });
+            }
+        }
+        if (level !== undefined) {
+            const nextLevel = Math.max(1, Math.min(20, parseInt(level)));
+            charData.level = nextLevel;
+            charData.proficiencyBonus = xpCalculator.getProficiencyBonus(nextLevel);
+            const minXP = xpCalculator.getXPForLevel(nextLevel);
+            const currentXP = Math.max(Number(charData.experience?.current ?? charData.xp ?? 0), minXP);
+            const progress = xpCalculator.getLevelProgress(currentXP);
+            charData.experience = {
+                current: currentXP,
+                levelStart: xpCalculator.getXPForLevel(nextLevel),
+                nextLevel: xpCalculator.getNextLevelXP(nextLevel),
+                toNextLevel: progress.xpNeededForNext,
+                progressPct: progress.progressPct
+            };
+        }
+        if (experience !== undefined) {
+            const currentXP = Math.max(0, parseInt(experience));
+            const progress = xpCalculator.getLevelProgress(currentXP);
+            charData.level = progress.level;
+            charData.proficiencyBonus = progress.proficiencyBonus;
+            charData.experience = {
+                current: currentXP,
+                levelStart: progress.currentLevelXP,
+                nextLevel: progress.nextLevelXP,
+                toNextLevel: progress.xpNeededForNext,
+                progressPct: progress.progressPct
+            };
         }
 
         // Save state
@@ -9516,7 +12163,10 @@ characterPatchRoutes.forEach(route => app.patch(route, async (req, res) => {
                 id: characterId,
                 name: charData.name,
                 hp: charData.hp,
-                credits: charData.credits
+                credits: charData.credits,
+                level: charData.level,
+                experience: charData.experience,
+                proficiencyBonus: charData.proficiencyBonus
             }
         });
     } catch (error) {
@@ -9524,6 +12174,55 @@ characterPatchRoutes.forEach(route => app.patch(route, async (req, res) => {
         res.status(500).json({ error: error.message });
     }
 }));
+
+// Update ship power allocation (player mechanic)
+app.patch(['/api/dnd/ship/power', '/dnd-api/dnd/ship/power'], async (req, res) => {
+    try {
+        const { campaign, allocations } = req.body;
+        const campaignId = campaign || 'default';
+        const context = campaignContexts.get(campaignId);
+
+        if (!context) return res.status(404).json({ error: 'Campaign not found' });
+        if (!allocations || typeof allocations !== 'object' || Array.isArray(allocations)) {
+            return res.status(400).json({ error: 'allocations must be an object keyed by ship system' });
+        }
+
+        const ship = context.campaignState?.ship;
+        if (!ship) return res.status(404).json({ error: 'No ship in campaign state' });
+
+        // Validate each system and apply
+        for (const [sysKey, amount] of Object.entries(allocations)) {
+            const sys = ship.systems[sysKey];
+            if (!sys) continue;
+            if (!Number.isFinite(amount)) {
+                return res.status(400).json({ error: `${sys.label} power must be a finite number` });
+            }
+            if (amount < sys.power_min) {
+                return res.status(400).json({ error: `${sys.label} requires minimum ${sys.power_min} power` });
+            }
+            if (amount > sys.power_max) {
+                return res.status(400).json({ error: `${sys.label} maximum is ${sys.power_max} power` });
+            }
+            if (sys.status === 'destroyed' || sys.status === 'disabled') continue;
+            sys.power_allocated = amount;
+        }
+
+        const finalAllocated = Object.values(ship.systems)
+            .reduce((sum, sys) => sum + (sys.power_allocated || 0), 0);
+        if (finalAllocated > ship.power.total) {
+            return res.status(400).json({ error: `Total power ${finalAllocated} exceeds budget of ${ship.power.total}` });
+        }
+
+        ship.power.available = ship.power.total - finalAllocated;
+
+        await context.saveCampaignState();
+        console.log(`🔋 Power allocation updated for ${ship.name}:`, allocations);
+        res.json({ success: true, ship });
+    } catch (error) {
+        console.error('Power allocation error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
 
 // Update character HP
 app.post('/api/dnd/character/hp', async (req, res) => {
@@ -9919,6 +12618,14 @@ async function gracefulShutdown(signal) {
 
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+
+process.on('uncaughtException', (err) => {
+    console.error('💥 UNCAUGHT EXCEPTION:', err.stack || err);
+    setTimeout(() => process.exit(1), 1000);
+});
+process.on('unhandledRejection', (reason) => {
+    console.error('💥 UNHANDLED REJECTION:', reason);
+});
 
 // Start the server
 start().catch(console.error);

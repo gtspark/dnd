@@ -2,13 +2,15 @@
   "name": "claude-dm-campaign",
   "version": "1.0.0",
   "description": "D&D Campaign Manager with Claude AI as Dungeon Master",
-  "main": "server.js",
+  "main": "complete-intelligent-server.js",
   "scripts": {
-    "start": "node server.js",
-    "dev": "nodemon server.js",
-    "ui:dev": "cd ui-svelte && vite",
-    "ui:build": "cd ui-svelte && vite build",
-    "ui:preview": "cd ui-svelte && vite preview",
+    "start": "node complete-intelligent-server.js",
+    "dev": "nodemon complete-intelligent-server.js",
+    "ui:dev": "cd ui && vite",
+    "ui:build": "cd ui && vite build",
+    "ui:preview": "cd ui && vite preview",
+    "test": "npm run test:combat-manager && npm run test:dax-state",
+    "test:dax-state": "node tests/dax-continuity-state-test.js",
     "test:combat-manager": "node tests/combat-manager-context-test.js"
   },
   "keywords": [

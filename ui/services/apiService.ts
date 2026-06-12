@@ -4,6 +4,7 @@
  */
 
 import { ThemeMode, Character, AIProvider, CombatState, Combatant, Message } from "../types";
+import type { CharacterSkill, InventoryItem, Ship, Quest, MutationRecord } from "../types";
 
 // In production (vodbase.net), nginx proxies /dnd-api/ to backend /api/
 // In dev (localhost), Vite proxies /api/dnd to backend
@@ -18,15 +19,33 @@ function getCampaignId(): string {
 
 // ============ Backend Response Types ============
 
+interface BackendCondition {
+  name: string;
+  source?: string | null;
+  appliedRound?: number | null;
+  duration?: { type?: string; value?: number; remaining?: number } | null;
+}
+
 interface BackendCharacter {
   name: string;
   class?: string;
   race?: string;
   hp?: { current: number; max: number } | number;
   maxHp?: number;
+  ac?: number;
+  speed?: number;
+  level?: number;
+  experience?: {
+    current: number;
+    levelStart?: number;
+    nextLevel?: number | null;
+    toNextLevel?: number | null;
+    progressPct?: number;
+  };
+  xp?: number;
   credits?: number;
   gold?: number;
-  conditions?: string[];
+  conditions?: Array<string | BackendCondition>;
   controlledBy?: 'player' | 'dm';
   companion?: boolean;
   proficiencyBonus?: number;
@@ -38,7 +57,7 @@ interface BackendCharacter {
     wis?: number;
     cha?: number;
   };
-  skills?: Record<string, { ability: string; proficient: boolean; notes?: string }>;
+  skills?: Record<string, CharacterSkill>;
   savingThrows?: Record<string, { proficient: boolean }>;
   inventory?: any[];  // Can be strings (legacy) or InventoryItem objects
   equipment?: string[];
@@ -56,6 +75,8 @@ interface BackendCombatant {
   hp?: { current: number; max: number };
   ac?: number;
   isDead?: boolean;
+  isDefeated?: boolean;
+  actionEconomy?: { action: boolean; bonusAction: boolean; movement: number };
 }
 
 interface BackendCombatState {
@@ -69,6 +90,7 @@ interface BackendCombatState {
   actionEconomy?: Record<string, { action: boolean; bonusAction: boolean; movement: number }>;
   surprise?: string;
   context?: string;
+  positions?: Record<string, { band: number; name: string }>;
 }
 
 interface BackendCampaignState {
@@ -76,6 +98,8 @@ interface BackendCampaignState {
   characters?: Record<string, BackendCharacter>;
   combat?: BackendCombatState;
   resources?: { party_credits?: number; party_gold?: number };
+  ship?: Ship;
+  quests?: { active?: Quest[] };
 }
 
 interface ActionResponse {
@@ -94,6 +118,8 @@ interface ActionResponse {
   enemies?: any[];
   handoffData?: any;
   lootOffered?: LootOfferedData;  // Loot available for distribution
+  initiativeOrder?: BackendCombatant[];
+  appliedMutations?: MutationRecord[];  // Ledger entries for audit cards
   error?: string;
 }
 
@@ -123,9 +149,13 @@ interface LootAssignmentPayload {
 }
 
 interface StateResponse {
-  campaignState: BackendCampaignState;
+  campaignState?: BackendCampaignState;
   conversationHistory?: any[];
   genre?: 'fantasy' | 'scifi';  // Campaign genre/theme from backend
+  characters?: Record<string, BackendCharacter>;
+  combat?: BackendCombatState;
+  ship?: Ship;
+  quests?: { active?: Quest[] };
 }
 
 // ============ State Transformers ============
@@ -135,6 +165,22 @@ export function transformCharacters(
   theme: ThemeMode,
   campaignId: string
 ): Character[] {
+  const normalizeInventory = (items: any[] | undefined): InventoryItem[] => (items || []).map((item) => {
+    if (typeof item === 'string') {
+      return {
+        name: item,
+        equipped: false,
+        category: 'misc',
+        value: 0,
+        condition: 'good',
+        stackable: false,
+        quantity: 1,
+        treasure: false
+      };
+    }
+    return item;
+  });
+
   return Object.entries(backendChars).map(([key, char]) => {
     const hp = typeof char.hp === 'object' ? char.hp : { current: char.hp || 10, max: char.maxHp || 10 };
     // Convert key to hyphenated format for portrait path (e.g., "kira moonwhisper" -> "kira-moonwhisper")
@@ -148,9 +194,21 @@ export function transformCharacters(
       avatar: char.portrait || `/dnd/campaigns/${campaignId}/portraits/${portraitKey}.png`,
       hp: hp.current,
       maxHp: hp.max,
+      ac: char.ac,
+      speed: char.speed,
+      level: char.level ?? (char.experience?.current !== undefined ? undefined : 1),
+      experience: char.experience || (char.xp !== undefined ? { current: char.xp } : undefined),
       resource: char.credits ?? char.gold ?? 0,
       resourceName: theme === 'scifi' ? 'Creds' : 'GP',
-      conditions: char.conditions || [],
+      // Backend conditions may be strings or {name, source, duration} objects
+      conditions: (char.conditions || []).map(c => typeof c === 'string' ? c : c.name),
+      conditionDetails: (char.conditions || [])
+        .filter((c): c is BackendCondition => typeof c === 'object' && c !== null)
+        .map(c => ({
+          name: c.name,
+          source: c.source ?? undefined,
+          remainingRounds: c.duration?.remaining ?? c.duration?.value ?? undefined
+        })),
       controlledBy: char.controlledBy || 'player',
       companion: char.companion || false,
       proficiencyBonus: char.proficiencyBonus ?? 2,
@@ -164,7 +222,7 @@ export function transformCharacters(
       },
       skills: char.skills || {},
       savingThrows: char.savingThrows || undefined,
-      inventory: char.inventory || [],
+      inventory: normalizeInventory(char.inventory),
       heldSpells: char.spells || []
     };
   });
@@ -234,7 +292,8 @@ export function transformCombatState(
       bonusActionSpent: economy ? !economy.bonusAction : false,
       movementRemaining: economy?.movement ?? 30,
       maxMovement: 30
-    }
+    },
+    positions: backendCombat.positions || undefined
   };
 }
 
@@ -378,6 +437,16 @@ export const sendMessageToDM = async (
         });
       }
 
+      // Ship state updates
+      if (data.campaignState?.ship) {
+        onFunctionCall({
+          name: 'update_ship',
+          args: {
+            ship: data.campaignState.ship
+          }
+        });
+      }
+
       // Roll request
       if (data.rollRequest) {
         onFunctionCall({
@@ -397,6 +466,29 @@ export const sendMessageToDM = async (
             lootData: data.lootOffered
           }
         });
+      }
+
+      // Mutation ledger entries - render as audit cards with undo
+      if (data.appliedMutations && data.appliedMutations.length > 0) {
+        onFunctionCall({
+          name: 'mutations_applied',
+          args: {
+            mutations: data.appliedMutations
+          }
+        });
+      }
+
+      // Roll-queue sync: when no new roll request arrived, align the pending-roll
+      // banner with the server queue (clears banners for cancelled/completed rolls)
+      if (!data.rollRequest && !data.rollQueueEntry) {
+        const queue = (data.campaignState?.combat as any)?.rollQueue;
+        if (Array.isArray(queue)) {
+          const open = queue.filter((e: any) => e.status === 'pending' || e.status === 'partial');
+          onFunctionCall({
+            name: 'roll_queue_sync',
+            args: { entry: open.length > 0 ? open[open.length - 1] : null }
+          });
+        }
       }
     }
 
@@ -460,6 +552,26 @@ export async function sendSideChatMessage(
 }
 
 /**
+ * Update ship power allocation (player mechanic)
+ */
+export async function updateShipPower(
+  allocations: Record<string, number>,
+  campaignId?: string
+): Promise<{ success: boolean; ship: any }> {
+  const id = campaignId || currentCampaignId;
+  const res = await fetch(`${API_BASE}/ship/power`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ campaign: id, allocations })
+  });
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`Power allocation failed: ${err}`);
+  }
+  return res.json();
+}
+
+/**
  * Submit a roll result
  */
 export async function submitRoll(
@@ -485,6 +597,37 @@ export async function submitRoll(
 
   if (!res.ok) {
     throw new Error(`Failed to submit roll: ${res.statusText}`);
+  }
+
+  return res.json();
+}
+
+export async function resolveRollQueueEntry(
+  queueId: string,
+  payload: {
+    participantId?: string;
+    participantName?: string;
+    total: number;
+    natural: number;
+    modifier: number;
+    rolls?: number[];
+    formula?: string;
+    notation?: string;
+    notes?: string;
+    submittedBy?: string;
+  },
+  campaignId?: string
+): Promise<{ success: boolean; entry: any; rollQueue: any[] }> {
+  const id = campaignId || currentCampaignId;
+  const res = await fetch(`${API_BASE}/roll-queue/${encodeURIComponent(queueId)}/resolve`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ campaign: id, ...payload })
+  });
+
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`Failed to resolve roll queue entry: ${err}`);
   }
 
   return res.json();
@@ -593,6 +736,30 @@ export async function continueStory(
       name: 'update_characters',
       args: { characters: data.campaignState.characters }
     });
+  }
+  if (onFunctionCall && data.campaignState?.ship) {
+    onFunctionCall({
+      name: 'update_ship',
+      args: { ship: data.campaignState.ship }
+    });
+  }
+  // Roll requests from continue responses (e.g. follow-up checks after a roll resolves)
+  if (onFunctionCall && (data.rollRequest || data.rollQueueEntry)) {
+    onFunctionCall({
+      name: 'request_roll',
+      args: { request: data.rollRequest, queueEntry: data.rollQueueEntry }
+    });
+  } else if (onFunctionCall) {
+    // No new request — sync the banner against the server queue
+    const queue = (data.campaignState?.combat as any)?.rollQueue;
+    if (Array.isArray(queue)) {
+      const open = queue.filter((e: any) => e.status === 'pending' || e.status === 'partial');
+      onFunctionCall({ name: 'roll_queue_sync', args: { entry: open.length > 0 ? open[open.length - 1] : null } });
+    }
+  }
+  // Ledger audit cards from continue responses
+  if (onFunctionCall && Array.isArray(data.appliedMutations) && data.appliedMutations.length > 0) {
+    onFunctionCall({ name: 'mutations_applied', args: { mutations: data.appliedMutations } });
   }
 
   return data.narrative || 'The story continues...';
@@ -808,9 +975,9 @@ export async function preloadPartyItems(items: string[]): Promise<void> {
 // Player character edit (HP, credits)
 export async function updateCharacter(
   characterId: string,
-  updates: { hp_current?: number; credits?: number },
+  updates: { hp_current?: number; credits?: number; experience?: number; level?: number },
   campaignId?: string
-): Promise<{ success: boolean; character: { hp: { current: number; max: number }; credits: number } }> {
+): Promise<{ success: boolean; character: { hp: { current: number; max: number }; credits: number; experience?: any; level?: number } }> {
   const campaign = campaignId || getCampaignId();
   const resp = await fetch(`${API_BASE}/character/${characterId}`, {
     method: 'PATCH',
@@ -819,6 +986,32 @@ export async function updateCharacter(
   });
   if (!resp.ok) throw new Error(`Failed to update character: ${resp.status}`);
   return resp.json();
+}
+
+// "Previously on..." recap from the most recent finished session
+export async function getSessionRecap(
+  campaignId?: string
+): Promise<{ recap: string | null; sessionId: string | null; endedAt: string | null }> {
+  const campaign = campaignId || getCampaignId();
+  const resp = await fetch(`${API_BASE}/session/recap?campaign=${campaign}`);
+  if (!resp.ok) return { recap: null, sessionId: null, endedAt: null };
+  return resp.json();
+}
+
+// Undo a ledgered mutation (audit-card undo button)
+export async function undoMutation(
+  mutationId: string,
+  campaignId?: string
+): Promise<{ success: boolean; entry: MutationRecord; characters: Record<string, BackendCharacter>; combat?: BackendCombatState }> {
+  const campaign = campaignId || getCampaignId();
+  const resp = await fetch(`${API_BASE}/mutation/${mutationId}/undo`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ campaignId: campaign })
+  });
+  const data = await resp.json();
+  if (!resp.ok) throw new Error(data.error || `Failed to undo mutation: ${resp.status}`);
+  return data;
 }
 
 // Export for backwards compatibility
@@ -841,5 +1034,6 @@ export default {
   getItemDetails,
   preloadPartySpells,
   preloadPartyItems,
-  updateCharacter
+  updateCharacter,
+  undoMutation
 };

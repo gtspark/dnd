@@ -86,3 +86,7 @@ ui/dist/
 campaigns/*/svelte-dist/assets/
 __pycache__/
 *.pyc
+
+# Local backup snapshots and eval scratch copies
+backups/
+campaigns/dax-eval/

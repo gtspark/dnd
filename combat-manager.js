@@ -6,6 +6,47 @@
 const fs = require('fs').promises;
 const path = require('path');
 const { CombatStateMachine, STATE } = require('./combat-state-machine');
+const { normalizeCondition, conditionName, tickConditions } = require('./condition-effects');
+const zoneTracker = require('./zone-tracker');
+
+async function atomicWriteFile(filePath, data) {
+    const dir = path.dirname(filePath);
+    const base = path.basename(filePath);
+    const tempPath = path.join(dir, `.${base}.${process.pid}.${Date.now()}.tmp`);
+
+    await fs.mkdir(dir, { recursive: true });
+    try {
+        await fs.writeFile(tempPath, data);
+        const handle = await fs.open(tempPath, 'r');
+        try {
+            await handle.sync();
+        } finally {
+            await handle.close();
+        }
+
+        await fs.rename(tempPath, filePath);
+
+        try {
+            const dirHandle = await fs.open(dir, 'r');
+            try {
+                await dirHandle.sync();
+            } finally {
+                await dirHandle.close();
+            }
+        } catch (error) {
+            if (!['EINVAL', 'EPERM', 'EISDIR'].includes(error.code)) {
+                throw error;
+            }
+        }
+    } catch (error) {
+        try {
+            await fs.unlink(tempPath);
+        } catch {
+            // Best effort cleanup only.
+        }
+        throw error;
+    }
+}
 
 class CombatManager {
     constructor(campaignDataPath) {
@@ -86,7 +127,10 @@ class CombatManager {
             const conditionsSource = existingConditions[finalKey]
                 || existingConditions[combatant.name]
                 || combatant.conditions;
-            const mergedConditions = Array.isArray(conditionsSource) ? [...conditionsSource] : [];
+            // Normalize to object form (strings tolerated) so durations survive reload
+            const mergedConditions = (Array.isArray(conditionsSource) ? conditionsSource : [])
+                .map(c => normalizeCondition(c, combatState.round))
+                .filter(Boolean);
 
             const deathSavesSource = existingDeathSaves[finalKey]
                 || existingDeathSaves[combatant.name]
@@ -233,6 +277,9 @@ class CombatManager {
         }
 
         this.prepareCombatState(combatState);
+        if (!combatState.positions) {
+            zoneTracker.initPositions(combatState);
+        }
         this.activeCombats.set(campaignId, combatState);
         await this.saveCombatState(campaignId, combatState);
 
@@ -410,6 +457,24 @@ class CombatManager {
             turn: combat.currentTurn + 1,
             isPlayer: nextCombatant.isPlayer
         });
+
+        // Tick duration-bearing conditions at the start of the combatant's turn
+        combat.lastExpiredConditions = [];
+        const nextKey = this.getCombatantKey(nextCombatant);
+        if (nextKey && Array.isArray(combat.conditions?.[nextKey]) && combat.conditions[nextKey].length > 0) {
+            const { remaining, expired } = tickConditions(combat.conditions[nextKey]);
+            if (expired.length > 0) {
+                combat.conditions[nextKey] = remaining;
+                nextCombatant.conditions = remaining;
+                combat.lastExpiredConditions = expired.map(cond => ({
+                    uid: nextKey,
+                    combatantName: nextCombatant.name,
+                    isPlayer: nextCombatant.isPlayer === true,
+                    condition: cond
+                }));
+                console.log(`⏳ [COMBAT] Conditions expired for ${nextCombatant.name}: ${expired.map(conditionName).join(', ')}`);
+            }
+        }
 
         await this.saveCombatState(campaignId, combat);
         return combat;
@@ -607,12 +672,23 @@ class CombatManager {
         }
         const conditions = combat.conditions[key];
 
+        // Accept both string and object form ({ name, source, duration })
+        const normalized = normalizeCondition(condition, combat.round);
+        if (!normalized) {
+            throw new Error('Invalid condition payload');
+        }
+
         if (add) {
-            if (!conditions.includes(condition)) {
-                conditions.push(condition);
+            const exists = conditions.some(c => conditionName(c) === normalized.name);
+            if (!exists) {
+                conditions.push(normalized);
+            } else if (normalized.duration) {
+                // Re-applying with a duration refreshes it
+                const idx = conditions.findIndex(c => conditionName(c) === normalized.name);
+                conditions[idx] = normalized;
             }
         } else {
-            const index = conditions.indexOf(condition);
+            const index = conditions.findIndex(c => conditionName(c) === normalized.name);
             if (index > -1) {
                 conditions.splice(index, 1);
             }
@@ -762,7 +838,7 @@ class CombatManager {
         }
 
         const combatFile = path.join(campaignDir, 'combat-state.json');
-        await fs.writeFile(combatFile, JSON.stringify(combatState, null, 2));
+        await atomicWriteFile(combatFile, JSON.stringify(combatState, null, 2));
     }
 
     /**
@@ -792,7 +868,8 @@ class CombatManager {
                 combatState.rollQueue = [];
             }
 
-            if (combatState.active) {
+            const hasRollQueue = Array.isArray(combatState.rollQueue) && combatState.rollQueue.length > 0;
+            if (combatState.active || hasRollQueue) {
                 this.prepareCombatState(combatState);
                 this.activeCombats.set(campaignId, combatState);
             } else {

@@ -40,6 +40,61 @@ const CR_TO_XP = {
     '30': 155000
 };
 
+const LEVEL_XP_THRESHOLDS = [
+    0, 0, 300, 900, 2700, 6500, 14000, 23000, 34000, 48000, 64000,
+    85000, 100000, 120000, 140000, 165000, 195000, 225000, 265000,
+    305000, 355000
+];
+
+function getLevelForXP(xp) {
+    const total = Math.max(0, Number(xp) || 0);
+    let level = 1;
+    for (let candidate = 1; candidate <= 20; candidate++) {
+        if (total >= LEVEL_XP_THRESHOLDS[candidate]) {
+            level = candidate;
+        }
+    }
+    return level;
+}
+
+function getXPForLevel(level) {
+    const normalized = Math.max(1, Math.min(20, Number(level) || 1));
+    return LEVEL_XP_THRESHOLDS[normalized];
+}
+
+function getNextLevelXP(level) {
+    const normalized = Math.max(1, Math.min(20, Number(level) || 1));
+    return normalized >= 20 ? null : LEVEL_XP_THRESHOLDS[normalized + 1];
+}
+
+function getProficiencyBonus(level) {
+    const normalized = Math.max(1, Math.min(20, Number(level) || 1));
+    return 2 + Math.floor((normalized - 1) / 4);
+}
+
+function getLevelProgress(xp) {
+    const total = Math.max(0, Number(xp) || 0);
+    const level = getLevelForXP(total);
+    const currentLevelXP = getXPForLevel(level);
+    const nextLevelXP = getNextLevelXP(level);
+    const xpIntoLevel = total - currentLevelXP;
+    const xpNeededForNext = nextLevelXP === null ? null : nextLevelXP - total;
+    const progressPct = nextLevelXP === null
+        ? 100
+        : Math.max(0, Math.min(100, Math.round((xpIntoLevel / (nextLevelXP - currentLevelXP)) * 100)));
+
+    return {
+        level,
+        totalXP: total,
+        currentLevelXP,
+        nextLevelXP,
+        xpIntoLevel,
+        xpNeededForNext,
+        progressPct,
+        proficiencyBonus: getProficiencyBonus(level)
+    };
+}
+
 /**
  * Parse CR string to normalized key
  * @param {string|number} cr - Challenge rating (e.g., "1/4", 5, "10")
@@ -144,7 +199,13 @@ function getXPBreakdown(enemies) {
 
 module.exports = {
     CR_TO_XP,
+    LEVEL_XP_THRESHOLDS,
     parseCR,
+    getLevelForXP,
+    getXPForLevel,
+    getNextLevelXP,
+    getProficiencyBonus,
+    getLevelProgress,
     getXPForEnemy,
     calculateTotalXP,
     distributeXP,

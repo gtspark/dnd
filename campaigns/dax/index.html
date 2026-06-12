@@ -41,8 +41,8 @@
             text-shadow: 0 0 20px rgba(30, 64, 175, 0.6);
         }
     </style>
-    <link rel="stylesheet" href="/dnd/styles.css?v=1764054345">
-    <link rel="stylesheet" href="/dnd/campaigns/dax/theme.css?v=1764054345">
+    <link rel="stylesheet" href="/dnd/styles.css?v=1775314062">
+    <link rel="stylesheet" href="/dnd/campaigns/dax/theme.css?v=1775314062">
     <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;600;700&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
 </head>
 <body>
@@ -168,6 +168,33 @@
                     <div class="status-effects" id="status-effects">
                         <!-- Status badges will be inserted here dynamically -->
                     </div>
+
+                    <div class="hp-edit-controls">
+                        <button class="hp-btn" id="hp-minus" data-delta="-1">-</button>
+                        <input type="number" id="hp-edit-input" class="hp-input" min="0">
+                        <button class="hp-btn" id="hp-plus" data-delta="+1">+</button>
+                        <button class="btn-small" id="hp-set-btn">Set HP</button>
+                    </div>
+
+                    <div class="credits-edit-row">
+                        <span class="stat-name">Credits:</span>
+                        <span class="stat-value" id="char-credits-display">0</span>
+                        <input type="number" id="credits-edit-input" class="credits-input" min="0">
+                        <button class="btn-small" id="credits-set-btn">Set</button>
+                    </div>
+                </div>
+
+                <div class="character-skills-panel">
+                    <h5 class="section-toggle" data-target="skills-list">
+                        Skills
+                        <span class="proficiency-badge">Prof +<span id="proficiency-display">2</span></span>
+                    </h5>
+                    <div id="skills-list" class="skills-list"></div>
+                </div>
+
+                <div class="character-saves-panel">
+                    <h5 class="section-toggle" data-target="saves-list">Saving Throws</h5>
+                    <div id="saves-list" class="saves-list"></div>
                 </div>
             </aside>
 
@@ -502,9 +529,9 @@
         </div>
     </div>
 
-    <script src="/dnd/shared/api-handler-base.js?v=1733746800"></script>
-    <script src="/dnd/shared/campaign-base.js?v=1733746800"></script>
-    <script src="/dnd/campaigns/dax/campaign-config.js?v=1765769106"></script>
+    <script src="/dnd/shared/api-handler-base.js?v=1775314062"></script>
+    <script src="/dnd/shared/campaign-base.js?v=1775314062"></script>
+    <script src="/dnd/campaigns/dax/campaign-config.js?v=1775314062"></script>
     <script>
         // Extract campaign ID from URL parameter
         const urlParams = new URLSearchParams(window.location.search);
@@ -622,13 +649,13 @@
             // Load Svelte CSS
             const svelteCSS = document.createElement('link');
             svelteCSS.rel = 'stylesheet';
-            svelteCSS.href = '/dnd/campaigns/test-silverpeak/svelte-dist/assets/index-6GABUy0N.css?v=1764054345';
+            svelteCSS.href = '/dnd/campaigns/test-silverpeak/svelte-dist/assets/index-6GABUy0N.css?v=1775314062';
             document.head.appendChild(svelteCSS);
 
             // Load Svelte JS
             const svelteJS = document.createElement('script');
             svelteJS.type = 'module';
-            svelteJS.src = '/dnd/campaigns/test-silverpeak/svelte-dist/assets/index-CDCLySjn.js?v=1733746800';
+            svelteJS.src = '/dnd/campaigns/test-silverpeak/svelte-dist/assets/index-CDCLySjn.js?v=1775314062';
             document.body.appendChild(svelteJS);
 
             console.log('✅ Loaded Svelte Equipment Manager for test-silverpeak');

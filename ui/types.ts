@@ -4,7 +4,7 @@ export type AIProvider = 'claude' | 'deepseek' | 'gpt4' | 'gpt5' | 'gemini';
 
 // ==================== INVENTORY ITEM ====================
 
-export type ItemCategory = 'weapon' | 'armor' | 'consumable' | 'treasure' | 'misc';
+export type ItemCategory = 'weapon' | 'armor' | 'consumable' | 'treasure' | 'document' | 'misc';
 export type ItemCondition = 'pristine' | 'good' | 'worn' | 'damaged' | 'broken';
 
 export interface InventoryItem {
@@ -34,9 +34,20 @@ export interface Character {
   avatar: string;             // URL
   hp: number;
   maxHp: number;
+  ac?: number;
+  speed?: number;
+  level?: number;
+  experience?: {
+    current: number;
+    levelStart?: number;
+    nextLevel?: number | null;
+    toNextLevel?: number | null;
+    progressPct?: number;
+  };
   resource: number;           // Gold or Credits
   resourceName: string;
   conditions: string[];
+  conditionDetails?: ConditionDetail[];  // duration/source metadata for badges
   controlledBy?: 'player' | 'dm';  // Who controls this character
   companion?: boolean;             // True for DM-controlled party members
   proficiencyBonus?: number;       // Proficiency bonus (default 2)
@@ -54,7 +65,24 @@ export interface Character {
   heldSpells: string[];
 }
 
-export type MessageType = 'user' | 'ai' | 'system' | 'roll' | 'combat' | 'initiative' | 'loot_distribution';
+export interface ConditionDetail {
+  name: string;
+  source?: string;
+  remainingRounds?: number;
+}
+
+export interface Quest {
+  id: string;
+  title: string;
+  status?: string;
+  priority?: string;
+  location?: string;
+  summary?: string;
+  next_steps?: string[];
+  stakes?: string;
+}
+
+export type MessageType = 'user' | 'ai' | 'system' | 'roll' | 'combat' | 'initiative' | 'loot_distribution' | 'mutation_audit';
 
 export interface DiceResult {
   total: number;
@@ -111,6 +139,7 @@ export interface CombatState {
   lastOrder?: Combatant[]; // For re-entering combat
   economy: CombatEconomy;
   pendingRollRequest?: string; // Initiative roll request text
+  positions?: Record<string, { band: number; name: string }>; // zone tracker range bands
 }
 
 export interface CampaignState {
@@ -176,8 +205,37 @@ export interface LootDistributionMessage {
   distributionMessage?: string;  // "Thorne received: Healing Potion (×2)..."
 }
 
+// ==================== MUTATION LEDGER (audit cards) ====================
+
+export type MutationActor = 'dm' | 'player' | 'system';
+export type MutationStatus = 'applied' | 'undone' | 'rejected' | 'rolled_back';
+
+export interface MutationRecord {
+  id: string;
+  ts: string;
+  actor: MutationActor;
+  type: 'hp_change' | 'gold_change' | 'item_add' | 'item_remove' |
+        'condition_add' | 'condition_remove' | 'condition_expired' |
+        'movement' | 'transaction' | 'xp';
+  target: { kind: 'character' | 'enemy'; id?: string; name: string } | null;
+  delta: number | null;
+  before: number | string | null;
+  after: number | string | null;
+  reason: string | null;
+  refs: { rollQueueId?: string; round?: number; validated?: boolean; [key: string]: any };
+  status: MutationStatus;
+}
+
+export interface MutationAuditMessage {
+  id: string;
+  type: 'mutation_audit';
+  sender: string;
+  timestamp: Date;
+  mutations: MutationRecord[];
+}
+
 // Union type for all message types
-export type AnyMessage = Message | LootDistributionMessage;
+export type AnyMessage = Message | LootDistributionMessage | MutationAuditMessage;
 
 // ==================== D&D 5e RULES TYPES ====================
 
@@ -243,4 +301,50 @@ export interface ItemDetails {
   requires_attunement?: boolean;
   description?: string;
   error?: string;
+}
+
+// ==================== SHIP SYSTEM TYPES ====================
+
+export type ShipSystemStatus = 'operational' | 'damaged' | 'disabled' | 'destroyed';
+export type ShipHullStatus = 'nominal' | 'damaged' | 'critical' | 'destroyed';
+export type ShipOverallStatus = 'docked' | 'in_transit' | 'in_combat' | 'adrift' | 'destroyed';
+
+export interface ShipSystem {
+  label: string;
+  status: ShipSystemStatus;
+  power_allocated: number;
+  power_min: number;
+  power_max: number;
+  upgrades: string[];
+  notes: string | null;
+}
+
+export interface CargoItem {
+  name: string;
+  quantity: number;
+  description: string | null;
+}
+
+export interface Ship {
+  name: string;
+  class: string;
+  status: ShipOverallStatus;
+  location: string;
+  origin?: string;
+  notes?: string;
+
+  hull: { current: number; max: number; status: ShipHullStatus };
+  shields: { current: number; max: number; status: ShipHullStatus; recharge_per_round?: number };
+
+  power: { total: number; available: number };
+
+  systems: Record<string, ShipSystem>;
+
+  fuel: { current: number; max: number; unit: string };
+  supplies: { current: number; max: number; unit: string };
+
+  crew_stations: Record<string, string | null>;
+
+  cargo_manifest: CargoItem[];
+  conditions: string[];
 }

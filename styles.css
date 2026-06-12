@@ -2003,3 +2003,171 @@ body {
     color: var(--text-secondary);
     margin: 0.25rem 0;
 }
+
+/* ─── Character Sheet: Skills & Saves ─── */
+.character-skills-panel,
+.character-saves-panel {
+    padding: 0.5rem 1rem;
+    border-top: 1px solid var(--border-color, #334155);
+}
+
+.skills-list,
+.saves-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+    margin-bottom: 0.5rem;
+}
+
+.saves-list {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.15rem 0.75rem;
+}
+
+.skill-row,
+.save-row {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: 0.78rem;
+    padding: 0.15rem 0.3rem;
+    border-radius: 3px;
+}
+
+.skill-row:hover,
+.save-row:hover {
+    background: rgba(255, 255, 255, 0.05);
+}
+
+.proficiency-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    border: 1.5px solid var(--text-secondary, #888);
+    flex-shrink: 0;
+}
+
+.proficiency-dot.proficient {
+    background: var(--accent-color, #daa520);
+    border-color: var(--accent-color, #daa520);
+}
+
+.skill-name,
+.save-name {
+    flex: 1;
+    color: var(--text-primary, #e0e0e0);
+}
+
+.skill-ability {
+    color: var(--text-secondary, #888);
+    font-size: 0.7rem;
+    text-transform: uppercase;
+}
+
+.skill-modifier {
+    font-weight: 600;
+    min-width: 1.8rem;
+    text-align: right;
+    color: var(--accent-color, #daa520);
+}
+
+.proficiency-badge {
+    background: rgba(255, 255, 255, 0.08);
+    border-radius: 4px;
+    padding: 0.1rem 0.45rem;
+    font-size: 0.72rem;
+    color: var(--accent-color, #daa520);
+    float: right;
+    font-weight: 600;
+}
+
+.section-toggle {
+    cursor: pointer;
+    user-select: none;
+    font-size: 0.85rem;
+    margin: 0 0 0.4rem 0;
+    color: var(--text-primary, #e0e0e0);
+}
+
+.collapsed {
+    display: none !important;
+}
+
+/* ─── Character Sheet: Player Edit Controls ─── */
+.hp-edit-controls {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    margin-top: 0.5rem;
+}
+
+.hp-btn {
+    width: 26px;
+    height: 26px;
+    border-radius: 4px;
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid var(--border-color, #334155);
+    color: var(--text-primary, #e0e0e0);
+    cursor: pointer;
+    font-size: 0.9rem;
+    line-height: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.hp-btn:hover {
+    background: rgba(255, 255, 255, 0.15);
+}
+
+.hp-input,
+.credits-input {
+    width: 55px;
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid var(--border-color, #334155);
+    color: var(--text-primary, #e0e0e0);
+    border-radius: 4px;
+    padding: 0.2rem 0.35rem;
+    font-size: 0.8rem;
+    text-align: center;
+}
+
+.hp-input:focus,
+.credits-input:focus {
+    border-color: var(--accent-color, #daa520);
+    outline: none;
+}
+
+.btn-small {
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid var(--border-color, #334155);
+    color: var(--accent-color, #daa520);
+    border-radius: 4px;
+    padding: 0.2rem 0.5rem;
+    font-size: 0.72rem;
+    cursor: pointer;
+    font-weight: 600;
+}
+
+.btn-small:hover {
+    background: rgba(255, 255, 255, 0.15);
+}
+
+.credits-edit-row {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    margin-top: 0.4rem;
+    font-size: 0.8rem;
+}
+
+.credits-edit-row .stat-name {
+    color: var(--text-secondary, #888);
+}
+
+.credits-edit-row .stat-value {
+    color: var(--accent-color, #daa520);
+    font-weight: 600;
+    margin-right: auto;
+}

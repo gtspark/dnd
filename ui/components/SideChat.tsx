@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import type { Character, ThemeMode, Message } from '../types';
 import { sendSideChatMessage } from '../services/apiService';
 import { DiceRoller } from './DiceRoller';
@@ -9,9 +10,10 @@ interface SideChatProps {
   allCharacters: Character[];
   isOpen: boolean;
   onToggle: () => void;
+  reserveRightPanel?: boolean;
 }
 
-export function SideChat({ theme, activeChar, allCharacters, isOpen, onToggle }: SideChatProps) {
+export function SideChat({ theme, activeChar, allCharacters, isOpen, onToggle, reserveRightPanel = true }: SideChatProps) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputValue, setInputValue] = useState('');
   const [isThinking, setIsThinking] = useState(false);
@@ -162,7 +164,7 @@ export function SideChat({ theme, activeChar, allCharacters, isOpen, onToggle }:
       type: 'roll',
       sender: activeChar.name,
       text: `🎲 ${rollText}`,
-      diceResult: { faces, roll, modifier, total }
+      diceResult: { faces, rolls: [roll], modifier, total }
     });
 
     // Send to DM for interpretation
@@ -255,11 +257,12 @@ export function SideChat({ theme, activeChar, allCharacters, isOpen, onToggle }:
 
   return (
     <>
-      {/* Toggle button — always visible */}
-      {!isOpen && (
+      {/* Toggle button — always visible — portaled to body to avoid Firefox flex issues */}
+      {!isOpen && createPortal(
         <button
           onClick={onToggle}
-          className={`fixed bottom-28 right-6 lg:right-[22rem] z-50 flex items-center gap-2 px-4 py-2.5 rounded-full shadow-lg border transition-all hover:scale-105
+          style={{ position: 'fixed', bottom: '7rem', right: '1.5rem', zIndex: 50 }}
+          className={`flex items-center gap-2 px-4 py-2.5 rounded-full shadow-lg border transition-all hover:scale-105
             ${isFantasy
               ? 'bg-stone-800 border-amber-700/50 text-amber-400 hover:bg-stone-700'
               : 'bg-slate-800 border-cyan-700/50 text-cyan-400 hover:bg-slate-700'
@@ -274,18 +277,28 @@ export function SideChat({ theme, activeChar, allCharacters, isOpen, onToggle }:
               {messages.length}
             </span>
           )}
-        </button>
+        </button>,
+        document.body
       )}
 
-      {/* Panel */}
-      <div className={`fixed right-0 top-0 h-full z-50 flex flex-col transition-transform duration-300 ease-in-out
-        w-full sm:w-96
-        ${isOpen ? 'translate-x-0' : 'translate-x-full'}
-        ${isFantasy
-          ? 'bg-stone-950 border-l-2 border-amber-900/40'
-          : 'bg-slate-950 border-l-2 border-cyan-900/40'
-        }`}
-      >
+      {/* Panel — portaled to body to avoid Firefox flex issues */}
+      {createPortal(
+        <div
+          style={{
+            position: 'fixed',
+            top: 0,
+            right: 0,
+            width: 384,
+            height: '100vh',
+            zIndex: 50,
+            display: 'flex',
+            flexDirection: 'column',
+            transform: isOpen ? 'translateX(0)' : 'translateX(100%)',
+            transition: 'transform 300ms ease-in-out',
+            background: isFantasy ? '#0c0a09' : '#020617',
+            borderLeft: `2px solid ${isFantasy ? '#78350f40' : '#164e6340'}`
+          }}
+        >
         {/* Header */}
         <div className={`flex items-center justify-between px-4 py-3 border-b ${isFantasy ? 'border-stone-800' : 'border-slate-800'}`}>
           <div>
@@ -374,6 +387,7 @@ export function SideChat({ theme, activeChar, allCharacters, isOpen, onToggle }:
             theme={theme}
             onRoll={handleDiceRoll}
             onCustomRoll={handleCustomRoll}
+            compact
           />
           <div className="relative">
             <textarea
@@ -405,14 +419,18 @@ export function SideChat({ theme, activeChar, allCharacters, isOpen, onToggle }:
             </button>
           </div>
         </div>
-      </div>
+      </div>,
+      document.body
+    )}
 
-      {/* Backdrop on mobile */}
-      {isOpen && (
+      {/* Backdrop on mobile — also portaled */}
+      {isOpen && createPortal(
         <div
-          className="fixed inset-0 bg-black/50 z-30 sm:hidden"
+          style={{ position: 'fixed', inset: 0, zIndex: 30 }}
+          className="bg-black/50 sm:hidden"
           onClick={onToggle}
-        />
+        />,
+        document.body
       )}
     </>
   );

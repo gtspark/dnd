@@ -7,15 +7,21 @@ interface DiceRollerProps {
   theme: ThemeMode;
   onRoll: (faces: number) => void;
   onCustomRoll: (dice: { qty: number; faces: number }[]) => void;
+  compact?: boolean;
+  popover?: boolean;  // single trigger button; dice grid floats above on demand
 }
 
-export const DiceRoller: React.FC<DiceRollerProps> = ({ theme, onRoll, onCustomRoll }) => {
+export const DiceRoller: React.FC<DiceRollerProps> = ({ theme, onRoll, onCustomRoll, compact = false, popover = false }) => {
   const [isRolling, setIsRolling] = useState(false);
   const [showCustomModal, setShowCustomModal] = useState(false);
+  const [showPanel, setShowPanel] = useState(false);
   const [customDice, setCustomDice] = useState<{ qty: number; faces: number }[]>([{ qty: 1, faces: 6 }]);
   const [rollMode, setRollMode] = useState<'normal' | 'advantage' | 'disadvantage'>('normal');
 
+  const isFantasy = theme === 'fantasy';
+
   const handleRoll = (faces: number) => {
+    setShowPanel(false);
     setIsRolling(true);
     setTimeout(() => {
       setIsRolling(false);
@@ -26,6 +32,7 @@ export const DiceRoller: React.FC<DiceRollerProps> = ({ theme, onRoll, onCustomR
   const handleCustomRoll = () => {
     setIsRolling(true);
     setShowCustomModal(false);
+    setShowPanel(false);
     setTimeout(() => {
       setIsRolling(false);
       // For advantage/disadvantage, roll 2d20 and pick high/low
@@ -60,134 +67,176 @@ export const DiceRoller: React.FC<DiceRollerProps> = ({ theme, onRoll, onCustomR
     setCustomDice(updated);
   };
 
+  const small = compact || popover;
   const btnClass = `
-    relative group flex flex-col items-center justify-center w-14 h-14 rounded-2xl transition-all duration-500 transform hover:scale-110 active:scale-90 border-2 shadow-2xl overflow-hidden
-    ${theme === 'fantasy'
+    relative group flex flex-col items-center justify-center ${small ? 'w-11 h-11 rounded-xl' : 'w-14 h-14 rounded-2xl'} transition-all duration-500 transform hover:scale-110 active:scale-90 border-2 shadow-2xl overflow-hidden shrink-0
+    ${isFantasy
       ? 'bg-gradient-to-br from-stone-800 to-stone-950 border-fantasy-gold/30 hover:border-fantasy-gold text-fantasy-gold'
       : 'bg-gradient-to-br from-slate-800 to-slate-950 border-scifi-accent/30 hover:border-scifi-accent text-scifi-accent'
     }
   `;
 
-  return (
-    <div className={`flex gap-4 p-5 rounded-3xl border shadow-2xl relative overflow-hidden ${
-      theme === 'fantasy'
-        ? 'bg-stone-900/90 border-stone-800'
-        : 'bg-slate-900/90 border-slate-800 backdrop-blur-2xl'
-    }`}>
-      {/* Glow effect background */}
-      <div className={`absolute inset-0 opacity-5 blur-3xl pointer-events-none ${theme === 'fantasy' ? 'bg-fantasy-gold' : 'bg-scifi-accent'}`} />
+  // Custom Dice Modal - rendered via portal to escape overflow:hidden
+  const customModal = showCustomModal && createPortal(
+    <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/80 backdrop-blur-sm" onClick={() => setShowCustomModal(false)}>
+      <div className={`w-full max-w-md p-6 rounded-3xl border-2 shadow-2xl ${isFantasy ? 'bg-stone-900 border-fantasy-gold/30' : 'bg-slate-900 border-scifi-accent/30'}`} onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-6">
+          <h3 className={`text-xl font-black uppercase tracking-widest ${isFantasy ? 'text-fantasy-gold' : 'text-scifi-accent'}`}>Custom Roll</h3>
+          <button onClick={() => setShowCustomModal(false)} className="text-white/40 hover:text-white transition-colors">✕</button>
+        </div>
 
-      <button onClick={() => handleRoll(20)} className={`${btnClass} w-16 h-16 z-10`} title="Roll d20">
-        <Icons.Dices className={`w-9 h-9 transition-transform duration-700 ${isRolling ? 'animate-spin' : 'group-hover:rotate-12'}`} />
+        <div className="space-y-3 mb-6">
+          {customDice.map((dice, i) => (
+            <div key={i} className="flex items-center gap-3">
+              <select
+                value={dice.qty}
+                onChange={(e) => updateDiceRow(i, 'qty', parseInt(e.target.value))}
+                className={`w-20 px-3 py-2 rounded-lg border font-bold ${isFantasy ? 'bg-stone-800 border-stone-700 text-fantasy-gold' : 'bg-slate-800 border-slate-700 text-scifi-accent'}`}
+              >
+                {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(n => (
+                  <option key={n} value={n}>{n}</option>
+                ))}
+              </select>
+              <span className="text-xl font-black opacity-60">×</span>
+              <select
+                value={dice.faces}
+                onChange={(e) => updateDiceRow(i, 'faces', parseInt(e.target.value))}
+                className={`flex-1 px-3 py-2 rounded-lg border font-bold ${isFantasy ? 'bg-stone-800 border-stone-700 text-fantasy-gold' : 'bg-slate-800 border-slate-700 text-scifi-accent'}`}
+              >
+                <option value={4}>d4</option>
+                <option value={6}>d6</option>
+                <option value={8}>d8</option>
+                <option value={10}>d10</option>
+                <option value={12}>d12</option>
+                <option value={20}>d20</option>
+                <option value={100}>d100</option>
+              </select>
+              {customDice.length > 1 && (
+                <button
+                  onClick={() => removeDiceRow(i)}
+                  className="px-3 py-2 rounded-lg border border-red-500/30 bg-red-950/20 text-red-400 hover:bg-red-950/40 transition-colors font-bold"
+                >
+                  ✕
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+
+        {customDice.length < 5 && (
+          <button
+            onClick={addDiceRow}
+            className={`w-full mb-4 py-2 rounded-lg border-2 border-dashed font-bold uppercase text-xs tracking-widest transition-colors ${isFantasy ? 'border-fantasy-gold/30 text-fantasy-gold/60 hover:bg-fantasy-gold/10' : 'border-scifi-accent/30 text-scifi-accent/60 hover:bg-scifi-accent/10'}`}
+          >
+            + Add Dice
+          </button>
+        )}
+
+        {/* Advantage/Disadvantage for d20 rolls */}
+        {customDice.length === 1 && customDice[0].faces === 20 && customDice[0].qty === 1 && (
+          <div className="flex gap-2 mb-4">
+            <button
+              onClick={() => setRollMode('normal')}
+              className={`flex-1 py-2 rounded-lg font-bold text-xs uppercase transition-all ${rollMode === 'normal' ? (isFantasy ? 'bg-fantasy-gold text-black' : 'bg-scifi-accent text-black') : (isFantasy ? 'bg-stone-800 text-fantasy-gold/60 border border-stone-700' : 'bg-slate-800 text-scifi-accent/60 border border-slate-700')}`}
+            >
+              Normal
+            </button>
+            <button
+              onClick={() => setRollMode('advantage')}
+              className={`flex-1 py-2 rounded-lg font-bold text-xs uppercase transition-all ${rollMode === 'advantage' ? 'bg-green-600 text-white' : (isFantasy ? 'bg-stone-800 text-green-400/60 border border-stone-700' : 'bg-slate-800 text-green-400/60 border border-slate-700')}`}
+            >
+              Advantage
+            </button>
+            <button
+              onClick={() => setRollMode('disadvantage')}
+              className={`flex-1 py-2 rounded-lg font-bold text-xs uppercase transition-all ${rollMode === 'disadvantage' ? 'bg-red-600 text-white' : (isFantasy ? 'bg-stone-800 text-red-400/60 border border-stone-700' : 'bg-slate-800 text-red-400/60 border border-slate-700')}`}
+            >
+              Disadvantage
+            </button>
+          </div>
+        )}
+
+        <button
+          onClick={handleCustomRoll}
+          className={`w-full py-4 rounded-xl font-black uppercase tracking-widest text-sm transition-all hover:scale-105 active:scale-95 ${isFantasy ? 'bg-fantasy-gold text-black hover:bg-fantasy-gold/90' : 'bg-scifi-accent text-black hover:bg-scifi-accent/90'}`}
+        >
+          🎲 Roll Dice
+        </button>
+      </div>
+    </div>,
+    document.body
+  );
+
+  const diceButtons = (
+    <>
+      <button onClick={() => handleRoll(20)} className={`${btnClass} ${small ? 'w-12 h-12' : 'w-16 h-16'} z-10`} title="Roll d20">
+        <Icons.Dices className={`${small ? 'w-6 h-6' : 'w-9 h-9'} transition-transform duration-700 ${isRolling ? 'animate-spin' : 'group-hover:rotate-12'}`} />
         <span className="text-[10px] font-black uppercase mt-1 opacity-60">D20</span>
-        <div className={`absolute inset-0 opacity-0 group-hover:opacity-10 transition-opacity pointer-events-none ${theme === 'fantasy' ? 'bg-fantasy-gold' : 'bg-scifi-accent'}`} />
+        <div className={`absolute inset-0 opacity-0 group-hover:opacity-10 transition-opacity pointer-events-none ${isFantasy ? 'bg-fantasy-gold' : 'bg-scifi-accent'}`} />
       </button>
 
       {[12, 10, 8, 6, 4].map(d => (
-        <button key={d} onClick={() => handleRoll(d)} className={`${btnClass} hidden md:flex z-10`} title={`Roll d${d}`}>
-          <span className={`font-black text-xl ${theme === 'fantasy' ? 'font-fantasyHeader' : 'font-scifiHeader'}`}>{d}</span>
+        <button key={d} onClick={() => handleRoll(d)} className={`${btnClass} ${small ? 'flex' : 'hidden md:flex'} z-10`} title={`Roll d${d}`}>
+          <span className={`font-black ${small ? 'text-base' : 'text-xl'} ${isFantasy ? 'font-fantasyHeader' : 'font-scifiHeader'}`}>{d}</span>
           <span className="text-[9px] font-bold opacity-50">D{d}</span>
-          <div className={`absolute inset-0 opacity-0 group-hover:opacity-10 transition-opacity pointer-events-none ${theme === 'fantasy' ? 'bg-fantasy-gold' : 'bg-scifi-accent'}`} />
+          <div className={`absolute inset-0 opacity-0 group-hover:opacity-10 transition-opacity pointer-events-none ${isFantasy ? 'bg-fantasy-gold' : 'bg-scifi-accent'}`} />
         </button>
       ))}
 
       {/* Custom Dice Button */}
-      <button onClick={() => setShowCustomModal(true)} className={`${btnClass} z-10`} title="Custom Roll">
-        <Icons.Dices className="w-6 h-6" />
+      <button onClick={() => { setShowCustomModal(true); setShowPanel(false); }} className={`${btnClass} z-10`} title="Custom Roll">
+        <Icons.Dices className={`${small ? 'w-5 h-5' : 'w-6 h-6'}`} />
         <span className="text-[8px] font-black uppercase mt-1 opacity-60">Custom</span>
-        <div className={`absolute inset-0 opacity-0 group-hover:opacity-10 transition-opacity pointer-events-none ${theme === 'fantasy' ? 'bg-fantasy-gold' : 'bg-scifi-accent'}`} />
+        <div className={`absolute inset-0 opacity-0 group-hover:opacity-10 transition-opacity pointer-events-none ${isFantasy ? 'bg-fantasy-gold' : 'bg-scifi-accent'}`} />
       </button>
+    </>
+  );
 
-      {/* Custom Dice Modal - rendered via portal to escape overflow:hidden */}
-      {showCustomModal && createPortal(
-        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/80 backdrop-blur-sm" onClick={() => setShowCustomModal(false)}>
-          <div className={`w-full max-w-md p-6 rounded-3xl border-2 shadow-2xl ${theme === 'fantasy' ? 'bg-stone-900 border-fantasy-gold/30' : 'bg-slate-900 border-scifi-accent/30'}`} onClick={(e) => e.stopPropagation()}>
-            <div className="flex items-center justify-between mb-6">
-              <h3 className={`text-xl font-black uppercase tracking-widest ${theme === 'fantasy' ? 'text-fantasy-gold' : 'text-scifi-accent'}`}>Custom Roll</h3>
-              <button onClick={() => setShowCustomModal(false)} className="text-white/40 hover:text-white transition-colors">✕</button>
+  // Popover mode: one trigger button; the dice grid floats above when opened
+  if (popover) {
+    return (
+      <div className="relative shrink-0">
+        <button
+          onClick={() => setShowPanel(p => !p)}
+          title="Dice roller"
+          className={`flex items-center justify-center w-11 h-11 rounded-xl border-2 transition-all hover:scale-105 active:scale-95 shadow-lg ${
+            showPanel
+              ? (isFantasy ? 'border-fantasy-gold bg-fantasy-gold/20 text-fantasy-gold' : 'border-scifi-accent bg-scifi-accent/20 text-scifi-accent')
+              : (isFantasy ? 'border-fantasy-gold/40 bg-stone-900 text-fantasy-gold hover:border-fantasy-gold' : 'border-scifi-accent/40 bg-slate-900 text-scifi-accent hover:border-scifi-accent')
+          }`}
+        >
+          <Icons.Dices className={`w-5 h-5 ${isRolling ? 'animate-spin' : ''}`} />
+        </button>
+
+        {showPanel && (
+          <>
+            {/* click-away catcher */}
+            <div className="fixed inset-0 z-40" onClick={() => setShowPanel(false)} />
+            <div className={`absolute bottom-full left-0 mb-2 z-50 flex gap-2 p-3 rounded-2xl border shadow-2xl ${
+              isFantasy ? 'bg-stone-900/95 border-stone-700' : 'bg-slate-900/95 border-slate-700 backdrop-blur-xl'
+            }`}>
+              {diceButtons}
             </div>
+          </>
+        )}
 
-            <div className="space-y-3 mb-6">
-              {customDice.map((dice, i) => (
-                <div key={i} className="flex items-center gap-3">
-                  <select
-                    value={dice.qty}
-                    onChange={(e) => updateDiceRow(i, 'qty', parseInt(e.target.value))}
-                    className={`w-20 px-3 py-2 rounded-lg border font-bold ${theme === 'fantasy' ? 'bg-stone-800 border-stone-700 text-fantasy-gold' : 'bg-slate-800 border-slate-700 text-scifi-accent'}`}
-                  >
-                    {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(n => (
-                      <option key={n} value={n}>{n}</option>
-                    ))}
-                  </select>
-                  <span className="text-xl font-black opacity-60">×</span>
-                  <select
-                    value={dice.faces}
-                    onChange={(e) => updateDiceRow(i, 'faces', parseInt(e.target.value))}
-                    className={`flex-1 px-3 py-2 rounded-lg border font-bold ${theme === 'fantasy' ? 'bg-stone-800 border-stone-700 text-fantasy-gold' : 'bg-slate-800 border-slate-700 text-scifi-accent'}`}
-                  >
-                    <option value={4}>d4</option>
-                    <option value={6}>d6</option>
-                    <option value={8}>d8</option>
-                    <option value={10}>d10</option>
-                    <option value={12}>d12</option>
-                    <option value={20}>d20</option>
-                    <option value={100}>d100</option>
-                  </select>
-                  {customDice.length > 1 && (
-                    <button
-                      onClick={() => removeDiceRow(i)}
-                      className="px-3 py-2 rounded-lg border border-red-500/30 bg-red-950/20 text-red-400 hover:bg-red-950/40 transition-colors font-bold"
-                    >
-                      ✕
-                    </button>
-                  )}
-                </div>
-              ))}
-            </div>
+        {customModal}
+      </div>
+    );
+  }
 
-            {customDice.length < 5 && (
-              <button
-                onClick={addDiceRow}
-                className={`w-full mb-4 py-2 rounded-lg border-2 border-dashed font-bold uppercase text-xs tracking-widest transition-colors ${theme === 'fantasy' ? 'border-fantasy-gold/30 text-fantasy-gold/60 hover:bg-fantasy-gold/10' : 'border-scifi-accent/30 text-scifi-accent/60 hover:bg-scifi-accent/10'}`}
-              >
-                + Add Dice
-              </button>
-            )}
+  return (
+    <div className={`flex ${compact ? 'flex-wrap justify-center gap-2 p-3 rounded-2xl' : 'gap-4 p-5 rounded-3xl'} border shadow-2xl relative overflow-hidden max-w-full ${
+      isFantasy
+        ? 'bg-stone-900/90 border-stone-800'
+        : 'bg-slate-900/90 border-slate-800 backdrop-blur-2xl'
+    }`}>
+      {/* Glow effect background */}
+      <div className={`absolute inset-0 opacity-5 blur-3xl pointer-events-none ${isFantasy ? 'bg-fantasy-gold' : 'bg-scifi-accent'}`} />
 
-            {/* Advantage/Disadvantage for d20 rolls */}
-            {customDice.length === 1 && customDice[0].faces === 20 && customDice[0].qty === 1 && (
-              <div className="flex gap-2 mb-4">
-                <button
-                  onClick={() => setRollMode('normal')}
-                  className={`flex-1 py-2 rounded-lg font-bold text-xs uppercase transition-all ${rollMode === 'normal' ? (theme === 'fantasy' ? 'bg-fantasy-gold text-black' : 'bg-scifi-accent text-black') : (theme === 'fantasy' ? 'bg-stone-800 text-fantasy-gold/60 border border-stone-700' : 'bg-slate-800 text-scifi-accent/60 border border-slate-700')}`}
-                >
-                  Normal
-                </button>
-                <button
-                  onClick={() => setRollMode('advantage')}
-                  className={`flex-1 py-2 rounded-lg font-bold text-xs uppercase transition-all ${rollMode === 'advantage' ? 'bg-green-600 text-white' : (theme === 'fantasy' ? 'bg-stone-800 text-green-400/60 border border-stone-700' : 'bg-slate-800 text-green-400/60 border border-slate-700')}`}
-                >
-                  Advantage
-                </button>
-                <button
-                  onClick={() => setRollMode('disadvantage')}
-                  className={`flex-1 py-2 rounded-lg font-bold text-xs uppercase transition-all ${rollMode === 'disadvantage' ? 'bg-red-600 text-white' : (theme === 'fantasy' ? 'bg-stone-800 text-red-400/60 border border-stone-700' : 'bg-slate-800 text-red-400/60 border border-slate-700')}`}
-                >
-                  Disadvantage
-                </button>
-              </div>
-            )}
+      {diceButtons}
 
-            <button
-              onClick={handleCustomRoll}
-              className={`w-full py-4 rounded-xl font-black uppercase tracking-widest text-sm transition-all hover:scale-105 active:scale-95 ${theme === 'fantasy' ? 'bg-fantasy-gold text-black hover:bg-fantasy-gold/90' : 'bg-scifi-accent text-black hover:bg-scifi-accent/90'}`}
-            >
-              🎲 Roll Dice
-            </button>
-          </div>
-        </div>,
-        document.body
-      )}
+      {customModal}
     </div>
   );
 };

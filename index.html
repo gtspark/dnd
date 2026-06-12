@@ -331,19 +331,7 @@
             const grid = document.getElementById('campaigns-grid');
             grid.innerHTML = '';
 
-            // Add Dax tile first
-            const daxCampaign = {
-                id: 'dax',
-                name: 'Titan Station Adventure',
-                description: 'Single-player sci-fi investigation with DM-controlled companions',
-                characters: ['Dax (You)', 'Chen (Companion)', 'Dr. Yuen (Companion)'],
-                lastPlayed: '2025-12-22T13:53:15',
-                requiresPassword: false
-            };
-            const daxTile = createCampaignTile(daxCampaign);
-            grid.appendChild(daxTile);
-
-            // Render active campaigns from API
+            // Render campaigns from API
             campaigns.forEach(campaign => {
                 const tile = createCampaignTile(campaign);
                 grid.appendChild(tile);
@@ -371,7 +359,6 @@
                     openPasswordModal(campaign.id, campaign.name);
                 } else {
                     // No password required, go directly to campaign
-                    // Use React UI at /dnd/play/ for all campaigns
                     window.location.href = `/dnd/play/?campaign=${campaign.id}`;
                 }
             };
@@ -476,7 +463,7 @@
                     // Store auth token in cookie
                     document.cookie = `dnd_campaign_${selectedCampaignId}_auth=${data.token}; path=/; max-age=2592000`; // 30 days
 
-                    // Redirect to game - use React UI at /dnd/play/
+                    // Redirect to game
                     window.location.href = `/dnd/play/?campaign=${selectedCampaignId}`;
                 } else {
                     errorEl.textContent = data.error || 'Invalid password';

@@ -44,6 +44,14 @@ export default function CharacterSheetModal({ character, theme, onClose, onUpdat
   const ac = (character as any).ac ?? (10 + mod(character.stats.dex));
   const speed = (character as any).speed ?? 30;
   const speedLabel = isScifi ? 'm' : 'ft';
+  const level = character.level ?? 1;
+  const currentXP = character.experience?.current ?? 0;
+  const levelStartXP = character.experience?.levelStart ?? currentXP;
+  const nextLevelXP = character.experience?.nextLevel ?? null;
+  const toNextLevel = character.experience?.toNextLevel ?? null;
+  const xpProgress = nextLevelXP
+    ? Math.max(0, Math.min(100, character.experience?.progressPct ?? Math.round(((currentXP - levelStartXP) / (nextLevelXP - levelStartXP)) * 100)))
+    : 100;
 
   const dexMod = mod(character.stats.dex);
   const initiative = dexMod;
@@ -234,7 +242,7 @@ export default function CharacterSheetModal({ character, theme, onClose, onUpdat
                     {character.name}
                   </h2>
                   <div className={`text-xs font-bold uppercase tracking-widest mt-1 ${accentText} opacity-80 flex items-center gap-2`}>
-                    {character.race && `${character.race} · `}{character.class}
+                    Level {level} · {character.race && `${character.race} · `}{character.class}
                     {readOnly && <span className="px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-400 border border-purple-500/30 text-[9px] tracking-wider">DM Controlled</span>}
                   </div>
                   {character.heldSpells && character.heldSpells.length > 0 && (
@@ -283,6 +291,22 @@ export default function CharacterSheetModal({ character, theme, onClose, onUpdat
                     <div className="text-[8px] uppercase tracking-[0.2em] opacity-40 mb-1">Prof. Bonus</div>
                     <div className={`text-3xl font-black font-mono ${accentText}`}>+{profBonus}</div>
                     <div className="text-[9px] opacity-30 mt-0.5 uppercase tracking-wider">BONUS</div>
+                  </div>
+                </div>
+                <div className={`mt-4 rounded-xl border ${accentBorder} bg-black/20 px-4 py-3`}>
+                  <div className="flex items-center justify-between text-[10px] uppercase tracking-[0.18em] opacity-50 mb-2">
+                    <span>Experience</span>
+                    <span>{nextLevelXP ? `${toNextLevel ?? 0} XP to level ${level + 1}` : 'Max Level'}</span>
+                  </div>
+                  <div className="h-2 rounded-full bg-black/40 overflow-hidden border border-white/5">
+                    <div
+                      className={`h-full rounded-full transition-all duration-700 ${isScifi ? 'bg-cyan-400' : 'bg-amber-400'}`}
+                      style={{ width: `${xpProgress}%` }}
+                    />
+                  </div>
+                  <div className="flex justify-between mt-2 text-[10px] font-mono opacity-45">
+                    <span>{currentXP.toLocaleString()} XP</span>
+                    <span>{nextLevelXP ? nextLevelXP.toLocaleString() : '20'}</span>
                   </div>
                 </div>
               </div>
@@ -388,18 +412,30 @@ export default function CharacterSheetModal({ character, theme, onClose, onUpdat
                     Conditions
                   </div>
                   <div className="flex flex-wrap gap-1.5">
-                    {character.conditions.map(c => (
-                      <span
-                        key={c}
-                        className={`px-2.5 py-1 rounded-full text-[10px] font-black uppercase tracking-wider border ${
-                          isScifi
-                            ? 'border-cyan-500/30 text-cyan-300 bg-cyan-500/10'
-                            : 'border-amber-500/30 text-amber-300 bg-amber-500/10'
-                        }`}
-                      >
-                        {c}
-                      </span>
-                    ))}
+                    {character.conditions.map(c => {
+                      const detail = character.conditionDetails?.find(d => d.name.toLowerCase() === c.toLowerCase());
+                      const rounds = detail?.remainingRounds;
+                      const title = [
+                        detail?.source ? `Source: ${detail.source}` : null,
+                        rounds !== undefined ? `Expires in ${rounds} round${rounds === 1 ? '' : 's'}` : 'Until removed'
+                      ].filter(Boolean).join(' · ');
+                      return (
+                        <span
+                          key={c}
+                          title={title}
+                          className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-black uppercase tracking-wider border ${
+                            isScifi
+                              ? 'border-cyan-500/30 text-cyan-300 bg-cyan-500/10'
+                              : 'border-amber-500/30 text-amber-300 bg-amber-500/10'
+                          }`}
+                        >
+                          {c}
+                          {rounds !== undefined && (
+                            <span className={`px-1 rounded-full text-[9px] ${isScifi ? 'bg-cyan-500/20' : 'bg-amber-500/20'}`}>{rounds}r</span>
+                          )}
+                        </span>
+                      );
+                    })}
                   </div>
                 </div>
               )}

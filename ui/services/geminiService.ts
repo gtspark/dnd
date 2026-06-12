@@ -6,6 +6,7 @@
 export { initChat, sendMessageToDM } from './apiService';
 export {
   loadCampaign,
+  resolveRollQueueEntry,
   submitRoll,
   submitInitiative,
   getCombatState,

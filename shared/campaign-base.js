@@ -106,6 +106,7 @@ class CampaignBase {
         this.bindEvents();
         this.loadFromURL();
         this.updateCharacterDisplay();
+        this.initPlayerEditControls();
         this.setupModals();
         this.switchInventoryTab(this.config.defaultCharacter); // Initialize with default character's inventory
         // Restore adventure log from enhanced server with error handling
@@ -2560,8 +2561,8 @@ The weight of what you're facing settles over the room. This isn't just corporat
         const acElement = document.getElementById('ac-value');
 
         if (hpElement) {
-            const currentHP = this.character.currentHP || this.character.hitPoints;
-            const maxHP = this.character.hitPoints;
+            const currentHP = this.character.hp?.current ?? this.character.currentHP ?? this.character.hitPoints ?? 0;
+            const maxHP = this.character.hp?.max ?? this.character.hitPoints ?? 0;
             hpElement.textContent = `${currentHP}/${maxHP}`;
 
             // Update HP bar width
@@ -2569,8 +2570,34 @@ The weight of what you're facing settles over the room. This isn't just corporat
                 const hpPercentage = (currentHP / maxHP) * 100;
                 hpBarElement.style.width = `${hpPercentage}%`;
             }
+
+            // Sync HP edit input
+            const hpInput = document.getElementById('hp-edit-input');
+            if (hpInput) {
+                hpInput.value = currentHP;
+                hpInput.max = maxHP;
+            }
         }
         if (acElement) acElement.textContent = this.character.armorClass;
+
+        // Update credits display
+        const creditsDisplay = document.getElementById('char-credits-display');
+        if (creditsDisplay && this.character.credits !== undefined) {
+            creditsDisplay.textContent = this.character.credits.toLocaleString();
+            const creditsInput = document.getElementById('credits-edit-input');
+            if (creditsInput) creditsInput.value = this.character.credits;
+        }
+
+        // Update proficiency bonus
+        const profDisplay = document.getElementById('proficiency-display');
+        if (profDisplay) {
+            profDisplay.textContent = this.character.proficiencyBonus || 2;
+        }
+
+        // Render skills list
+        this.renderSkillsList();
+        // Render saving throws
+        this.renderSavesList();
 
         // Update status effects
         const statusEffectsElement = document.getElementById('status-effects');
@@ -2611,6 +2638,132 @@ The weight of what you're facing settles over the room. This isn't just corporat
                 }).join('');
             }
         }
+    }
+
+    renderSkillsList() {
+        const container = document.getElementById('skills-list');
+        if (!container || !this.character.skills || !this.character.abilities) return;
+
+        const profBonus = this.character.proficiencyBonus || 2;
+        const rows = Object.entries(this.character.skills).map(([name, skill]) => {
+            const abilityScore = this.character.abilities[skill.ability] || 10;
+            const abilityMod = Math.floor((abilityScore - 10) / 2);
+            const totalMod = abilityMod + (skill.proficient ? profBonus : 0);
+            const sign = totalMod >= 0 ? '+' : '';
+            const profClass = skill.proficient ? 'proficient' : '';
+            const displayName = name.charAt(0).toUpperCase() + name.slice(1);
+            return `<div class="skill-row">
+                <span class="proficiency-dot ${profClass}"></span>
+                <span class="skill-name">${displayName}</span>
+                <span class="skill-ability">${skill.ability.toUpperCase()}</span>
+                <span class="skill-modifier">${sign}${totalMod}</span>
+            </div>`;
+        }).join('');
+        container.innerHTML = rows;
+    }
+
+    renderSavesList() {
+        const container = document.getElementById('saves-list');
+        if (!container || !this.character.savingThrows || !this.character.abilities) return;
+
+        const profBonus = this.character.proficiencyBonus || 2;
+        const rows = Object.entries(this.character.savingThrows).map(([ability, save]) => {
+            const abilityScore = this.character.abilities[ability] || 10;
+            const abilityMod = Math.floor((abilityScore - 10) / 2);
+            const totalMod = abilityMod + (save.proficient ? profBonus : 0);
+            const sign = totalMod >= 0 ? '+' : '';
+            const profClass = save.proficient ? 'proficient' : '';
+            return `<div class="save-row">
+                <span class="proficiency-dot ${profClass}"></span>
+                <span class="save-name">${ability.toUpperCase()}</span>
+                <span class="skill-modifier">${sign}${totalMod}</span>
+            </div>`;
+        }).join('');
+        container.innerHTML = rows;
+    }
+
+    initPlayerEditControls() {
+        const hpMinus = document.getElementById('hp-minus');
+        const hpPlus = document.getElementById('hp-plus');
+        const hpSetBtn = document.getElementById('hp-set-btn');
+        const hpInput = document.getElementById('hp-edit-input');
+        const creditsSetBtn = document.getElementById('credits-set-btn');
+        const creditsInput = document.getElementById('credits-edit-input');
+
+        if (hpMinus) hpMinus.addEventListener('click', () => {
+            const current = parseInt(hpInput.value) || 0;
+            hpInput.value = Math.max(0, current - 1);
+        });
+        if (hpPlus) hpPlus.addEventListener('click', () => {
+            const current = parseInt(hpInput.value) || 0;
+            const max = this.character.hp?.max || 999;
+            hpInput.value = Math.min(max, current + 1);
+        });
+        if (hpSetBtn) hpSetBtn.addEventListener('click', () => this.handlePlayerHpEdit());
+        if (creditsSetBtn) creditsSetBtn.addEventListener('click', () => this.handlePlayerCreditsEdit());
+
+        // Section toggles
+        document.querySelectorAll('.section-toggle').forEach(toggle => {
+            toggle.addEventListener('click', () => {
+                const targetId = toggle.dataset.target;
+                const target = document.getElementById(targetId);
+                if (target) target.classList.toggle('collapsed');
+            });
+        });
+    }
+
+    async handlePlayerHpEdit() {
+        const hpInput = document.getElementById('hp-edit-input');
+        const newHp = parseInt(hpInput?.value);
+        if (isNaN(newHp)) return;
+
+        const charId = this.getActiveCharacterId();
+        if (!charId) return;
+
+        try {
+            const response = await fetch(`${this.apiBase}/character/${charId}`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ campaign: this.campaignId, hp_current: newHp })
+            });
+            if (response.ok) {
+                const data = await response.json();
+                if (this.character.hp) this.character.hp.current = data.character.hp.current;
+                this.character.currentHP = data.character.hp.current;
+                this.updateCharacterDisplay();
+            }
+        } catch (e) {
+            console.error('HP edit failed:', e);
+        }
+    }
+
+    async handlePlayerCreditsEdit() {
+        const input = document.getElementById('credits-edit-input');
+        const newCredits = parseInt(input?.value);
+        if (isNaN(newCredits)) return;
+
+        const charId = this.getActiveCharacterId();
+        if (!charId) return;
+
+        try {
+            const response = await fetch(`${this.apiBase}/character/${charId}`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ campaign: this.campaignId, credits: newCredits })
+            });
+            if (response.ok) {
+                const data = await response.json();
+                this.character.credits = data.character.credits;
+                this.updateCharacterDisplay();
+            }
+        } catch (e) {
+            console.error('Credits edit failed:', e);
+        }
+    }
+
+    getActiveCharacterId() {
+        const activeTab = document.querySelector('.party-tab.active');
+        return activeTab?.dataset?.character || this.config?.defaultCharacter || null;
     }
 
     calculateHitPoints() {
@@ -2769,7 +2922,12 @@ The weight of what you're facing settles over the room. This isn't just corporat
                     background: configChar.background || configChar.class || 'Adventurer',
                     inventory: configChar.inventory || [],
                     equipment: configChar.equipment || [],
-                    spells: configChar.spells || []
+                    spells: configChar.spells || [],
+                    hp: configChar.hp || { current: configChar.hp?.current || 10, max: configChar.hp?.max || 10 },
+                    credits: configChar.credits || 0,
+                    skills: configChar.skills || {},
+                    savingThrows: configChar.savingThrows || {},
+                    statusEffects: []
                 };
 
                 // Cache it
@@ -3446,7 +3604,12 @@ The weight of what you're facing settles over the room. This isn't just corporat
             this.partyData[charName] = {
                 hp: char.hp || {},
                 conditions: char.conditions || [],
-                inventory: char.inventory || []
+                inventory: char.inventory || [],
+                skills: char.skills || {},
+                savingThrows: char.savingThrows || {},
+                abilities: char.abilities || {},
+                credits: char.credits,
+                proficiencyBonus: char.proficiencyBonus || 2
             };
         });
 
@@ -3457,9 +3620,17 @@ The weight of what you're facing settles over the room. This isn't just corporat
 
             // Update HP
             if (syncedData.hp) {
+                this.character.hp = syncedData.hp;
                 this.character.currentHP = syncedData.hp.current;
                 this.character.hitPoints = syncedData.hp.max;
             }
+
+            // Update skills, saves, credits
+            if (syncedData.skills) this.character.skills = syncedData.skills;
+            if (syncedData.savingThrows) this.character.savingThrows = syncedData.savingThrows;
+            if (syncedData.abilities) this.character.abilities = syncedData.abilities;
+            if (syncedData.credits !== undefined) this.character.credits = syncedData.credits;
+            if (syncedData.proficiencyBonus) this.character.proficiencyBonus = syncedData.proficiencyBonus;
 
             // Update status effects
             if (syncedData.conditions) {

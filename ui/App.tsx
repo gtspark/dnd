@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { Icons } from './components/Icons';
 import { DiceRoller } from './components/DiceRoller';
 import { LootDistributionCard } from './components/LootDistributionCard';
@@ -8,14 +9,28 @@ import { CompanionRoster } from './components/CompanionRoster';
 import CharacterSheetModal from './components/CharacterSheetModal';
 import { SideChat } from './components/SideChat';
 import { initChat, sendMessageToDM, loadCampaign, getHistory, transformCharacters, transformCombatState, distributeLoot, skipLoot, submitInitiative } from './services/geminiService';
-import { preloadPartySpells, preloadPartyItems, continueStory, updateCharacter } from './services/apiService';
-import { Character, Message, ThemeMode, AIProvider, CombatState, Combatant, CombatEconomy, LootDistribution, LootDistributionMessage, AnyMessage } from './types';
+import { preloadPartySpells, preloadPartyItems, continueStory, updateCharacter, resolveRollQueueEntry, undoMutation, getSessionRecap } from './services/apiService';
+import { ShipSystemsModal } from './components/ShipSystemsModal';
+import { MutationCard } from './components/MutationCard';
+import { ZoneLane } from './components/ZoneLane';
+import { Character, Message, ThemeMode, AIProvider, CombatState, Combatant, CombatEconomy, LootDistribution, LootDistributionMessage, AnyMessage, Ship, Quest, MutationRecord, MutationAuditMessage } from './types';
 
 // Get campaign ID from URL
 const getCampaignId = () => {
   const params = new URLSearchParams(window.location.search);
   return params.get('campaign') || 'default';
 };
+
+const mockItem = (name: string) => ({
+  name,
+  equipped: false,
+  category: 'misc' as const,
+  value: 0,
+  condition: 'good' as const,
+  stackable: false,
+  quantity: 1,
+  treasure: false
+});
 
 const MOCK_CHARACTERS_FANTASY: Character[] = [
   {
@@ -24,7 +39,7 @@ const MOCK_CHARACTERS_FANTASY: Character[] = [
     hp: 42, maxHp: 55, resource: 125, resourceName: 'GP',
     conditions: ['Blessed'],
     stats: { str: 18, dex: 10, con: 16, int: 10, wis: 14, cha: 16 },
-    inventory: ['Sunblade', 'Potion of Healing', 'Rope (50ft)'],
+    inventory: ['Sunblade', 'Potion of Healing', 'Rope (50ft)'].map(mockItem),
     heldSpells: ['Shield of Faith']
   },
   {
@@ -33,7 +48,7 @@ const MOCK_CHARACTERS_FANTASY: Character[] = [
     hp: 28, maxHp: 35, resource: 450, resourceName: 'GP',
     conditions: [],
     stats: { str: 10, dex: 18, con: 12, int: 14, wis: 12, cha: 10 },
-    inventory: ['Daggers (x4)', 'Thieves Tools', 'Cloak of Shadows'],
+    inventory: ['Daggers (x4)', 'Thieves Tools', 'Cloak of Shadows'].map(mockItem),
     heldSpells: []
   },
   {
@@ -42,7 +57,7 @@ const MOCK_CHARACTERS_FANTASY: Character[] = [
     hp: 22, maxHp: 22, resource: 80, resourceName: 'GP',
     conditions: ['Concentrating'],
     stats: { str: 8, dex: 12, con: 10, int: 20, wis: 16, cha: 12 },
-    inventory: ['Spellbook', 'Arcane Focus', 'Scroll of Fly'],
+    inventory: ['Spellbook', 'Arcane Focus', 'Scroll of Fly'].map(mockItem),
     heldSpells: ['Haste']
   }
 ];
@@ -54,7 +69,7 @@ const MOCK_CHARACTERS_SCIFI: Character[] = [
     hp: 65, maxHp: 80, resource: 2400, resourceName: 'Creds',
     conditions: ['Overclocked'],
     stats: { str: 16, dex: 14, con: 18, int: 12, wis: 10, cha: 8 },
-    inventory: ['Plasma Rifle', 'Stimpack', 'Data Spike'],
+    inventory: ['Plasma Rifle', 'Stimpack', 'Data Spike'].map(mockItem),
     heldSpells: []
   },
   {
@@ -63,7 +78,7 @@ const MOCK_CHARACTERS_SCIFI: Character[] = [
     hp: 35, maxHp: 40, resource: 5000, resourceName: 'Creds',
     conditions: [],
     stats: { str: 8, dex: 12, con: 10, int: 18, wis: 14, cha: 16 },
-    inventory: ['Holo-Deck', 'EMP Grenade', 'Drone Remote'],
+    inventory: ['Holo-Deck', 'EMP Grenade', 'Drone Remote'].map(mockItem),
     heldSpells: ['Neural Breach']
   }
 ];
@@ -93,11 +108,18 @@ export default function App() {
   const [showCharSheet, setShowCharSheet] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [showSideChat, setShowSideChat] = useState(false);
+  const [ship, setShip] = useState<Ship | null>(null);
+  const [activeQuests, setActiveQuests] = useState<Quest[]>([]);
+  const [pendingRollQueueEntry, setPendingRollQueueEntry] = useState<any | null>(null);
+  const [showShipSheet, setShowShipSheet] = useState(false);
   const [showExitCombatConfirm, setShowExitCombatConfirm] = useState(false);
   // Loot distribution state - maps lootId to loot data
   const [pendingLoot, setPendingLoot] = useState<Map<string, LootDistribution>>(new Map());
   // Track which loot cards have been distributed (for greying out)
   const [distributedLoot, setDistributedLoot] = useState<Map<string, string>>(new Map()); // lootId -> distribution message
+  const [undoneMutations, setUndoneMutations] = useState<Set<string>>(new Set()); // mutation ids undone this session
+  const [undoingMutationId, setUndoingMutationId] = useState<string | null>(null);
+  const [sessionRecap, setSessionRecap] = useState<string | null>(null); // "previously on" banner
 
   const [combat, setCombat] = useState<CombatState>({
     isActive: false,
@@ -111,11 +133,15 @@ export default function App() {
   const chatContainerRef = useRef<HTMLDivElement>(null);
   // Refs to hold current values for callbacks (avoids stale closures)
   const charactersRef = useRef<Character[]>(characters);
+  const combatRef = useRef<CombatState>(combat);
   const themeRef = useRef<ThemeMode>(theme);
+  const pendingLootRef = useRef<Map<string, LootDistribution>>(pendingLoot);
 
   // Keep refs in sync with state
   useEffect(() => { charactersRef.current = characters; }, [characters]);
+  useEffect(() => { combatRef.current = combat; }, [combat]);
   useEffect(() => { themeRef.current = theme; }, [theme]);
+  useEffect(() => { pendingLootRef.current = pendingLoot; }, [pendingLoot]);
 
   // activeChar should always be a player-controlled character, not a companion
   const playerChars = characters.filter(c => c.controlledBy !== 'dm');
@@ -138,7 +164,7 @@ export default function App() {
         setTheme(detectedTheme);
 
         // State response IS the campaign state directly (not wrapped)
-        const campaignState = stateResponse.campaignState || stateResponse;
+        const campaignState: any = stateResponse.campaignState || stateResponse;
 
         if (campaignState) {
           // Characters are in .characters, party resources in .party
@@ -153,12 +179,31 @@ export default function App() {
             setActiveCharId(playerChars[0]?.id || loadedCharacters[0]?.id || 'c1');
           }
 
+          // Load ship state if present
+          if (campaignState.ship && campaignState.ship.hull) {
+            setShip(campaignState.ship as Ship);
+            console.log('[App] Ship state loaded:', campaignState.ship.name);
+          }
+
+          if (Array.isArray(campaignState.quests?.active)) {
+            setActiveQuests(campaignState.quests.active as Quest[]);
+          }
+
+          // "Previously on..." recap banner from the last finished session
+          getSessionRecap(campaignId).then(r => {
+            if (r.recap) setSessionRecap(r.recap);
+          }).catch(() => { /* recap is best-effort */ });
+
           // Load combat state if active or pending - use loadedCharacters instead of stale state
           if (campaignState.combat?.active === true || campaignState.combat?.active === 'pending') {
             const combatState = transformCombatState(campaignState.combat, loadedCharacters);
             console.log('[App] Loaded combat state:', { backendActive: campaignState.combat.active, isPending: combatState.isPending, isActive: combatState.isActive });
             setCombat(combatState);
           }
+          const pendingRoll = campaignState.combat?.rollQueue?.find((entry: any) =>
+            entry?.status === 'pending' || entry?.status === 'partial'
+          );
+          setPendingRollQueueEntry(pendingRoll || null);
         }
 
         // Load conversation history
@@ -217,6 +262,49 @@ What do you do?`;
   useEffect(() => {
     initChat(theme, characters, provider);
   }, [theme, provider]);
+
+  // Diagnostic: log aside state to browser console
+  useEffect(() => {
+    const run = () => {
+      const aside = document.getElementById('codex-aside');
+      if (!aside) { console.log('DIAG: codex-aside NOT IN DOM'); return; }
+      const r = aside.getBoundingClientRect();
+      const cs = getComputedStyle(aside);
+      const parent = aside.parentElement;
+      console.log('DIAG aside:', {
+        w: Math.round(r.width), h: Math.round(r.height),
+        left: Math.round(r.left), top: Math.round(r.top),
+        display: cs.display, order: cs.order, position: cs.position,
+        transform: cs.transform
+      });
+      if (parent) {
+        const siblings = [];
+        for (const child of parent.children) {
+          const cr = child.getBoundingClientRect();
+          const ccs = getComputedStyle(child);
+          siblings.push({
+            tag: child.tagName, id: child.id || '',
+            cls: (child.getAttribute('class') || '').substring(0, 60),
+            w: Math.round(cr.width), h: Math.round(cr.height),
+            L: Math.round(cr.left),
+            disp: ccs.display, ord: ccs.order, pos: ccs.position,
+            vis: ccs.visibility, opa: ccs.opacity
+          });
+        }
+        console.log('DIAG ALL siblings:', siblings);
+        console.log('DIAG parent:', {
+          display: getComputedStyle(parent).display,
+          flexDirection: getComputedStyle(parent).flexDirection,
+          overflow: getComputedStyle(parent).overflow,
+          width: Math.round(parent.getBoundingClientRect().width),
+          paddingLeft: getComputedStyle(parent).paddingLeft,
+          marginLeft: getComputedStyle(parent).marginLeft
+        });
+      }
+    };
+    const t = setTimeout(run, 2000);
+    return () => clearTimeout(t);
+  }, [isLoading, characters]);
 
   // Preload spell and item data for all party members
   useEffect(() => {
@@ -281,11 +369,22 @@ What do you do?`;
       }
     }
 
+    // Handle ship state updates
+    else if (fc.name === 'update_ship') {
+      const { ship: shipData } = fc.args;
+      if (shipData && shipData.hull) {
+        setShip(shipData as Ship);
+        console.log('[App] Ship state updated:', shipData.name);
+      }
+    }
+
     // Handle roll request from backend
     else if (fc.name === 'request_roll') {
       const { request, queueEntry } = fc.args;
       console.log('[App] Roll requested:', request);
-      // Could show a roll prompt UI here
+      if (queueEntry?.queueId) {
+        setPendingRollQueueEntry(queueEntry);
+      }
     }
 
     // Handle combat ended from backend
@@ -323,8 +422,12 @@ What do you do?`;
     else if (fc.name === 'offer_loot') {
       const { lootData } = fc.args;
       console.log('[App] Loot offered:', lootData);
-      
+
       if (lootData && lootData.lootId) {
+        // Skip if this loot offer is already displayed (backend re-sends until distributed)
+        if (pendingLootRef.current.has(lootData.lootId)) {
+          return;
+        }
         // Store in pending loot
         setPendingLoot(prev => new Map(prev).set(lootData.lootId, lootData));
         
@@ -337,6 +440,27 @@ What do you do?`;
           lootData: lootData
         };
         setMessages(prev => [...prev, lootMsg as any]);
+      }
+    }
+
+    // Roll-queue sync: align the pending-roll banner with server state
+    else if (fc.name === 'roll_queue_sync') {
+      const { entry } = fc.args;
+      setPendingRollQueueEntry(entry || null);
+    }
+
+    // Mutation ledger entries - render as audit cards in the chat stream
+    else if (fc.name === 'mutations_applied') {
+      const { mutations } = fc.args as { mutations: MutationRecord[] };
+      if (mutations && mutations.length > 0) {
+        const auditMsg: MutationAuditMessage = {
+          id: `mutations-${mutations[0].id}`,
+          type: 'mutation_audit',
+          sender: 'System',
+          timestamp: new Date(),
+          mutations
+        };
+        setMessages(prev => [...prev, auditMsg as any]);
       }
     }
 
@@ -420,8 +544,11 @@ What do you do?`;
             setMessages(prev => prev.map(m => m.id === aiMsgId ? { ...m, text: fullText, isThinking: false } : m));
         }
       }
-      // Combat should now be fully active after initiative is established
-      setCombat(prev => ({ ...prev, isPending: false, isActive: true, round: 1, order: playerRolls }));
+      // Combat state is set by handleFunctionCall via AI tool calls (setup_combat/combat_state_update)
+      // Only apply fallback if combat is still not active after AI response
+      if (!combatRef.current.isActive) {
+        setCombat(prev => ({ ...prev, isPending: false, isActive: true, round: 1, order: playerRolls }));
+      }
     } catch (e) { console.error(e); } finally { setIsThinking(false); }
   };
 
@@ -456,7 +583,7 @@ What do you do?`;
     try {
       // Submit individual player initiatives to backend (totals already include dexMod)
       const playerInits = playerRolls.map(r => ({ id: r.id, name: r.name, initiative: r.total }));
-      const initResponse = await submitInitiative(playerInits, campaignId);
+      const initResponse: any = await submitInitiative(playerInits, campaignId);
       console.log('[App] Initiative submitted to backend:', initResponse);
 
       // Get the full initiative order from backend response (includes enemies)
@@ -482,21 +609,23 @@ What do you do?`;
           setMessages(prev => prev.map(m => m.id === aiMsgId ? { ...m, text: fullText, isThinking: false } : m));
         }
       }
-      // Combat should now be fully active after initiative is established
-      // Use backend's initiative order if available, otherwise build from player rolls
-      const initialOrder: Combatant[] = fullInitiativeOrder.length > 0 
-        ? fullInitiativeOrder
-        : playerRolls
-          .map(r => ({
-            id: r.id,
-            name: r.name,
-            type: 'player' as const,
-            initiative: r.total,
-            avatar: currentChars.find(c => c.id === r.id)?.avatar
-          }))
-          .sort((a, b) => b.initiative - a.initiative);
-      console.log('[App] Setting combat order:', initialOrder.map(c => `${c.name}(${c.initiative})`).join(' → '));
-      setCombat(prev => ({ ...prev, isPending: false, isActive: true, round: 1, order: initialOrder }));
+      // Combat state is set by handleFunctionCall via AI tool calls (setup_combat/combat_state_update)
+      // Only apply fallback if combat is still not active after AI response
+      if (!combatRef.current.isActive) {
+        const initialOrder: Combatant[] = fullInitiativeOrder.length > 0 
+          ? fullInitiativeOrder
+          : playerRolls
+            .map(r => ({
+              id: r.id,
+              name: r.name,
+              type: 'player' as const,
+              initiative: r.total,
+              avatar: currentChars.find(c => c.id === r.id)?.avatar
+            }))
+            .sort((a, b) => b.initiative - a.initiative);
+        console.log('[App] Setting combat order (fallback):', initialOrder.map(c => `${c.name}(${c.initiative})`).join(' → '));
+        setCombat(prev => ({ ...prev, isPending: false, isActive: true, round: 1, order: initialOrder }));
+      }
     } catch (e) {
       console.error(e);
     } finally {
@@ -594,6 +723,12 @@ What do you do?`;
   const parseModifierFromContext = (faces: number): number => {
     const lastDmMsg = [...messages].reverse().find(m => m.type === 'ai' && m.text);
     if (!lastDmMsg || !activeChar) return 0;
+
+    const normalizeKey = (value: string) => value.toLowerCase().replace(/[^a-z0-9]/g, '');
+    const findSkill = (skillName: string) => {
+      const normalizedSkill = normalizeKey(skillName);
+      return Object.entries(activeChar.skills || {}).find(([name]) => normalizeKey(name) === normalizedSkill)?.[1];
+    };
     
     if (faces === 20) {
       // Ability name to stat key mapping
@@ -608,11 +743,12 @@ What do you do?`;
       
       // First, try to extract skill name and ability from patterns like:
       // "Roll Technology (Intelligence)", "Perception (Wisdom) DC 14", etc.
-      const skillMatch = lastDmMsg.text.match(/roll\s+(\w+)\s*\((\w+)\)|\b(\w+)\s*\((\w+)\)\s*(?:\(DC|\(dc|DC|dc|\s+to)/i);
+      const skillMatch = lastDmMsg.text.match(/roll\s+([a-z][a-z\s-]*?)\s*\((strength|dexterity|constitution|intelligence|wisdom|charisma|str|dex|con|int|wis|cha)\)/i)
+        || lastDmMsg.text.match(/\b([a-z][a-z\s-]*?)\s*\((strength|dexterity|constitution|intelligence|wisdom|charisma|str|dex|con|int|wis|cha)\)\s*(?:\(?(?:DC|dc)\b|\s+to\b)/i);
       
       if (skillMatch) {
-        const skillName = (skillMatch[1] || skillMatch[3] || '').toLowerCase();
-        const abilityName = (skillMatch[2] || skillMatch[4] || '').toLowerCase();
+        const skillName = (skillMatch[1] || '').trim().toLowerCase();
+        const abilityName = (skillMatch[2] || '').toLowerCase();
         const statKey = abilityMap[abilityName];
         
         if (statKey && activeChar.stats[statKey] !== undefined) {
@@ -621,8 +757,9 @@ What do you do?`;
           
           // Check if character has this skill and is proficient
           let profBonus = 0;
-          if (activeChar.skills && activeChar.skills[skillName]) {
-            if (activeChar.skills[skillName].proficient) {
+          const skill = findSkill(skillName);
+          if (skill) {
+            if (skill.proficient) {
               profBonus = activeChar.proficiencyBonus || 2;
             }
           }
@@ -644,15 +781,17 @@ What do you do?`;
         }
       }
       
-      // Fallback: Attack rolls - match "+5 to hit", "(+6 to hit)", etc.
-      const modMatch = lastDmMsg.text.match(/\+(\d+)\s*(?:to hit|modifier|bonus)/i);
+      // Fallback: Attack rolls - match "+5 to hit", "-1 modifier", etc.
+      const modMatch = lastDmMsg.text.match(/([+-]\d+)\s*(?:to hit|modifier|bonus)/i);
       return modMatch ? parseInt(modMatch[1], 10) : 0;
     } else {
-      // Damage rolls: match "1d8+3", "2d6+4 damage", etc.
-      const damageMatch = lastDmMsg.text.match(new RegExp(`\\d*d${faces}\\s*\\+\\s*(\\d+)`, 'i'));
+      // Damage rolls: match "1d8+3", "2d6-1 damage", etc.
+      const damageMatch = lastDmMsg.text.match(new RegExp(`\\d*d${faces}\\s*([+-]\\s*\\d+)`, 'i'));
       return damageMatch ? parseInt(damageMatch[1], 10) : 0;
     }
   };
+
+  const formatModifier = (modifier: number) => `${modifier >= 0 ? '+' : ''}${modifier}`;
 
   // Parse suggested dice from last DM message (e.g., "1d4+4 piercing, PLUS 2d6 Sneak Attack")
   const parseSuggestedDice = (): { qty: number; faces: number }[] | null => {
@@ -680,19 +819,111 @@ What do you do?`;
   const suggestedDiceLabel = suggestedDice 
     ? suggestedDice.map(d => `${d.qty}d${d.faces}`).join(' + ')
     : null;
+  const pendingRollParticipant = pendingRollQueueEntry?.participants?.find((participant: any) => {
+    if (!activeChar) return false;
+    const normalize = (value: string) => value.toLowerCase().replace(/[^a-z0-9]/g, '');
+    const activeKeys = [activeChar.id, activeChar.name].map(normalize);
+    const candidates = [
+      participant.participantId,
+      participant.id,
+      participant.name,
+      ...(Array.isArray(participant.aliases) ? participant.aliases : [])
+    ].filter(Boolean).map(normalize);
+    return activeKeys.some(key => candidates.includes(key));
+  }) || pendingRollQueueEntry?.participants?.[0];
+  const pendingRollDc = pendingRollParticipant?.dc ?? pendingRollQueueEntry?.dc;
+  const pendingRollAbility = pendingRollParticipant?.ability ?? pendingRollQueueEntry?.ability;
+  const pendingRollAdvantage = pendingRollParticipant?.advantage ?? pendingRollQueueEntry?.advantage;
+
+  const resolvePendingRollQueue = async (
+    natural: number,
+    total: number,
+    modifier: number,
+    rolls: number[],
+    notation: string
+  ): Promise<boolean> => {
+    if (!pendingRollQueueEntry?.queueId || !activeChar) return false;
+
+    const activeParticipant = pendingRollQueueEntry.participants?.find((participant: any) => {
+      const candidates = [
+        participant.participantId,
+        participant.id,
+        participant.name,
+        ...(Array.isArray(participant.aliases) ? participant.aliases : [])
+      ].filter(Boolean).map((value: string) => value.toLowerCase().replace(/[^a-z0-9]/g, ''));
+      const activeKeys = [activeChar.id, activeChar.name].map(value => value.toLowerCase().replace(/[^a-z0-9]/g, ''));
+      return activeKeys.some(key => candidates.includes(key));
+    }) || pendingRollQueueEntry.participants?.[0];
+
+    if (!activeParticipant) return false;
+
+    const resolved = await resolveRollQueueEntry(
+      pendingRollQueueEntry.queueId,
+      {
+        participantId: activeParticipant.participantId || activeParticipant.id || activeChar.id,
+        participantName: activeParticipant.name || activeChar.name,
+        total,
+        natural,
+        modifier,
+        rolls,
+        notation,
+        formula: notation,
+        submittedBy: activeChar.name
+      },
+      campaignId
+    );
+
+    setPendingRollQueueEntry(resolved.entry?.status === 'complete' ? null : resolved.entry);
+    const narrative = await continueStory(campaignId, handleFunctionCall);
+    const aiMsgId = Date.now().toString() + 'queue-roll';
+    setMessages(prev => [...prev, { id: aiMsgId, type: 'ai', sender: 'Dungeon Master', text: narrative, timestamp: new Date() }]);
+    return true;
+  };
+
+  // Modifier from the pending roll-queue entry (authoritative: ability + skill
+  // proficiency from the request itself). Falls back to message-text parsing,
+  // which misses two-phase requests whose 🎲 line never reaches the chat.
+  const modifierFromQueueEntry = (faces: number): number | null => {
+    if (faces !== 20 || !pendingRollQueueEntry || !activeChar) return null;
+    const abilityKey = (pendingRollParticipant?.ability || pendingRollQueueEntry.ability || '').toLowerCase();
+    if (!abilityKey || !(abilityKey in activeChar.stats)) return null;
+    let mod = Math.floor(((activeChar.stats as any)[abilityKey] - 10) / 2);
+    // Find a proficient skill named in the request. Match against the character's
+    // own skill list (not a regex capture — wording like "with advantage" before
+    // the parens broke captures and silently dropped proficiency).
+    const reasonText = (pendingRollQueueEntry.reason || pendingRollQueueEntry.metadata?.rawRequest || '').toLowerCase();
+    const skillEntry = Object.entries(activeChar.skills || {}).find(([n, s]) =>
+      reasonText.includes(n.toLowerCase()) && (!s.ability || s.ability.toLowerCase() === abilityKey)
+    );
+    if (skillEntry?.[1]?.proficient) mod += activeChar.proficiencyBonus || 2;
+    return mod;
+  };
 
   const handleDiceRoll = async (faces: number) => {
     if (!activeChar) return;
-    const roll = Math.floor(Math.random() * faces) + 1;
-    // Parse modifier from last DM message for display purposes
-    const modifier = parseModifierFromContext(faces);
+    // Honor server-computed advantage/disadvantage on queued d20 rolls
+    const advMode = faces === 20 && pendingRollQueueEntry && pendingRollAdvantage && pendingRollAdvantage !== 'normal'
+      ? pendingRollAdvantage as 'advantage' | 'disadvantage'
+      : null;
+    const r1 = Math.floor(Math.random() * faces) + 1;
+    const r2 = Math.floor(Math.random() * faces) + 1;
+    const roll = advMode === 'advantage' ? Math.max(r1, r2) : advMode === 'disadvantage' ? Math.min(r1, r2) : r1;
+    const modifier = modifierFromQueueEntry(faces) ?? parseModifierFromContext(faces);
     const total = roll + modifier;
-    const rollMsg: Message = { id: Date.now().toString(), type: 'roll', sender: activeChar.name, text: `rolled a D${faces}`, timestamp: new Date(), diceResult: { faces, rolls: [roll], total, modifier } };
+    const rollMsg: Message = {
+      id: Date.now().toString(), type: 'roll', sender: activeChar.name, text: `rolled a D${faces}`, timestamp: new Date(),
+      diceResult: advMode
+        ? { faces, rolls: [r1, r2], total, modifier, advantageMode: advMode, chosenRoll: roll, discardedRoll: advMode === 'advantage' ? Math.min(r1, r2) : Math.max(r1, r2) }
+        : { faces, rolls: [roll], total, modifier }
+    };
     setMessages(prev => [...prev, rollMsg]);
     setIsThinking(true);
     try {
+        if (faces === 20 && await resolvePendingRollQueue(roll, total, modifier, advMode ? [r1, r2] : [roll], advMode ? `2d20${advMode === 'advantage' ? 'kh1' : 'kl1'}` : `1d${faces}`)) {
+          return;
+        }
         // Send roll with natural, modifier, and total for AI context
-        const stream = await sendMessageToDM(`${activeChar.name}: rolled D${faces} with a natural ${roll}, modifier +${modifier}, for a total of ${total}.`, handleFunctionCall);
+        const stream = await sendMessageToDM(`${activeChar.name}: rolled D${faces} with a natural ${roll}, modifier ${formatModifier(modifier)}, for a total of ${total}.`, handleFunctionCall);
         if (stream) {
             const aiMsgId = Date.now().toString() + 'ai-roll';
             setMessages(prev => [...prev, { id: aiMsgId, type: 'ai', sender: 'Dungeon Master', text: '', timestamp: new Date(), isThinking: true }]);
@@ -751,8 +982,11 @@ What do you do?`;
       setIsThinking(true);
       
       try {
+        if (await resolvePendingRollQueue(chosen, total, modifier, rolls, '1d20')) {
+          return;
+        }
         const stream = await sendMessageToDM(
-          `${activeChar.name}: rolled D20 with ${mode} - rolled ${rolls[0]} and ${rolls[1]}, ${mode === 'advantage' ? 'taking the higher' : 'taking the lower'} (${chosen}), modifier +${modifier}, for a total of ${total}.`, 
+          `${activeChar.name}: rolled D20 with ${mode} - rolled ${rolls[0]} and ${rolls[1]}, ${mode === 'advantage' ? 'taking the higher' : 'taking the lower'} (${chosen}), modifier ${formatModifier(modifier)}, for a total of ${total}.`, 
           handleFunctionCall
         );
         if (stream) {
@@ -904,6 +1138,27 @@ What do you do?`;
     }
   };
 
+  // Undo a ledgered mutation (audit-card undo button)
+  const handleUndoMutation = async (mutationId: string) => {
+    setUndoingMutationId(mutationId);
+    try {
+      const result = await undoMutation(mutationId, campaignId);
+      if (result.success) {
+        setUndoneMutations(prev => new Set(prev).add(mutationId));
+        if (result.characters && Object.keys(result.characters).length > 0) {
+          setCharacters(transformCharacters(result.characters, themeRef.current, campaignId));
+        }
+        if (result.combat && (result.combat.active === true || result.combat.initiativeOrder?.length)) {
+          setCombat(transformCombatState(result.combat, charactersRef.current));
+        }
+      }
+    } catch (error) {
+      console.error('[App] Failed to undo mutation:', error);
+    } finally {
+      setUndoingMutationId(null);
+    }
+  };
+
   if (!activeChar) return null;
 
   const themeColors = {
@@ -925,12 +1180,23 @@ What do you do?`;
   const isNarrativeCombat = campaignId.includes('dax');
 
   return (
-    <div className={`flex h-screen w-full overflow-hidden ${themeColors.bg} ${themeColors.text} ${themeColors.fontBody} transition-all duration-700`} style={{ filter: `brightness(${brightness})` }}>
-      <div className="vignette" />
-      {isFantasy ? <div className="fixed inset-0 fantasy-texture pointer-events-none z-0" /> : <><div className="scifi-scanlines" /><div className="fixed top-0 left-0 w-full h-1 bg-cyan-500/20 animate-scanline pointer-events-none z-50" /></>}
+    <div className={`${themeColors.bg} ${themeColors.text} ${themeColors.fontBody} transition-all duration-700`} style={{ display: 'flex', height: '100vh', width: '100%', overflow: 'hidden', filter: `brightness(${brightness})` }}>
+      {/* Diagnostic removed - using console.log instead */}
 
-      {/* --- SIDEBAR --- */}
-      <aside className={`flex-col w-24 items-center py-8 gap-6 border-r ${isSidebarOpen ? 'flex fixed inset-y-0 left-0 z-50 shadow-2xl' : 'hidden'} sm:flex z-30 flex-shrink-0 relative ${themeColors.panel} ${themeColors.border}`}>
+      {/* --- DECORATIVE OVERLAYS (portaled to body so they don't affect flex layout) --- */}
+      {createPortal(
+        <>
+          <div className="vignette" style={{ position: 'fixed', inset: 0, pointerEvents: 'none', zIndex: 40 }} />
+          {isFantasy
+            ? <div className="fantasy-texture" style={{ position: 'fixed', inset: 0, pointerEvents: 'none', zIndex: 0 }} />
+            : <><div className="scifi-scanlines" style={{ position: 'fixed', inset: 0, pointerEvents: 'none' }} /><div style={{ position: 'fixed', top: 0, left: 0, width: '100%', height: 4, pointerEvents: 'none', zIndex: 50 }} className="bg-cyan-500/20 animate-scanline" /></>
+          }
+        </>,
+        document.body
+      )}
+
+      {/* --- SIDEBAR (icon rail - hidden for narrative/single-PC campaigns like Dax) --- */}
+      <aside className={`flex-col w-24 items-center py-8 gap-6 border-r ${isSidebarOpen ? 'flex fixed inset-y-0 left-0 z-50 shadow-2xl' : 'hidden'} ${isNarrativeCombat ? 'hidden' : 'hidden md:flex'} z-30 flex-shrink-0 relative ${themeColors.panel} ${themeColors.border}`}>
         <div className="mb-6 relative group cursor-pointer">{isFantasy ? <Icons.Ghost className="w-10 h-10 text-fantasy-gold" /> : <Icons.Cpu className="w-10 h-10 text-scifi-accent" />}</div>
         {/* Only show player-controlled characters in sidebar (not companions) */}
         {characters.filter(c => c.controlledBy !== 'dm').map(char => (
@@ -966,7 +1232,10 @@ What do you do?`;
       )}
 
       {/* --- MAIN --- */}
-      <main className="flex-1 flex flex-col relative overflow-hidden z-20">
+      <main
+        className={`flex-1 flex flex-col relative overflow-hidden z-20`}
+        style={{ minWidth: 0, marginLeft: isNarrativeCombat ? '320px' : 0, marginRight: showSideChat ? '384px' : (isNarrativeCombat ? 0 : '320px') }}
+      >
         {/* Pending Combat Banner - waiting for initiative rolls (not shown for narrative combat campaigns) */}
         {!isNarrativeCombat && combat.isPending && !combat.isActive && (
           <div className={`mx-6 mt-6 p-4 rounded-2xl border-2 flex items-center justify-between gap-6 animate-pop-in z-50 ${themeColors.glass} ${isFantasy ? 'border-amber-900/50 bg-amber-950/20' : 'border-yellow-900/50 bg-yellow-950/20'}`}>
@@ -1041,6 +1310,16 @@ What do you do?`;
           </div>
         )}
 
+        {/* Zone lane - range band positions from the server's zone tracker */}
+        {!isNarrativeCombat && combat.isActive && combat.positions && Object.keys(combat.positions).length > 0 && (
+          <ZoneLane
+            positions={combat.positions}
+            order={combat.order}
+            currentTurnIndex={combat.currentTurnIndex}
+            theme={theme}
+          />
+        )}
+
         {showExitCombatConfirm && (
           <div className="absolute inset-0 z-[60] flex items-center justify-center bg-black/80 backdrop-blur-sm animate-fade-in">
              <div className={`p-8 rounded-2xl border-2 ${themeColors.panel} border-red-500/50 text-center max-w-xs shadow-2xl`}>
@@ -1056,10 +1335,25 @@ What do you do?`;
         )}
 
         <div className="flex-1 overflow-y-auto p-6 md:p-12 space-y-10 no-scrollbar" ref={chatContainerRef}>
+          {sessionRecap && (
+            <div className={`relative p-5 rounded-2xl border ${themeColors.panel} ${isFantasy ? 'border-fantasy-gold/30' : 'border-scifi-accent/30'} animate-pop-in`}>
+              <button
+                onClick={() => setSessionRecap(null)}
+                className="absolute top-3 right-3 text-xs opacity-40 hover:opacity-80 font-black uppercase"
+                title="Dismiss recap"
+              >
+                ✕
+              </button>
+              <div className={`text-[10px] mb-2 font-black uppercase tracking-[0.3em] ${isFantasy ? 'text-fantasy-gold' : 'text-scifi-accent'}`}>
+                Previously on your campaign…
+              </div>
+              <div className="text-sm leading-relaxed opacity-80 italic">{sessionRecap}</div>
+            </div>
+          )}
           {messages.map((msg, idx) => {
             // Handle loot distribution messages specially
             if (msg.type === 'loot_distribution') {
-              const lootMsg = msg as LootDistributionMessage;
+            const lootMsg = msg as unknown as LootDistributionMessage;
               const lootId = lootMsg.lootData?.lootId;
               const isDistributed = lootId ? distributedLoot.has(lootId) : false;
               const distMessage = lootId ? distributedLoot.get(lootId) : undefined;
@@ -1083,12 +1377,31 @@ What do you do?`;
               );
             }
 
+            // Handle mutation audit cards (DM state changes with undo)
+            if (msg.type === 'mutation_audit') {
+              const auditMsg = msg as unknown as MutationAuditMessage;
+              const isRecentAudit = idx >= messages.length - 2;
+              return (
+                <div key={msg.id} className={`flex w-full justify-start ${isRecentAudit ? 'animate-pop-in' : ''}`}>
+                  <div className="max-w-[min(80%,72rem)] w-full">
+                    <MutationCard
+                      mutations={auditMsg.mutations}
+                      theme={theme}
+                      undoneIds={undoneMutations}
+                      undoingId={undoingMutationId}
+                      onUndo={handleUndoMutation}
+                    />
+                  </div>
+                </div>
+              );
+            }
+
             // Regular message rendering
             // Only animate recent messages (last 2) to prevent re-animation on state updates
             const isRecent = idx >= messages.length - 2;
             return (
               <div key={msg.id} className={`flex w-full ${msg.type === 'user' ? 'justify-end' : 'justify-start'} ${isRecent ? 'animate-pop-in' : ''}`}>
-                <div className={`max-w-[80%] p-6 rounded-2xl border shadow-xl ${msg.type === 'user' ? `${themeColors.panel} border-white/10 rounded-tr-none` : msg.type === 'combat' ? 'w-full text-center border-red-900/20 bg-red-950/5 font-black uppercase text-[10px] tracking-[0.4em] opacity-60 py-2' : `${themeColors.panel} ${themeColors.border} border-l-4 ${isFantasy ? 'border-fantasy-gold' : 'border-scifi-accent'}`}`}>
+                <div className={`${msg.type === 'combat' ? 'w-full' : 'max-w-[min(80%,72rem)]'} p-6 rounded-2xl border shadow-xl ${msg.type === 'user' ? `${themeColors.panel} border-white/10 rounded-tr-none` : msg.type === 'combat' ? 'text-center border-red-900/20 bg-red-950/5 font-black uppercase text-[10px] tracking-[0.4em] opacity-60 py-2' : `${themeColors.panel} ${themeColors.border} border-l-4 ${isFantasy ? 'border-fantasy-gold' : 'border-scifi-accent'}`}`}>
                   {msg.type !== 'combat' && <div className={`text-[10px] mb-2 opacity-40 uppercase font-black tracking-widest ${msg.type === 'user' ? 'text-right' : 'text-left'}`}>{msg.sender}</div>}
                   <div className={msg.type === 'roll' || msg.type === 'initiative' ? 'flex flex-col items-center' : ''}>
                      {msg.type === 'roll' ? (
@@ -1177,54 +1490,82 @@ What do you do?`;
         </div>
 
         {/* --- INPUT --- */}
-        <div className="p-6 md:p-10 z-30">
-          <div className="max-w-4xl mx-auto flex flex-col gap-6">
-              <div className="flex justify-between items-center px-4">
-                 <div className="flex gap-3">
-                    <DiceRoller theme={theme} onRoll={handleDiceRoll} onCustomRoll={handleCustomDiceRoll} />
-                    {suggestedDice && (
-                      <button 
-                        onClick={() => handleCustomDiceRoll(suggestedDice)}
-                        disabled={isThinking}
-                        className={`px-4 py-2 rounded-2xl font-black text-xs uppercase tracking-widest border-2 transition-all hover:scale-105 active:scale-95 animate-pulse ${isFantasy ? 'border-amber-600 bg-amber-950/40 text-amber-400 hover:bg-amber-900/50' : 'border-cyan-600 bg-cyan-950/40 text-cyan-300 hover:bg-cyan-900/50'}`}
-                      >
-                        🎲 Roll {suggestedDiceLabel}
-                      </button>
-                    )}
-                    {/* For narrative campaigns: Continue button. For tactical: Initiative button */}
-                    {isNarrativeCombat ? (
-                      <button 
-                        onClick={handleContinueStory} 
-                        disabled={isThinking}
-                        className={`px-6 py-2 rounded-2xl font-black text-[10px] uppercase tracking-[0.2em] border-2 transition-all hover:scale-105 active:scale-95 ${isThinking ? 'opacity-50 cursor-not-allowed' : ''} ${isFantasy ? 'border-amber-600 bg-amber-950/20 text-amber-500 hover:bg-amber-900/30' : 'border-cyan-600 bg-cyan-950/20 text-cyan-400 hover:bg-cyan-900/30'}`}
-                      >
-                        {isThinking ? '...' : '▶ Continue'}
-                      </button>
-                    ) : (
-                      !combat.isActive && (
-                        <button onClick={combat.lastOrder ? reEnterCombat : startCombat} className={`px-6 rounded-2xl font-black text-[10px] uppercase tracking-[0.2em] border-2 transition-all hover:scale-105 active:scale-95 ${isFantasy ? 'border-red-950 bg-red-950/20 text-red-500 hover:bg-red-900/30' : 'border-cyan-950 bg-cyan-950/20 text-cyan-400 hover:bg-cyan-900/30'}`}>
-                          {combat.lastOrder ? 'Restore Combat' : 'Initiative'}
-                        </button>
-                      )
-                    )}
-                </div>
-                <div className="flex flex-col items-end opacity-50"><span className="text-[10px] font-black uppercase tracking-widest">{activeChar.name}</span><span className={`text-xs font-black ${activeChar.hp < 10 ? 'text-red-500 animate-pulse' : ''}`}>HP: {activeChar.hp}/{activeChar.maxHp}</span></div>
-             </div>
-             <div className="relative group">
-                <textarea 
-                  value={inputValue} 
-                  onChange={e => setInputValue(e.target.value)} 
-                  onKeyDown={e => e.key === 'Enter' && !e.shiftKey && (e.preventDefault(), handleSendMessage())} 
-                  placeholder={combat.isActive ? `Round ${combat.round}: Narrate your action...` : `Narrate ${activeChar.name}'s action...`} 
-                  className={`w-full p-6 pr-20 h-20 rounded-2xl border-2 resize-none transition-all duration-300 focus:h-40 focus:outline-none focus:ring-4 focus:ring-opacity-10 shadow-2xl ${themeColors.input} ${isFantasy ? 'focus:ring-fantasy-gold' : 'focus:ring-scifi-accent'} text-base`} 
-                />
-                <button 
-                  onClick={handleSendMessage} 
-                  disabled={isThinking || !inputValue.trim()}
-                  className={`absolute right-4 bottom-4 p-4 rounded-xl transition-all ${inputValue.trim() ? (isFantasy ? 'bg-fantasy-gold hover:bg-amber-600 shadow-lg' : 'bg-scifi-accent hover:bg-cyan-400 text-slate-950 shadow-lg') : 'opacity-20 cursor-not-allowed grayscale'}`}
+        <div className="px-6 py-3 z-30">
+          <div className="max-w-4xl mx-auto flex flex-col gap-2">
+              {pendingRollQueueEntry && (
+                <div
+                  className={`flex items-center gap-2 px-3 py-1.5 rounded-xl border shadow-lg text-xs ${isFantasy ? 'border-amber-600/40 bg-amber-950/30 text-amber-100' : 'border-cyan-500/40 bg-cyan-950/30 text-cyan-100'}`}
+                  title={pendingRollQueueEntry.reason || pendingRollQueueEntry.metadata?.rawRequest || 'Roll requested'}
                 >
-                  <Icons.Send className="w-6 h-6" />
-                </button>
+                  <Icons.Dices className={`w-4 h-4 shrink-0 ${isFantasy ? 'text-amber-400' : 'text-cyan-300'}`} />
+                  <span className="font-bold truncate flex-1 min-w-0 text-white/85">
+                    {pendingRollQueueEntry.reason || pendingRollQueueEntry.metadata?.rawRequest || 'Roll requested'}
+                  </span>
+                  <span className="hidden sm:flex items-center gap-2 shrink-0 text-[10px] font-mono uppercase tracking-wider text-white/55">
+                    {pendingRollParticipant?.name && <span>{pendingRollParticipant.name}</span>}
+                    {pendingRollDc && <span>DC {pendingRollDc}</span>}
+                  </span>
+                  {pendingRollAdvantage && pendingRollAdvantage !== 'normal' && (
+                    <span
+                      title={Array.isArray(pendingRollParticipant?.advantageReasons) ? pendingRollParticipant.advantageReasons.join(', ') : undefined}
+                      className={`shrink-0 px-2 py-0.5 rounded-full text-[10px] font-black uppercase ${pendingRollAdvantage === 'advantage' ? 'bg-green-600/30 text-green-300 border border-green-500/40' : 'bg-red-600/30 text-red-300 border border-red-500/40'}`}
+                    >
+                      {pendingRollAdvantage}
+                    </span>
+                  )}
+                  <button
+                    onClick={() => handleDiceRoll(20)}
+                    disabled={isThinking}
+                    className={`shrink-0 px-3 py-1.5 rounded-lg font-black text-[10px] uppercase tracking-widest transition-all active:scale-95 ${isThinking ? 'opacity-40 cursor-not-allowed' : (isFantasy ? 'bg-amber-500 text-black hover:bg-amber-400' : 'bg-cyan-400 text-slate-950 hover:bg-cyan-300')}`}
+                  >
+                    Roll D20
+                  </button>
+                </div>
+              )}
+              <div className="flex items-end gap-2 min-w-0">
+                 <DiceRoller theme={theme} onRoll={handleDiceRoll} onCustomRoll={handleCustomDiceRoll} popover />
+                 {suggestedDice && (
+                   <button
+                     onClick={() => handleCustomDiceRoll(suggestedDice)}
+                     disabled={isThinking}
+                     className={`shrink-0 h-11 px-3 rounded-xl font-black text-[10px] uppercase tracking-widest border-2 transition-all hover:scale-105 active:scale-95 animate-pulse ${isFantasy ? 'border-amber-600 bg-amber-950/40 text-amber-400 hover:bg-amber-900/50' : 'border-cyan-600 bg-cyan-950/40 text-cyan-300 hover:bg-cyan-900/50'}`}
+                   >
+                     🎲 {suggestedDiceLabel}
+                   </button>
+                 )}
+                 {/* For narrative campaigns: Continue button. For tactical: Initiative button */}
+                 {isNarrativeCombat ? (
+                   <button
+                     onClick={handleContinueStory}
+                     disabled={isThinking}
+                     title="Let the DM continue the story"
+                     className={`shrink-0 h-11 px-3 rounded-xl font-black text-[10px] uppercase tracking-[0.15em] border-2 transition-all hover:scale-105 active:scale-95 ${isThinking ? 'opacity-50 cursor-not-allowed' : ''} ${isFantasy ? 'border-amber-600 bg-amber-950/20 text-amber-500 hover:bg-amber-900/30' : 'border-cyan-600 bg-cyan-950/20 text-cyan-400 hover:bg-cyan-900/30'}`}
+                   >
+                     {isThinking ? '...' : '▶ Continue'}
+                   </button>
+                 ) : (
+                   !combat.isActive && (
+                     <button onClick={combat.lastOrder ? reEnterCombat : startCombat} className={`shrink-0 h-11 px-3 rounded-xl font-black text-[10px] uppercase tracking-[0.15em] border-2 transition-all hover:scale-105 active:scale-95 ${isFantasy ? 'border-red-950 bg-red-950/20 text-red-500 hover:bg-red-900/30' : 'border-cyan-950 bg-cyan-950/20 text-cyan-400 hover:bg-cyan-900/30'}`}>
+                       {combat.lastOrder ? 'Restore Combat' : 'Initiative'}
+                     </button>
+                   )
+                 )}
+                 <div className="relative flex-1 min-w-0">
+                    <textarea
+                      value={inputValue}
+                      onChange={e => setInputValue(e.target.value)}
+                      onKeyDown={e => e.key === 'Enter' && !e.shiftKey && (e.preventDefault(), handleSendMessage())}
+                      placeholder={combat.isActive ? `Round ${combat.round}: Narrate your action...` : `Narrate ${activeChar.name}'s action...`}
+                      className={`block w-full px-4 py-3 pr-12 h-11 rounded-xl border-2 resize-none transition-all duration-300 focus:h-28 focus:outline-none focus:ring-4 focus:ring-opacity-10 shadow-2xl ${themeColors.input} ${isFantasy ? 'focus:ring-fantasy-gold' : 'focus:ring-scifi-accent'} text-sm leading-tight no-scrollbar`}
+                    />
+                    <button
+                      onClick={handleSendMessage}
+                      disabled={isThinking || !inputValue.trim()}
+                      className={`absolute right-1.5 bottom-1.5 p-2 rounded-lg transition-all ${inputValue.trim() ? (isFantasy ? 'bg-fantasy-gold hover:bg-amber-600 shadow-lg' : 'bg-scifi-accent hover:bg-cyan-400 text-slate-950 shadow-lg') : 'opacity-20 cursor-not-allowed grayscale'}`}
+                    >
+                      <Icons.Send className="w-4 h-4" />
+                    </button>
+                 </div>
              </div>
           </div>
         </div>
@@ -1238,16 +1579,50 @@ What do you do?`;
           allCharacters={characters}
           isOpen={showSideChat}
           onToggle={() => setShowSideChat(prev => !prev)}
+          reserveRightPanel={!isNarrativeCombat}
         />
       )}
 
       {/* --- CODEX --- */}
-      <aside className={`w-80 border-l hidden lg:flex flex-col z-30 ${themeColors.panel} ${themeColors.border} relative overflow-hidden shadow-2xl`}>
+      <aside
+        id="codex-aside"
+        style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          width: '320px',
+          height: '100vh',
+          display: 'flex',
+          flexDirection: 'column',
+          background: '#0f172a',
+          borderRight: isNarrativeCombat ? '1px solid #1e293b' : 'none',
+          borderLeft: isNarrativeCombat ? 'none' : '1px solid #1e293b',
+          overflow: 'hidden',
+          zIndex: 30
+        }}
+      >
+         {/* Visible test strip - pure inline, no Tailwind dependency */}
+         <div style={{ width: '100%', padding: '4px 8px', background: '#22d3ee', color: '#000', fontWeight: 900, fontSize: '10px', fontFamily: 'monospace', textAlign: 'center', letterSpacing: '0.15em', textTransform: 'uppercase' }}>
+           Dax Panel Live
+         </div>
          <div className="p-8 space-y-6 flex-shrink-0 text-center cursor-pointer group" onClick={() => setShowCharSheet(true)} title="Open character sheet">
             <div className={`w-32 h-32 rounded-3xl border-2 mx-auto overflow-hidden transition-transform duration-700 hover:rotate-0 shadow-2xl group-hover:shadow-[0_0_20px_rgba(34,211,238,0.3)] ${isFantasy ? 'border-fantasy-gold rotate-3' : 'border-scifi-accent rotate-2'}`}><img src={activeChar.avatar} className="w-full h-full object-cover" /></div>
             <div>
               <h2 className={`text-xl font-black uppercase tracking-tight ${themeColors.fontHead} group-hover:opacity-80 transition-opacity`}>{activeChar.name}</h2>
-              <div className={`text-xs font-bold uppercase tracking-widest mt-2 ${isFantasy ? 'text-fantasy-gold/90' : 'text-scifi-accent/90'}`}>{activeChar.class}</div>
+              <div className={`text-xs font-bold uppercase tracking-widest mt-2 ${isFantasy ? 'text-fantasy-gold/90' : 'text-scifi-accent/90'}`}>Level {activeChar.level ?? 1} · {activeChar.class}</div>
+              {activeChar.experience && (
+                <div className="mt-2">
+                  <div className="h-1.5 w-full bg-black/40 rounded-full overflow-hidden">
+                    <div
+                      className={`h-full rounded-full ${isFantasy ? 'bg-fantasy-gold' : 'bg-scifi-accent'}`}
+                      style={{ width: `${activeChar.experience.progressPct ?? 0}%` }}
+                    />
+                  </div>
+                  <div className="mt-1 text-[9px] uppercase tracking-widest opacity-35">
+                    {activeChar.experience.current.toLocaleString()} XP
+                  </div>
+                </div>
+              )}
               <div className={`text-[9px] uppercase tracking-widest mt-1 opacity-0 group-hover:opacity-40 transition-opacity`}>click for full sheet</div>
             </div>
             <div className="space-y-3">
@@ -1285,7 +1660,13 @@ What do you do?`;
                 ))}
               </div>
             )}
-            {activeSidebarTab === 'conditions' && <div className="space-y-2 animate-pop-in">{activeChar.conditions.map(c => <div key={c} className={`p-4 rounded-xl border-2 font-black uppercase text-[10px] tracking-[0.2em] animate-pulse ${isFantasy ? 'border-fantasy-gold/20 text-fantasy-gold bg-fantasy-gold/5' : 'border-scifi-accent/20 text-scifi-accent bg-scifi-accent/5'}`}>{c}</div>)}</div>}
+            {activeSidebarTab === 'conditions' && <div className="space-y-2 animate-pop-in">{activeChar.conditions.map(c => {
+              const detail = activeChar.conditionDetails?.find(d => d.name.toLowerCase() === c.toLowerCase());
+              return <div key={c} className={`p-4 rounded-xl border-2 font-black uppercase text-[10px] tracking-[0.2em] animate-pulse flex items-center justify-between ${isFantasy ? 'border-fantasy-gold/20 text-fantasy-gold bg-fantasy-gold/5' : 'border-scifi-accent/20 text-scifi-accent bg-scifi-accent/5'}`} title={detail?.source ? `Source: ${detail.source}` : undefined}>
+                <span>{c}</span>
+                {detail?.remainingRounds !== undefined && <span className={`px-2 py-0.5 rounded-full text-[9px] ${isFantasy ? 'bg-fantasy-gold/20' : 'bg-scifi-accent/20'}`}>{detail.remainingRounds} rounds</span>}
+              </div>;
+            })}</div>}
             {activeSidebarTab === 'spells' && (
               <div className="space-y-2 animate-pop-in">
                 {activeChar.heldSpells.map(s => (
@@ -1295,6 +1676,42 @@ What do you do?`;
             )}
             {(activeSidebarTab === 'conditions' && activeChar.conditions.length === 0) && <div className="text-center py-20 opacity-20 text-[10px] uppercase font-black tracking-widest">No active conditions</div>}
             {(activeSidebarTab === 'spells' && activeChar.heldSpells.length === 0) && <div className="text-center py-20 opacity-20 text-[10px] uppercase font-black tracking-widest">No active enchantments</div>}
+
+            {activeQuests.length > 0 && (
+              <div className={`mt-5 mx-3 p-4 rounded-xl border ${isFantasy ? 'border-amber-500/20 bg-amber-500/5' : 'border-cyan-500/20 bg-cyan-500/5'}`}>
+                <div className="flex items-center justify-between gap-3 mb-3">
+                  <div className={`flex items-center gap-2 text-[9px] font-bold uppercase tracking-[0.2em] opacity-70 ${isFantasy ? 'text-amber-400' : 'text-cyan-400'}`}>
+                    <Icons.Scroll className="w-3.5 h-3.5" />
+                    Objectives
+                  </div>
+                  <span className="text-[9px] font-mono opacity-40">{activeQuests.length}</span>
+                </div>
+                <div className="space-y-3">
+                  {activeQuests.slice(0, 4).map((quest) => (
+                    <div key={quest.id} className="border-t border-white/10 pt-3 first:border-t-0 first:pt-0">
+                      <div className="flex items-start gap-2">
+                        <Icons.CheckCircle className={`w-3.5 h-3.5 mt-0.5 flex-shrink-0 ${quest.status === 'selected' ? (isFantasy ? 'text-amber-300' : 'text-cyan-300') : 'opacity-35'}`} />
+                        <div className="min-w-0">
+                          <div className="text-[11px] font-black uppercase tracking-wide leading-snug text-white/90">
+                            {quest.title}
+                          </div>
+                          {quest.location && (
+                            <div className={`mt-0.5 text-[9px] font-mono uppercase tracking-wider ${isFantasy ? 'text-amber-400/60' : 'text-cyan-400/60'}`}>
+                              {quest.location}
+                            </div>
+                          )}
+                          {quest.next_steps?.[0] && (
+                            <div className="mt-1 text-[10px] leading-snug text-white/45">
+                              {quest.next_steps[0]}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
             
             {/* Companion Roster - shows DM-controlled party members */}
             <CompanionRoster
@@ -1302,6 +1719,61 @@ What do you do?`;
               theme={theme}
               partyCredits={undefined} // TODO: Get from campaign state if available
             />
+
+            {/* Ship Panel — click to open ship systems modal */}
+            {ship && (
+              <div
+                className={`mt-4 mx-3 p-4 rounded-xl border cursor-pointer transition-colors group ${
+                  isFantasy
+                    ? 'border-amber-500/20 bg-amber-500/5 hover:bg-amber-500/10'
+                    : 'border-cyan-500/20 bg-cyan-500/5 hover:bg-cyan-500/10'
+                }`}
+                onClick={() => setShowShipSheet(true)}
+                title="Open ship systems"
+              >
+                <div className={`text-[9px] font-bold uppercase tracking-[0.2em] opacity-60 mb-2 ${isFantasy ? 'text-amber-400' : 'text-cyan-400'}`}>
+                  Vessel
+                </div>
+                <div className={`${isFantasy ? 'font-fantasyHeader' : 'font-scifiHeader'} text-sm font-black text-white uppercase tracking-wide group-hover:text-cyan-300 transition-colors`}>
+                  {ship.name}
+                </div>
+                <div className={`text-[10px] mt-0.5 ${isFantasy ? 'text-amber-400/60' : 'text-cyan-400/60'}`}>{ship.class}</div>
+                <div className="mt-3 space-y-1.5">
+                  <div className="h-1.5 w-full bg-black/40 rounded-full overflow-hidden">
+                    <div
+                      className={`h-full rounded-full transition-all duration-700 ${isFantasy ? 'bg-amber-500' : 'bg-cyan-500'}`}
+                      style={{ width: `${Math.round((ship.hull.current / ship.hull.max) * 100)}%` }}
+                    />
+                  </div>
+                  <div className="flex justify-between text-[9px] font-mono opacity-40">
+                    <span>HULL</span>
+                    <span>{ship.hull.current}/{ship.hull.max}</span>
+                  </div>
+                </div>
+                {ship.crew_stations && (
+                  <div className="mt-3 pt-3 border-t border-white/10 space-y-1">
+                    {Object.entries(ship.crew_stations).slice(0, 3).map(([station, crew]) => (
+                      <div key={station} className="flex justify-between gap-2 text-[9px] leading-tight">
+                        <span className="font-bold uppercase tracking-wider text-white/30">{station.replace('_', ' ')}</span>
+                        <span className="font-mono text-white/55 text-right truncate max-w-[8rem]">{crew || 'unassigned'}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {ship.conditions.length > 0 && (
+                  <div className="mt-2 flex flex-wrap gap-1">
+                    {ship.conditions.map((c: string) => (
+                      <span key={c} className="px-1.5 py-0.5 rounded text-[8px] font-bold uppercase tracking-wider bg-red-500/20 text-red-400 border border-red-500/30 animate-pulse-slow">
+                        {c}
+                      </span>
+                    ))}
+                  </div>
+                )}
+                <div className="text-[9px] mt-2 opacity-0 group-hover:opacity-30 transition-opacity uppercase tracking-widest text-center">
+                  click to manage
+                </div>
+              </div>
+            )}
          </div>
       </aside>
 
@@ -1327,6 +1799,17 @@ What do you do?`;
               ));
             } catch (e) { console.error('Credits update failed:', e); }
           }}
+        />
+      )}
+
+      {/* Ship Systems Modal */}
+      {showShipSheet && ship && (
+        <ShipSystemsModal
+          ship={ship}
+          theme={theme}
+          campaignId={campaignId}
+          onClose={() => setShowShipSheet(false)}
+          onPowerSaved={(updatedShip) => setShip(updatedShip)}
         />
       )}
     </div>
